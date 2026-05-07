@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ -x "$repo_root/.dotnet/dotnet" ]]; then
+  dotnet_root="$repo_root/.dotnet"
+elif [[ -x "$repo_root/../cmdb2monitoring/.dotnet/dotnet" ]]; then
+  dotnet_root="$repo_root/../cmdb2monitoring/.dotnet"
+else
+  dotnet_root=""
+fi
+
+export DOTNET_CLI_HOME="$repo_root/.dotnet_home"
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export DOTNET_NOLOGO=1
+export NUGET_PACKAGES="$repo_root/.nuget/packages"
+
+if [[ -n "$dotnet_root" ]]; then
+  export DOTNET_ROOT="$dotnet_root"
+  export PATH="$DOTNET_ROOT:$PATH"
+  exec "$DOTNET_ROOT/dotnet" "$@"
+fi
+
+exec dotnet "$@"

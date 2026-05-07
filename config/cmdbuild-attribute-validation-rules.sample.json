@@ -1,0 +1,44 @@
+{
+  "purpose": "Examples for CMDBuild attribute validationRules fields.",
+  "notes": [
+    "Put the JavaScript into the attribute validationRules field.",
+    "Do not create separate validation-rule schema objects.",
+    "CMDBuild executes the value as a JavaScript function body: use top-level return statements.",
+    "Return true when the card is valid; return a string to block save and show an error message.",
+    "Use api.getValue(\"AttributeCode\") to read other fields from the same card.",
+    "Normalize decimal text with String(value).replace(',', '.') before numeric comparison."
+  ],
+  "examples": [
+    {
+      "class_code": "C2M_ServiceManagedObject",
+      "attribute_code": "aggregation_type",
+      "lookup_type": "ServiceAggregationType",
+      "validates": [
+        "all and any require empty threshold and empty n",
+        "threshold requires threshold from 0 to 100 and empty n",
+        "n_of_m requires integer n >= 1 and empty threshold"
+      ],
+      "validationRules": "var read = function (name) {\n  return api.getValue(name);\n};\nvar lookupCode = function (value) {\n  if (value === null || value === undefined || value === '') {\n    return '';\n  }\n  if (typeof value === 'object') {\n    return String(value.code || value._code || value.name || value.value || value.description || value._id || '').toLowerCase();\n  }\n  return String(value).toLowerCase();\n};\nvar empty = function (value) {\n  return value === null || value === undefined || String(value).trim() === '';\n};\nvar numberValue = function (value) {\n  if (empty(value)) {\n    return null;\n  }\n  return Number(String(value).replace(',', '.'));\n};\nvar type = lookupCode(read('aggregation_type'));\nvar threshold = read('threshold');\nvar n = read('n');\nif (type === '' || type === 'all' || type === 'any') {\n  return empty(threshold) && empty(n) ? true : 'aggregation_type must match its parameters: all/any use no threshold or n, threshold requires threshold 0..100 and empty n, n_of_m requires n >= 1 and empty threshold.';\n}\nif (type === 'threshold') {\n  var thresholdValue = numberValue(threshold);\n  return thresholdValue !== null && thresholdValue >= 0 && thresholdValue <= 100 && empty(n) ? true : 'aggregation_type must match its parameters: all/any use no threshold or n, threshold requires threshold 0..100 and empty n, n_of_m requires n >= 1 and empty threshold.';\n}\nif (type === 'n_of_m') {\n  var nValue = numberValue(n);\n  return nValue !== null && Math.floor(nValue) === nValue && nValue >= 1 && empty(threshold) ? true : 'aggregation_type must match its parameters: all/any use no threshold or n, threshold requires threshold 0..100 and empty n, n_of_m requires n >= 1 and empty threshold.';\n}\nreturn true;"
+    },
+    {
+      "class_code": "C2M_ServicePlatformService",
+      "attribute_code": "service_type",
+      "lookup_type": "ServiceType",
+      "validates": [
+        "sla_target is optional",
+        "filled sla_target must be a percentage from 0 to 100",
+        "99.9 means 99.9%; 0.999 is not accepted for 99.9%"
+      ],
+      "validationRules": "var value = api.getValue('sla_target');\nif (value === null || value === undefined || String(value).trim() === '') {\n  return true;\n}\nvar parsed = Number(String(value).replace(',', '.'));\nreturn parsed >= 0 && parsed <= 100 ? true : 'sla_target, when filled, must be a percentage from 0 to 100. Use 99.9 for 99.9%, not 0.999.';"
+    },
+    {
+      "class_code": "ExampleSuppressionRelationDomain",
+      "attribute_code": "priority",
+      "validates": [
+        "empty priority is allowed",
+        "filled priority must be an integer from 1 to 100"
+      ],
+      "validationRules": "var value = api.getValue('priority');\nif (value === null || value === undefined || String(value).trim() === '') {\n  return true;\n}\nvar parsed = Number(String(value));\nreturn Math.floor(parsed) === parsed && parsed >= 1 && parsed <= 100 ? true : 'priority must be an integer from 1 to 100.';"
+    }
+  ]
+}

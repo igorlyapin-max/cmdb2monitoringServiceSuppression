@@ -1,0 +1,8 @@
+.dotnet_home/
+.nuget/
+.idea/
+bin/
+obj/
+node_modules/
+npm-debug.log*
+.DS_Store

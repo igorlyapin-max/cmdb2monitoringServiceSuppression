@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/shared/Cmdb2MonitoringServiceSuppression.Shared.csproj" />
+    <Project Path="src/cmdbwebhooks2kafka/cmdbwebhooks2kafka.csproj" />
+    <Project Path="src/cmdbaggregation2cmdbuild/cmdbaggregation2cmdbuild.csproj" />
+    <Project Path="src/cmdbconfigbuilder/cmdbconfigbuilder.csproj" />
+    <Project Path="src/zabbixconfig2api/zabbixconfig2api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/sharedcontracts/sharedcontracts.csproj" />
+    <Project Path="tests/integrationchecks/integrationchecks.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Monitoring Configuration</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">CMDB → Zabbix</div>
+        <nav class="nav" aria-label="Main">
+          <div class="nav-group open">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="true">Управление схемами</button>
+            <div class="nav-sublist">
+              <button class="nav-item active" data-view="serviceSchema">Сервисная схема</button>
+              <button class="nav-item" data-view="suppressionSchema">Схема подавления</button>
+            </div>
+          </div>
+          <div class="nav-group open">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="true">Автонаполнение</button>
+            <div class="nav-sublist">
+              <button class="nav-item" data-view="serviceRulesViewOnly">Сервис просмотр</button>
+              <button class="nav-item" data-view="serviceRulesEdit">Сервис модификация</button>
+              <button class="nav-item" data-view="suppressionRulesViewOnly">Подавление просмотр</button>
+              <button class="nav-item" data-view="suppressionRulesEdit">Подавление модификация</button>
+              <button class="nav-item" data-view="apply">Manual apply</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Шаблоны автонаполнения</button>
+            <div class="nav-sublist">
+              <button class="nav-item" data-view="serviceTemplates">Шаблоны сервиса</button>
+              <button class="nav-item" data-view="suppressionTemplates">Шаблоны подавления</button>
+              <button class="nav-item" data-view="templateApply">Применение шаблонов</button>
+              <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
+            </div>
+          </div>
+          <button class="nav-item nav-top-item" data-view="help">Помощь</button>
+          <div class="nav-group open">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="true">Синхронизация с источниками данных</button>
+            <div class="nav-sublist">
+              <button class="nav-item" data-view="dataSourceSync">CMDBuild</button>
+              <button class="nav-item" data-view="zabbixSync">Zabbix</button>
+              <button class="nav-item" data-view="conversionConfigSync">Конфигурации конвертации</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Администрирование</button>
+            <div class="nav-sublist">
+              <button class="nav-item" data-view="generalSettings">Основные</button>
+              <button class="nav-item" data-view="about">О программе</button>
+            </div>
+          </div>
+        </nav>
+      </aside>
+      <main class="workspace">
+        <header class="toolbar">
+          <div>
+            <h1>CMDBuild preparation</h1>
+            <p id="roleLine">admin · serviceadmin · suppressionadmin</p>
+          </div>
+          <div class="toolbar-controls">
+            <div class="source-status-strip" aria-label="Статус загруженных источников">
+              <span id="cmdbuildLoadedLamp" class="source-lamp" title="CMDBuild не загружен">
+                <span class="lamp-dot" aria-hidden="true"></span>
+                <span class="lamp-label">CMDBuild не загружен</span>
+              </span>
+              <span id="zabbixLoadedLamp" class="source-lamp" title="Zabbix не загружен">
+                <span class="lamp-dot" aria-hidden="true"></span>
+                <span class="lamp-label">Zabbix не загружен</span>
+              </span>
+              <span id="conversionLoadedLamp" class="source-lamp" title="Конвертация не загружена">
+                <span class="lamp-dot" aria-hidden="true"></span>
+                <span class="lamp-label">Конвертация не загружена</span>
+              </span>
+            </div>
+            <label class="select-field">
+              <span>Language</span>
+              <select id="languageSelect">
+                <option value="ru">RU</option>
+                <option value="en">EN</option>
+              </select>
+            </label>
+          </div>
+        </header>
+
+        <section id="schemaView" class="view">
+          <div class="section-heading">
+            <h2 id="schemaTitle">Service schema</h2>
+            <p id="schemaLead">Classes and domains for the Zabbix service tree.</p>
+          </div>
+          <div class="control-row">
+            <label class="text-field">
+              <span>Prefix</span>
+              <input id="prefixInput" value="C2M_" autocomplete="off">
+            </label>
+            <label class="text-field model-root-field">
+              <span>Service model root</span>
+              <input id="serviceModelRootInput" autocomplete="off">
+            </label>
+            <label class="text-field model-root-field">
+              <span>Suppression model root</span>
+              <input id="suppressionModelRootInput" autocomplete="off">
+            </label>
+            <button id="buildPreviewButton" class="primary-button">Build preview</button>
+            <button id="sendSelectedButton" class="secondary-button" type="button">Send selected to CMDBuild</button>
+          </div>
+          <section class="entity-builder" aria-label="Add entity">
+            <label class="text-field">
+              <span>Entity code</span>
+              <input id="entityCodeInput" placeholder="ApplicationCluster" autocomplete="off">
+            </label>
+            <label class="text-field">
+              <span>Display name</span>
+              <input id="entityDisplayInput" placeholder="Application cluster" autocomplete="off">
+            </label>
+            <label class="text-field wide-field">
+              <span>Purpose</span>
+              <input id="entityPurposeInput" placeholder="Custom entity purpose" autocomplete="off">
+            </label>
+            <button id="addEntityButton" class="secondary-button">Add entity</button>
+          </section>
+          <div id="customEntityList" class="entity-list"></div>
+          <div class="split schema-split">
+            <section class="panel">
+              <h2 id="readySchemaPanelTitle">Ready classes/domains</h2>
+              <p id="schemaStatus" class="status-line"></p>
+              <datalist id="cmdbClassOptions"></datalist>
+              <div id="readyClassList" class="list"></div>
+              <h2 id="plannedSchemaPanelTitle" class="subsection-title">Planned classes/domains</h2>
+              <div id="plannedClassList" class="list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="serviceRulesViewOnlyView" class="view hidden">
+          <div class="section-heading">
+            <h2>Сервис просмотр</h2>
+          </div>
+          <div class="rules-preview-grid">
+            <section class="panel preview-panel">
+              <h2>Схема классов и атрибутов</h2>
+              <p id="serviceSourceSchemaStatus" class="status-line"></p>
+              <div id="serviceSourceSchemaList" class="preview-list"></div>
+            </section>
+            <section class="panel preview-panel">
+              <h2>Правила конвертации</h2>
+              <div id="serviceRulesPreviewList" class="preview-list"></div>
+            </section>
+            <section class="panel preview-panel">
+              <h2>Целевая схема сервиса</h2>
+              <div id="serviceTargetSchemaList" class="preview-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="serviceRulesEditView" class="view hidden">
+          <section class="panel rule-editor-panel" data-rule-editor-layer="service">
+            <h2>Сервис модификация</h2>
+            <div class="rule-editor-grid">
+              <label class="select-field">
+                <span>Действие с правилом</span>
+                <select id="serviceRuleAction" data-rule-action>
+                  <option value="add">Создать правило</option>
+                  <option value="modify">Изменить правило</option>
+                  <option value="delete">Удалить правило</option>
+                </select>
+              </label>
+              <label class="select-field" data-rule-select-field>
+                <span>Правило</span>
+                <select id="serviceRuleSelect" data-rule-select></select>
+              </label>
+              <label class="text-field">
+                <span>Название</span>
+                <input id="serviceRuleName" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Класс-источник</span>
+                <input id="serviceRuleSourceClass" data-rule-source-class list="cmdbClassOptions" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Атрибут фильтра</span>
+                <input id="serviceRuleFilterField" data-rule-filter-field list="serviceRuleSourceFieldOptions" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Regex фильтра</span>
+                <input id="serviceRuleFilterRegex" placeholder="(?i)^active$" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Priority</span>
+                <input id="serviceRulePriority" type="number" min="1" step="1" placeholder="100">
+              </label>
+              <label class="select-field">
+                <span>Целевой класс\экземпляр класса</span>
+                <select id="serviceRuleTargetClass" data-rule-target-class></select>
+              </label>
+              <div class="rule-attribute-editor rule-editor-wide">
+                <span class="field-label">Атрибуты целевого объекта</span>
+                <div id="serviceRuleAttributeList" class="rule-attribute-list"></div>
+              </div>
+            </div>
+            <div class="rule-editor-actions">
+              <button id="serviceRuleApplyButton" class="primary-button" type="button" data-rule-apply>Применить</button>
+              <span id="serviceRuleStatus" class="status-line"></span>
+            </div>
+            <datalist id="serviceRuleSourceFieldOptions"></datalist>
+            <datalist id="serviceRuleTargetFieldOptions"></datalist>
+          </section>
+        </section>
+
+        <section id="suppressionRulesViewOnlyView" class="view hidden">
+          <div class="section-heading">
+            <h2>Подавление просмотр</h2>
+          </div>
+          <div class="rules-preview-grid">
+            <section class="panel preview-panel">
+              <h2>Схема классов и атрибутов</h2>
+              <p id="suppressionSourceSchemaStatus" class="status-line"></p>
+              <div id="suppressionSourceSchemaList" class="preview-list"></div>
+            </section>
+            <section class="panel preview-panel">
+              <h2>Правила конвертации</h2>
+              <div id="suppressionRulesPreviewList" class="preview-list"></div>
+            </section>
+            <section class="panel preview-panel">
+              <h2>Целевая схема подавления</h2>
+              <div id="suppressionTargetSchemaList" class="preview-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="suppressionRulesEditView" class="view hidden">
+          <section class="panel rule-editor-panel" data-rule-editor-layer="suppression">
+            <h2>Подавление модификация</h2>
+            <div class="rule-editor-grid">
+              <label class="select-field">
+                <span>Действие с правилом</span>
+                <select id="suppressionRuleAction" data-rule-action>
+                  <option value="add">Создать правило</option>
+                  <option value="modify">Изменить правило</option>
+                  <option value="delete">Удалить правило</option>
+                </select>
+              </label>
+              <label class="select-field" data-rule-select-field>
+                <span>Правило</span>
+                <select id="suppressionRuleSelect" data-rule-select></select>
+              </label>
+              <label class="text-field">
+                <span>Название</span>
+                <input id="suppressionRuleName" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Класс-источник</span>
+                <input id="suppressionRuleSourceClass" data-rule-source-class list="cmdbClassOptions" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Атрибут фильтра</span>
+                <input id="suppressionRuleFilterField" data-rule-filter-field list="suppressionRuleSourceFieldOptions" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Regex фильтра</span>
+                <input id="suppressionRuleFilterRegex" placeholder="(?i)^true$" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Priority</span>
+                <input id="suppressionRulePriority" type="number" min="1" step="1" placeholder="100">
+              </label>
+              <label class="select-field">
+                <span>Целевой класс\экземпляр класса</span>
+                <select id="suppressionRuleTargetClass" data-rule-target-class></select>
+              </label>
+              <div class="rule-attribute-editor rule-editor-wide">
+                <span class="field-label">Атрибуты целевого объекта</span>
+                <div id="suppressionRuleAttributeList" class="rule-attribute-list"></div>
+              </div>
+            </div>
+            <div class="rule-editor-actions">
+              <button id="suppressionRuleApplyButton" class="primary-button" type="button" data-rule-apply>Применить</button>
+              <span id="suppressionRuleStatus" class="status-line"></span>
+            </div>
+            <datalist id="suppressionRuleSourceFieldOptions"></datalist>
+            <datalist id="suppressionRuleTargetFieldOptions"></datalist>
+          </section>
+        </section>
+
+        <section id="applyView" class="view hidden">
+          <section class="panel">
+            <h2>Manual apply</h2>
+            <div class="apply-grid">
+              <div>
+                <span class="metric-label">Mode</span>
+                <strong>manual</strong>
+              </div>
+              <div>
+                <span class="metric-label">Safe apply</span>
+                <strong>enabled</strong>
+              </div>
+              <div>
+                <span class="metric-label">Auto apply</span>
+                <strong>dev only</strong>
+              </div>
+            </div>
+            <button class="primary-button">Request apply</button>
+          </section>
+        </section>
+
+        <section id="serviceTemplatesView" class="view hidden">
+          <section class="panel template-editor-panel" data-template-editor-layer="service">
+            <h2>Шаблоны автонаполнения сервиса</h2>
+            <div class="template-editor-grid">
+              <label class="select-field">
+                <span>Шаблон</span>
+                <select id="serviceTemplateSelect" data-template-select></select>
+              </label>
+              <label class="text-field">
+                <span>ID шаблона</span>
+                <input id="serviceTemplateId" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Название</span>
+                <input id="serviceTemplateName" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Source class regex</span>
+                <input id="serviceTemplateSourceRegex" placeholder="(?i).*Workplace.*" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Атрибут фильтра</span>
+                <input id="serviceTemplateFilterField" placeholder="status" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Regex фильтра</span>
+                <input id="serviceTemplateFilterRegex" placeholder="(?i)^active$" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Priority</span>
+                <input id="serviceTemplatePriority" type="number" min="1" step="1" placeholder="100">
+              </label>
+              <label class="select-field">
+                <span>Целевой класс\экземпляр класса</span>
+                <select id="serviceTemplateTargetClass" data-template-target-class></select>
+              </label>
+              <label class="text-field template-editor-wide">
+                <span>Шаблон name</span>
+                <input id="serviceTemplateTargetName" placeholder="${class.description}" autocomplete="off">
+              </label>
+              <label class="text-field template-editor-wide">
+                <span>Шаблон description при создании</span>
+                <input id="serviceTemplateTargetDescription" placeholder="Автоматически создано для ${class.description}" autocomplete="off">
+              </label>
+              <label class="text-field template-editor-wide">
+                <span>Шаблон population_source_key</span>
+                <input id="serviceTemplateSourceKey" placeholder="${source.id}" autocomplete="off">
+              </label>
+              <div class="template-variable-editor template-editor-wide">
+                <span class="field-label">Переменные шаблона</span>
+                <div id="serviceTemplateVariableList" class="template-variable-list"></div>
+              </div>
+            </div>
+            <div class="rule-editor-actions">
+              <button id="serviceTemplateSaveButton" class="primary-button" type="button" data-template-save>Применить</button>
+              <button id="serviceTemplateDeleteButton" class="secondary-button" type="button" data-template-delete>Удалить шаблон</button>
+              <span id="serviceTemplateStatus" class="status-line"></span>
+            </div>
+          </section>
+        </section>
+
+        <section id="suppressionTemplatesView" class="view hidden">
+          <section class="panel template-editor-panel" data-template-editor-layer="suppression">
+            <h2>Шаблоны автонаполнения подавления</h2>
+            <div class="template-editor-grid">
+              <label class="select-field">
+                <span>Шаблон</span>
+                <select id="suppressionTemplateSelect" data-template-select></select>
+              </label>
+              <label class="text-field">
+                <span>ID шаблона</span>
+                <input id="suppressionTemplateId" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Название</span>
+                <input id="suppressionTemplateName" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Source class regex</span>
+                <input id="suppressionTemplateSourceRegex" placeholder="(?i).*Resource.*" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Атрибут фильтра</span>
+                <input id="suppressionTemplateFilterField" placeholder="monitoring_enabled" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Regex фильтра</span>
+                <input id="suppressionTemplateFilterRegex" placeholder="(?i)^true$" autocomplete="off">
+              </label>
+              <label class="text-field">
+                <span>Priority</span>
+                <input id="suppressionTemplatePriority" type="number" min="1" step="1" placeholder="100">
+              </label>
+              <label class="select-field">
+                <span>Целевой класс\экземпляр класса</span>
+                <select id="suppressionTemplateTargetClass" data-template-target-class></select>
+              </label>
+              <label class="text-field template-editor-wide">
+                <span>Шаблон name</span>
+                <input id="suppressionTemplateTargetName" placeholder="${class.description}" autocomplete="off">
+              </label>
+              <label class="text-field template-editor-wide">
+                <span>Шаблон description при создании</span>
+                <input id="suppressionTemplateTargetDescription" placeholder="Автоматически создано для ${class.description}" autocomplete="off">
+              </label>
+              <label class="text-field template-editor-wide">
+                <span>Шаблон population_source_key</span>
+                <input id="suppressionTemplateSourceKey" placeholder="${source.id}" autocomplete="off">
+              </label>
+              <div class="template-variable-editor template-editor-wide">
+                <span class="field-label">Переменные шаблона</span>
+                <div id="suppressionTemplateVariableList" class="template-variable-list"></div>
+              </div>
+            </div>
+            <div class="rule-editor-actions">
+              <button id="suppressionTemplateSaveButton" class="primary-button" type="button" data-template-save>Применить</button>
+              <button id="suppressionTemplateDeleteButton" class="secondary-button" type="button" data-template-delete>Удалить шаблон</button>
+              <span id="suppressionTemplateStatus" class="status-line"></span>
+            </div>
+          </section>
+        </section>
+
+        <section id="templateApplyView" class="view hidden">
+          <div class="section-heading">
+            <h2>Применение шаблонов</h2>
+            <p>Материализация шаблонов в обычные правила автонаполнения.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">Service templates</span>
+                <strong id="templateApplyServiceCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Suppression templates</span>
+                <strong id="templateApplySuppressionCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Generated rules</span>
+                <strong id="templateApplyRuleCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Candidate source classes</span>
+                <strong id="templateApplyCandidateCount">0</strong>
+              </div>
+            </div>
+            <div class="sync-actions">
+              <button id="applyTemplatesButton" class="primary-button" type="button">Сгенерировать правила из шаблонов</button>
+            </div>
+            <p id="templateApplyStatus" class="status-line"></p>
+            <div id="templateApplyPlanList" class="preview-list"></div>
+          </section>
+        </section>
+
+        <section id="templateAuditView" class="view hidden">
+          <div class="section-heading">
+            <h2>Аудит шаблонов</h2>
+            <p>Сравнение шаблонов, candidate classes и уже сгенерированных правил.</p>
+          </div>
+          <section class="panel">
+            <div id="templateAuditList" class="preview-list"></div>
+          </section>
+        </section>
+
+        <section id="helpView" class="view hidden">
+          <div class="section-heading">
+            <h2>Помощь</h2>
+            <p>Ключевые правила подготовки CMDBuild и генерации структур Zabbix.</p>
+          </div>
+          <div class="help-layout">
+            <section class="panel help-panel">
+              <h2>Порядок работы</h2>
+              <ol class="help-list">
+                <li>Откройте <strong>Управление схемами</strong>, выберите язык, prefix и root модели.</li>
+                <li>Проверьте planned и ready классы/domains отдельно для service и suppression.</li>
+                <li>Для конкретных классов добавьте связи наполнения с существующими классами CMDBuild заказчика.</li>
+                <li>Отправьте выбранные классы и domains в CMDBuild кнопкой <strong>Send selected to CMDBuild</strong>.</li>
+                <li>Настройте правила конвертации и выполняйте применение через manual apply.</li>
+              </ol>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>CMDBuild root и superclasses</h2>
+              <ul class="help-list">
+                <li>Root по умолчанию: <code>/Мониторинг</code> для RU и <code>/Monitoring</code> для EN.</li>
+                <li>Если root отсутствует, builder создает пустой prototype superclass, например <code>C2M_Monitoring</code>.</li>
+                <li>Service и suppression разделяются ниже root через <code>C2M_ServiceManagedObject</code> и <code>C2M_SuppressionManagedObject</code>.</li>
+                <li>Если старый managed superclass уже создан под <code>Class</code>, builder переиспользует его, когда root уже существует.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Service schema</h2>
+              <ul class="help-list">
+                <li>Service-классы строят дерево сервисов Zabbix.</li>
+                <li>Общие поля находятся в <code>ServiceManagedObject</code>.</li>
+                <li><code>aggregation_type</code> является lookup: <code>all</code>, <code>any</code>, <code>threshold</code>, <code>n_of_m</code>.</li>
+                <li>JS-проверки CMDBuild сохраняются в поле <code>validationRules</code> самих атрибутов, а не отдельными объектами схемы.</li>
+                <li><code>threshold</code> и <code>sla_target</code> задаются процентами от 0 до 100; запятая и точка должны нормализоваться перед отправкой в Zabbix.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Suppression schema</h2>
+              <ul class="help-list">
+                <li>Suppression-классы строят зависимости для подавления каскадов Zabbix.</li>
+                <li>Все suppression-классы наследуют одинаковые общие атрибуты; исключение: <code>SuppressionProxyGroup.fallback_supported</code>.</li>
+                <li>Suppression domains имеют одинаковые атрибуты связи: <code>is_active</code>, <code>priority</code>, <code>source</code>.</li>
+                <li><code>is_dynamic</code> не используется: изменение состава агрегата является штатным пересчетом managed-связей.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Managed-связи и удаление</h2>
+              <ul class="help-list">
+                <li>Domains создаются с удалением связи при удалении связанной карточки.</li>
+                <li>Если объект выходит из агрегата, builder удаляет stale-связь при сверке desired state.</li>
+                <li>Если меняются IP, DNS, hostname, tags или status карточки, это обычный object UPDATE.</li>
+                <li>В правиле автонаполнения target class означает создание или обеспечение экземпляра; атрибуты зоны ответственности пользователя автоматика не заполняет.</li>
+                <li>Агрегатор удаляет заказчик; после DELETE builder убирает соответствующие структуры из Zabbix.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Шаблоны автонаполнения</h2>
+              <ul class="help-list">
+                <li>Шаблон не исполняется микросервисом напрямую: он материализуется в обычные правила с меткой <code>generated_from_template</code>.</li>
+                <li>Source classes выбираются регулярным выражением по коду, описанию или пути наследования класса.</li>
+                <li><code>name</code>, initial <code>description</code> и <code>population_source_key</code> могут использовать <code>${class.code}</code>, <code>${class.description}</code>, <code>${source.attr}</code> и <code>${vars.name}</code>.</li>
+                <li>Повторное применение шаблонов удаляет старые generated-правила и создает новый набор, сохраняя ручные правила.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Безопасное применение</h2>
+              <ul class="help-list">
+                <li>Planned объекты выбраны по умолчанию, ready объекты можно выбрать вручную.</li>
+                <li>Apply идемпотентен: существующие классы, lookups и domains пропускаются; атрибуты с измененным <code>validationRules</code> обновляются.</li>
+                <li>Обычные классы отправляются только после root и layer superclasses.</li>
+                <li>Если parent-класс не найден или не создан, dependent class/domain не отправляется.</li>
+              </ul>
+            </section>
+          </div>
+        </section>
+
+        <section id="aboutView" class="view hidden">
+          <div class="section-heading">
+            <h2>О программе</h2>
+          </div>
+          <section class="panel help-panel">
+            <p class="help-text">Спроектировано и овеществлено Игорем Ляпиным email:igor.lyapin@gmail.com 2026</p>
+            <p class="help-text">Под лицензией GNU GPLv3.</p>
+          </section>
+        </section>
+
+        <section id="generalSettingsView" class="view hidden">
+          <div class="section-heading">
+            <h2>Основные</h2>
+          </div>
+          <section class="panel">
+            <label class="select-field settings-field">
+              <span class="normal-case-label">Максимальная глубина рекурсии domains&amp;reference&amp;lookups</span>
+              <select id="maxTraversalDepthSelect">
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+              </select>
+            </label>
+          </section>
+        </section>
+
+        <section id="dataSourceSyncView" class="view hidden">
+          <div class="section-heading">
+            <h2>CMDBuild</h2>
+            <p>Обновление локальных каталогов классов, атрибутов и domains.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">CMDBuild classes</span>
+                <strong id="syncClassCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">CMDBuild attributes</span>
+                <strong id="syncAttributeCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">CMDBuild domains</span>
+                <strong id="syncDomainCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Service instances</span>
+                <strong id="syncServiceInstanceCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Suppression instances</span>
+                <strong id="syncSuppressionInstanceCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Последнее обновление</span>
+                <strong id="syncLastUpdatedAt">нет</strong>
+              </div>
+            </div>
+            <div class="sync-actions">
+              <button id="syncSourcesButton" class="primary-button" type="button">Провести синхронизацию</button>
+              <button id="loadCachedSourcesButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
+            </div>
+            <p id="syncSourcesStatus" class="status-line"></p>
+          </section>
+        </section>
+
+        <section id="zabbixSyncView" class="view hidden">
+          <div class="section-heading">
+            <h2>Zabbix</h2>
+            <p>Состояние подключения и каталога Zabbix для целевых структур мониторинга.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">API</span>
+                <strong id="zabbixSyncApiState">Не проверен</strong>
+              </div>
+              <div>
+                <span class="metric-label">Version</span>
+                <strong id="zabbixSyncVersion">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Endpoint</span>
+                <strong id="zabbixSyncEndpoint">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Последнее обновление</span>
+                <strong id="zabbixSyncLastUpdatedAt">нет</strong>
+              </div>
+            </div>
+            <div class="sync-actions">
+              <button id="syncZabbixButton" class="primary-button" type="button">Провести синхронизацию</button>
+              <button id="loadCachedZabbixButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
+            </div>
+            <p id="syncZabbixStatus" class="status-line"></p>
+          </section>
+        </section>
+
+        <section id="conversionConfigSyncView" class="view hidden">
+          <div class="section-heading">
+            <h2>Конфигурации конвертации</h2>
+            <p>Синхронизация локальных правил сервиса и подавления с текущими каталогами источников.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">Service rules</span>
+                <strong id="conversionServiceRuleCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Suppression rules</span>
+                <strong id="conversionSuppressionRuleCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Recursive depth</span>
+                <strong id="conversionTraversalDepth">2</strong>
+              </div>
+              <div>
+                <span class="metric-label">Последнее обновление</span>
+                <strong id="conversionConfigLastUpdatedAt">нет</strong>
+              </div>
+            </div>
+            <div class="sync-actions">
+              <button id="syncConversionConfigButton" class="primary-button" type="button">Провести синхронизацию</button>
+              <button id="loadCachedConversionConfigButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
+            </div>
+            <p id="syncConversionConfigStatus" class="status-line"></p>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

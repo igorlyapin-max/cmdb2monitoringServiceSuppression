@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/cmdb2monitoring-service-suppression/conversion-rules.schema.json",
+  "title": "CMDBuild to monitoring conversion rules",
+  "type": "object",
+  "required": ["version", "rules"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": ["rule_id", "name", "layer", "source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "layer": { "enum": ["service", "suppression"] },
+        "enabled": { "type": "boolean", "default": true },
+        "source": { "$ref": "#/$defs/source" },
+        "target": { "$ref": "#/$defs/target" },
+        "relations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/relation" },
+          "default": []
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["class_code"],
+      "additionalProperties": false,
+      "properties": {
+        "class_code": { "type": "string", "minLength": 1 },
+        "key_attribute": { "type": "string" },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/condition" },
+          "default": []
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["attribute", "operator", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "attribute": { "type": "string", "minLength": 1 },
+        "operator": {
+          "enum": ["equals", "not_equals", "contains", "starts_with", "exists"]
+        },
+        "value": { "type": "string" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["class_code", "idempotency_key", "attribute_mappings"],
+      "additionalProperties": false,
+      "properties": {
+        "class_code": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "attribute_mappings": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": ["domain_code", "target_class_code", "target_lookup"],
+      "additionalProperties": false,
+      "properties": {
+        "domain_code": { "type": "string", "minLength": 1 },
+        "target_class_code": { "type": "string", "minLength": 1 },
+        "target_lookup": { "type": "string", "minLength": 1 },
+        "attribute_mappings": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {}
+        }
+      }
+    }
+  }
+}

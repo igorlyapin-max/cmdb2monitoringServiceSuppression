@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "cmdbaggregation2cmdbuild": {
+      "commandName": "Project",
+      "applicationUrl": "http://127.0.0.1:5181",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

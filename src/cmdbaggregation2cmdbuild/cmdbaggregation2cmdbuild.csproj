@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>cmdbaggregation2cmdbuild</AssemblyName>
+    <RootNamespace>CmdbAggregation2Cmdbuild</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../shared/Cmdb2MonitoringServiceSuppression.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

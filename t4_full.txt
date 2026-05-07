@@ -1,0 +1,1613 @@
+ТЕХНИЧЕСКОЕ ЗАДАНИЕ
+CMDB → ZABBIX DEPENDENCY BUILDER
+
+Версия: 0.1
+Назначение: проектирование приложения для автоматического построения зависимостей в Zabbix на основе данных CMDBuild.
+
+================================================================================
+1. ЦЕЛЬ ДОКУМЕНТА
+================================================================================
+
+Цель документа — описать требования к приложению, которое получает изменения из CMDBuild, нормализует данные, применяет правила мониторинговых зависимостей и формирует актуальное состояние trigger dependencies в Zabbix.
+
+Основная задача:
+- уменьшение каскадных отказов в Zabbix;
+- исключение ручного маппинга triggerid/templateid в пользовательском интерфейсе;
+- централизованное управление правилами зависимостей через CMDB и Rule Engine.
+
+================================================================================
+2. ОБЛАСТЬ ПРИМЕНЕНИЯ
+================================================================================
+
+Приложение используется в контуре:
+
+CMDBuild
+→ webhook
+→ T4 / normalizer
+→ dependency builder
+→ Zabbix API
+
+Приложение не является системой мониторинга.
+Приложение не заменяет CMDB.
+Приложение не рассчитывает бизнес-SLA само по себе, но может готовить данные для Zabbix Services / SLA.
+
+================================================================================
+3. ОСНОВНЫЕ ПРИНЦИПЫ
+================================================================================
+
+1. CMDB является источником истины.
+2. Zabbix является системой исполнения.
+3. UI редактора правил не должен работать напрямую с triggerid.
+4. Зависимости строятся через логические сигналы.
+5. Граф зависимостей должен быть DAG, то есть без циклов.
+6. Уровни не задаются вручную для каждого CI, а вычисляются из графа.
+7. Агрегация ресурсов не является dependency.
+8. Все изменения в Zabbix проходят через Desired State и Apply Plan.
+9. Первый этап внедрения — dry-run и ручное применение.
+
+================================================================================
+4. ОБЩАЯ АРХИТЕКТУРА
+================================================================================
+
+Логическая схема:
+
+CMDBuild Webhook
+→ Webhook Receiver
+→ Event Normalizer
+→ CMDB Snapshot Loader
+→ T4 Transformer
+→ Normalized CI Model
+→ Rule Engine
+→ Dependency Graph Builder
+→ Cycle Validator / Resolver
+→ Desired State Builder
+→ Zabbix State Reader
+→ Diff / Apply Plan
+→ Zabbix API Writer
+→ Audit Log
+
+================================================================================
+5. ОСНОВНЫЕ СУЩНОСТИ
+================================================================================
+
+5.1. CI — Configuration Item
+
+CI — нормализованный объект инфраструктуры или сервиса.
+
+Поля:
+- ci_id
+- ci_type
+- subtype
+- monitoring_profile
+- zabbix_hostid
+- attributes
+
+Примеры ci_type:
+- NetworkDevice
+- NetworkService
+- Storage
+- Hypervisor
+- VirtualizationCluster
+- Server
+- VM
+- PlatformService
+- ApplicationService
+- BusinessService
+- UserEndpoint
+- PeripheralDevice
+- PrinterFleet
+- ZabbixProxy
+- ExternalDependency
+
+--------------------------------------------------------------------------------
+
+5.2. Relation
+
+Relation — связь между CI.
+
+Поля:
+- relation_id
+- source_ci_id
+- target_ci_id
+- relation_type
+- source_system
+- priority
+
+Типы relation_type:
+- depends_on_network
+- runs_on_compute
+- belongs_to_cluster
+- runs_on
+- depends_on
+- depends_on_service
+- monitored_via
+- member_of
+- uses_resource_group
+
+Примеры:
+- VM → belongs_to_cluster → VirtualizationCluster
+- VM → runs_on_compute → Hypervisor
+- Service → runs_on → VM
+- Service → depends_on_service → AuthService
+- Printer → member_of → PrinterFleet
+- PrintService → uses_resource_group → PrinterFleet
+
+--------------------------------------------------------------------------------
+
+5.3. Monitoring Profile
+
+Monitoring Profile — абстракция над Zabbix-шаблонами и триггерами.
+
+Поля:
+- profile_id
+- name
+- ci_type
+- templates
+- trigger_aliases
+
+Пример trigger_aliases:
+- availability → "Host is unavailable by ICMP"
+- agent_availability → "Zabbix agent is not available"
+- service_health → "Service is down"
+- proxy_availability → "Zabbix proxy unavailable"
+
+Назначение:
+- скрыть от пользователя triggerid;
+- обеспечить универсальность правил;
+- дать Rule Engine логические сигналы вместо технических имен триггеров.
+
+--------------------------------------------------------------------------------
+
+5.4. Signal
+
+Signal — логический признак состояния объекта.
+
+Примеры:
+- availability
+- service_health
+- network_availability
+- storage_health
+- proxy_availability
+- fleet_availability
+
+Пример зависимости:
+child_signal depends on parent_signal
+
+--------------------------------------------------------------------------------
+
+5.5. Dependency Rule
+
+Dependency Rule — правило преобразования связи CMDB в зависимость Zabbix.
+
+Поля:
+- rule_id
+- name
+- child_type
+- relation_type
+- parent_type
+- child_signal
+- parent_signal
+- priority
+- enabled
+- cycle_policy
+
+Пример:
+Rule:
+  name: VM depends on virtualization cluster
+  child_type: VM
+  relation_type: belongs_to_cluster
+  parent_type: VirtualizationCluster
+  child_signal: availability
+  parent_signal: availability
+  priority: 80
+  enabled: true
+
+--------------------------------------------------------------------------------
+
+5.6. Resource Group / Fleet
+
+Resource Group — агрегирующий объект для пользовательских устройств или однотипных ресурсов.
+
+Пример:
+- PrinterFleet
+- WorkstationFleet
+- POSFleet
+- ScannerFleet
+
+Пример модели:
+Printer → member_of → PrinterFleet
+PrinterFleet → aggregation rule → fleet_availability
+PrintService → uses_resource_group → PrinterFleet
+
+--------------------------------------------------------------------------------
+
+5.7. Aggregation Rule
+
+Aggregation Rule — правило расчета состояния группы ресурсов.
+
+Пример:
+PrinterFleet unavailable if unavailable_printers_percent >= 10
+
+Важно:
+Aggregation Rule не является dependency.
+Она формирует состояние агрегата, на который уже может зависеть сервис.
+
+--------------------------------------------------------------------------------
+
+5.8. Desired Dependency
+
+Desired Dependency — желаемая зависимость, которую приложение хочет видеть в Zabbix.
+
+Поля:
+- child_ci_id
+- parent_ci_id
+- child_trigger_id
+- parent_trigger_id
+- child_signal
+- parent_signal
+- source_rule
+- priority
+
+--------------------------------------------------------------------------------
+
+5.9. Apply Plan
+
+Apply Plan — список операций, которые нужно выполнить в Zabbix.
+
+Типы операций:
+- create dependency
+- update dependency list
+- remove dependency
+- no-op
+
+Важно:
+Для trigger.update в Zabbix необходимо отправлять полный список dependencies для дочернего trigger.
+
+================================================================================
+6. ФУНКЦИОНАЛЬНЫЕ ТРЕБОВАНИЯ
+================================================================================
+
+6.1. Прием webhook
+
+Система должна принимать webhook от CMDBuild.
+
+Webhook должен:
+- сохраняться в raw-виде;
+- нормализоваться;
+- приводить к постановке задачи на пересчет зависимостей.
+
+Webhook не должен напрямую менять Zabbix.
+
+--------------------------------------------------------------------------------
+
+6.2. Нормализация данных
+
+Система должна преобразовывать данные CMDBBuild в нормализованную модель CI и Relation.
+
+Нормализация должна:
+- приводить разные классы CMDB к единому ci_type;
+- извлекать zabbix_hostid;
+- определять monitoring_profile;
+- определять связи между CI.
+
+--------------------------------------------------------------------------------
+
+6.3. Rule Engine
+
+Система должна применять Dependency Rules к нормализованным Relation.
+
+Rule Engine должен:
+- найти правила по child_type + relation_type + parent_type;
+- сформировать логические DependencyEdge;
+- пропускать отключенные правила;
+- сохранять источник правила для аудита.
+
+--------------------------------------------------------------------------------
+
+6.4. Построение графа
+
+Система должна строить граф зависимостей на основе DependencyEdge.
+
+Граф должен:
+- не содержать self-dependency;
+- не содержать циклов;
+- поддерживать N:M связи;
+- поддерживать изменение состава связей при пересчете desired state.
+
+--------------------------------------------------------------------------------
+
+6.5. Обработка циклов
+
+Система должна обнаруживать циклы через DFS или топологическую сортировку.
+
+При обнаружении цикла система должна:
+- зафиксировать цикл в audit log;
+- удалить связь с минимальным priority;
+- повторить проверку;
+- не отправлять цикличный граф в Zabbix.
+
+--------------------------------------------------------------------------------
+
+6.6. Работа с изменением состава связей
+
+Изменение состава связей является штатным поведением managed-модели, например VM migration:
+
+VM → belongs_to → Cluster является основной зависимостью.
+VM → runs_on_compute → Hypervisor является текущей зависимостью размещения.
+
+При событии миграции:
+- пересчитать связь размещения из CMDB event/desired state;
+- поставить delayed job на пересчет;
+- использовать stabilization window 2–5 минут.
+
+--------------------------------------------------------------------------------
+
+6.7. Desired State
+
+Система должна формировать desired state на основе валидного DAG.
+
+Desired State должен содержать:
+- child_trigger_id;
+- parent_trigger_id;
+- source_rule;
+- причину появления зависимости.
+
+--------------------------------------------------------------------------------
+
+6.8. Diff
+
+Система должна сравнивать desired state с фактическим состоянием Zabbix.
+
+Результатом должен быть Apply Plan.
+
+--------------------------------------------------------------------------------
+
+6.9. Apply
+
+Система должна поддерживать два режима:
+- dry-run;
+- manual apply.
+
+На MVP automatic apply не является обязательным.
+
+--------------------------------------------------------------------------------
+
+6.10. Audit Log
+
+Система должна логировать:
+- входной webhook;
+- affected CI;
+- примененные правила;
+- отброшенные связи;
+- обнаруженные циклы;
+- apply plan;
+- результат вызовов Zabbix API.
+
+================================================================================
+7. НЕФУНКЦИОНАЛЬНЫЕ ТРЕБОВАНИЯ
+================================================================================
+
+1. Идемпотентность:
+   повторная обработка одного события не должна ломать состояние.
+
+2. Безопасность:
+   права доступа к Zabbix API должны быть минимально необходимыми.
+
+3. Отказоустойчивость:
+   ошибка Zabbix API не должна приводить к потере webhook.
+
+4. Наблюдаемость:
+   приложение должно иметь логи, метрики и журнал аудита.
+
+5. Масштабируемость:
+   пересчет должен выполняться по affected scope, а не по всему графу на каждый webhook.
+
+6. Восстановление:
+   должна быть возможность пересобрать desired state из полного snapshot CMDB.
+
+================================================================================
+8. PIPELINE ОБРАБОТКИ
+================================================================================
+
+8.1. Webhook pipeline
+
+receive webhook
+→ save raw event
+→ normalize event
+→ resolve affected CI
+→ enqueue rebuild job
+
+--------------------------------------------------------------------------------
+
+8.2. Rebuild job pipeline
+
+load CMDB snapshot
+→ transform to normalized model
+→ expand affected scope
+→ apply dependency rules
+→ build graph
+→ validate graph
+→ resolve cycles
+→ resolve trigger aliases
+→ build desired state
+→ read actual Zabbix dependencies
+→ build apply plan
+→ dry-run or apply
+→ write audit log
+
+================================================================================
+9. ПСЕВДОКОД
+================================================================================
+
+9.1. Webhook Receiver
+
+function onWebhook(event):
+    save_raw_event(event)
+
+    normalized_event = normalize_event(event)
+
+    affected_ci_ids = resolve_affected_ci(normalized_event)
+
+    enqueue_job({
+        type: "REBUILD_DEPENDENCIES",
+        affected_ci_ids: affected_ci_ids,
+        reason: event.type,
+        source_event_id: event.id
+    })
+
+    return "accepted"
+
+
+--------------------------------------------------------------------------------
+
+9.2. Обработка задачи
+
+function processJob(job):
+    lock("dependency-builder")
+
+    snapshot = load_cmdb_snapshot(job.affected_ci_ids)
+
+    model = transform_to_normalized_model(snapshot)
+
+    scope = expand_scope(model, job.affected_ci_ids)
+
+    edges = build_dependency_edges(model, scope)
+
+    valid_edges = remove_invalid_edges(edges, model)
+
+    dag_edges = resolve_cycles(valid_edges)
+
+    desired = build_desired_state(dag_edges, model)
+
+    validation = validate_desired_state(desired)
+
+    if validation.has_blocking_errors:
+        save_audit(job, validation)
+        unlock("dependency-builder")
+        return "failed"
+
+    actual = read_zabbix_dependencies(scope)
+
+    plan = build_apply_plan(desired, actual)
+
+    save_apply_plan(plan)
+
+    if job.mode == "dry_run":
+        save_audit(job, plan)
+        unlock("dependency-builder")
+        return "plan_ready"
+
+    apply_plan_to_zabbix(plan)
+
+    save_audit(job, plan)
+
+    unlock("dependency-builder")
+
+    return "success"
+
+
+--------------------------------------------------------------------------------
+
+9.3. Расширение области пересчета
+
+function expand_scope(model, affected_ci_ids):
+    scope = set(affected_ci_ids)
+
+    for ci_id in affected_ci_ids:
+        scope.add_all(model.parents_of(ci_id))
+        scope.add_all(model.children_of(ci_id))
+
+    for ci_id in copy(scope):
+        scope.add_all(model.parents_of(ci_id))
+        scope.add_all(model.children_of(ci_id))
+
+    return scope
+
+
+--------------------------------------------------------------------------------
+
+9.4. Rule Engine
+
+function build_dependency_edges(model, scope):
+    edges = []
+
+    for relation in model.relations:
+        child = model.get_ci(relation.source_ci_id)
+        parent = model.get_ci(relation.target_ci_id)
+
+        if child.id not in scope and parent.id not in scope:
+            continue
+
+        rules = find_rules(
+            child_type = child.ci_type,
+            relation_type = relation.relation_type,
+            parent_type = parent.ci_type
+        )
+
+        for rule in rules:
+            if not rule.enabled:
+                continue
+
+            edge = {
+                child_ci: child.id,
+                parent_ci: parent.id,
+                child_signal: rule.child_signal,
+                parent_signal: rule.parent_signal,
+                source_rule: rule.name,
+                priority: rule.priority
+            }
+
+            edges.add(edge)
+
+    return edges
+
+
+--------------------------------------------------------------------------------
+
+9.5. Валидация edge
+
+function remove_invalid_edges(edges, model):
+    valid = []
+
+    for edge in edges:
+        child = model.get_ci(edge.child_ci)
+        parent = model.get_ci(edge.parent_ci)
+
+        if child.id == parent.id:
+            log_error("self dependency", edge)
+            continue
+
+        if child.monitoring_profile is null:
+            log_error("child has no monitoring profile", edge)
+            continue
+
+        if parent.monitoring_profile is null:
+            log_error("parent has no monitoring profile", edge)
+            continue
+
+        if not profile_has_signal(child.monitoring_profile, edge.child_signal):
+            log_error("child signal not found", edge)
+            continue
+
+        if not profile_has_signal(parent.monitoring_profile, edge.parent_signal):
+            log_error("parent signal not found", edge)
+            continue
+
+        valid.add(edge)
+
+    return valid
+
+
+--------------------------------------------------------------------------------
+
+9.6. Поиск циклов
+
+function find_cycles(graph):
+    visited = set()
+    stack = set()
+    path = []
+    cycles = []
+
+    function dfs(node):
+        visited.add(node)
+        stack.add(node)
+        path.push(node)
+
+        for next in graph.children(node):
+            if next not in visited:
+                dfs(next)
+            else if next in stack:
+                cycle = extract_cycle(path, next)
+                cycles.add(cycle)
+
+        stack.remove(node)
+        path.pop()
+
+    for node in graph.nodes:
+        if node not in visited:
+            dfs(node)
+
+    return cycles
+
+
+--------------------------------------------------------------------------------
+
+9.7. Разрыв циклов
+
+function resolve_cycles(edges):
+    graph = build_graph(edges)
+    cycles = find_cycles(graph)
+
+    while cycles is not empty:
+        for cycle in cycles:
+            edge_to_remove = select_edge_to_break_cycle(cycle)
+            edges.remove(edge_to_remove)
+
+            log_warning(
+                "cycle detected, edge removed",
+                cycle = cycle,
+                removed_edge = edge_to_remove
+            )
+
+        graph = build_graph(edges)
+        cycles = find_cycles(graph)
+
+    return edges
+
+
+function select_edge_to_break_cycle(cycle):
+    return edge_with_lowest_priority(cycle)
+
+
+--------------------------------------------------------------------------------
+
+9.8. Resolve trigger alias
+
+function resolve_trigger(ci_id, signal, model, zabbix_cache):
+    ci = model.get_ci(ci_id)
+
+    profile = get_monitoring_profile(ci.monitoring_profile)
+
+    trigger_name = profile.trigger_aliases[signal]
+
+    trigger = zabbix_cache.find_trigger(
+        hostid = ci.zabbix_hostid,
+        description = trigger_name
+    )
+
+    return trigger
+
+
+--------------------------------------------------------------------------------
+
+9.9. Desired State Builder
+
+function build_desired_state(edges, model):
+    desired = []
+
+    for edge in edges:
+        child_trigger = resolve_trigger(
+            ci_id = edge.child_ci,
+            signal = edge.child_signal,
+            model = model,
+            zabbix_cache = zabbix_cache
+        )
+
+        parent_trigger = resolve_trigger(
+            ci_id = edge.parent_ci,
+            signal = edge.parent_signal,
+            model = model,
+            zabbix_cache = zabbix_cache
+        )
+
+        if child_trigger is null or parent_trigger is null:
+            log_error("trigger resolution failed", edge)
+            continue
+
+        desired.add({
+            child_ci_id: edge.child_ci,
+            parent_ci_id: edge.parent_ci,
+            child_trigger_id: child_trigger.id,
+            parent_trigger_id: parent_trigger.id,
+            child_signal: edge.child_signal,
+            parent_signal: edge.parent_signal,
+            source_rule: edge.source_rule,
+            priority: edge.priority
+        })
+
+    return desired
+
+
+--------------------------------------------------------------------------------
+
+9.10. Diff / Apply Plan
+
+function build_apply_plan(desired, actual):
+    plan = new ApplyPlan()
+
+    desired_by_child = group_by(desired, "child_trigger_id")
+    actual_by_child = group_by(actual, "child_trigger_id")
+
+    all_child_triggers = union(
+        desired_by_child.keys,
+        actual_by_child.keys
+    )
+
+    for child_trigger_id in all_child_triggers:
+        desired_parents = desired_by_child[child_trigger_id].parent_trigger_ids
+        actual_parents = actual_by_child[child_trigger_id].parent_trigger_ids
+
+        if desired_parents != actual_parents:
+            plan.add({
+                operation: "update_trigger_dependencies",
+                child_trigger_id: child_trigger_id,
+                old_dependencies: actual_parents,
+                new_dependencies: desired_parents
+            })
+
+    return plan
+
+
+--------------------------------------------------------------------------------
+
+9.11. Apply в Zabbix
+
+function apply_plan_to_zabbix(plan):
+    for operation in plan.operations:
+        if operation.operation == "update_trigger_dependencies":
+            zabbix.trigger_update({
+                triggerid: operation.child_trigger_id,
+                dependencies: map(
+                    operation.new_dependencies,
+                    parent_id => { triggerid: parent_id }
+                )
+            })
+
+            save_operation_result(operation)
+
+
+--------------------------------------------------------------------------------
+
+9.12. Dynamic VM migration
+
+function onVirtualizationEvent(event):
+    if event.type == "VM_MIGRATED":
+        update_dynamic_relation(
+            vm = event.vm_id,
+            old_parent = event.old_hypervisor_id,
+            new_parent = event.new_hypervisor_id,
+            relation_type = "runs_on_compute"
+        )
+
+        enqueue_delayed_job({
+            delay: "5 minutes",
+            type: "REBUILD_DEPENDENCIES",
+            affected_ci_ids: [
+                event.vm_id,
+                event.old_hypervisor_id,
+                event.new_hypervisor_id
+            ]
+        })
+
+
+================================================================================
+10. ПРИОРИТЕТЫ СВЯЗЕЙ
+================================================================================
+
+Рекомендуемые значения:
+
+monitored_via              100
+depends_on_network          90
+runs_on_compute             80
+belongs_to_cluster          70
+runs_on                     60
+depends_on_service          50
+depends_on                  40
+diagnostic_only             10
+
+При цикле удаляется связь с наименьшим priority.
+
+================================================================================
+11. ПРИМЕРЫ ПРАВИЛ
+================================================================================
+
+11.1. VM зависит от кластера виртуализации
+
+child_type: VM
+relation_type: belongs_to_cluster
+parent_type: VirtualizationCluster
+child_signal: availability
+parent_signal: availability
+priority: 80
+
+--------------------------------------------------------------------------------
+
+11.2. Server зависит от сети
+
+child_type: Server
+relation_type: depends_on_network
+parent_type: NetworkDevice
+child_signal: availability
+parent_signal: availability
+priority: 90
+
+--------------------------------------------------------------------------------
+
+11.3. Service зависит от VM
+
+child_type: ApplicationService
+relation_type: runs_on
+parent_type: VM
+child_signal: service_health
+parent_signal: availability
+priority: 60
+
+--------------------------------------------------------------------------------
+
+11.4. Print Service зависит от Printer Fleet
+
+child_type: BusinessService
+relation_type: uses_resource_group
+parent_type: PrinterFleet
+child_signal: service_health
+parent_signal: fleet_availability
+priority: 50
+
+================================================================================
+12. ПРИМЕР АГРЕГАЦИИ ПРИНТЕРОВ
+================================================================================
+
+Объекты:
+Printer-001
+Printer-002
+Printer-003
+...
+PrinterFleet-Branch-A
+OfficePrintingService
+
+Связи:
+Printer → member_of → PrinterFleet
+OfficePrintingService → uses_resource_group → PrinterFleet
+
+Aggregation Rule:
+PrinterFleet unavailable if unavailable_printers_percent >= 10
+
+Dependency Rule:
+OfficePrintingService.service_health depends on PrinterFleet.fleet_availability
+
+================================================================================
+13. MVP
+================================================================================
+
+В MVP необходимо реализовать:
+
+1. Прием webhook от CMDBuild.
+2. Сохранение raw event.
+3. Нормализацию CI и Relation.
+4. Хранение Monitoring Profiles.
+5. Хранение Dependency Rules.
+6. Построение dependency graph.
+7. Обнаружение и разрыв циклов.
+8. Построение Desired State.
+9. Чтение текущих dependencies из Zabbix.
+10. Формирование Apply Plan.
+11. Dry-run режим.
+12. Manual apply.
+13. Audit log.
+
+================================================================================
+14. НЕ ВХОДИТ В MVP
+================================================================================
+
+1. Полностью автоматический apply без подтверждения.
+2. Сложный UI моделирования графа.
+3. Полноценный SLA-движок.
+4. ML/AIOps-корреляция.
+5. Автоматическое исправление CMDB.
+6. Полная историзация всех миграций VM.
+7. Многоуровневые согласования изменений.
+
+================================================================================
+15. АНТИ-ПАТТЕРНЫ
+================================================================================
+
+Не делать:
+
+1. Прямой маппинг triggerid в UI.
+2. Ручное назначение уровня для каждого CI.
+3. Преобразование всех связей CMDB в dependencies.
+4. Зависимость сервиса от каждого принтера без Fleet/Aggregation.
+5. Пересчет всего графа на каждый webhook.
+6. Применение изменений в Zabbix без dry-run.
+7. Игнорирование циклов.
+8. Хранение hostname/IP как единственного ключа связи с Zabbix.
+
+================================================================================
+16. ОТКРЫТЫЕ ВОПРОСЫ
+================================================================================
+
+1. Где хранить normalized model:
+   - SQLite
+   - PostgreSQL
+   - in-memory cache + persistent audit
+
+2. Какой режим apply использовать:
+   - только manual
+   - manual для critical
+   - auto для low-risk правил
+
+3. Как обрабатывать отсутствующие trigger aliases:
+   - ошибка
+   - предупреждение
+   - создание задачи на донастройку профиля
+
+4. Как синхронизировать Monitoring Profiles с Zabbix templates.
+
+5. Как отображать impact preview в UI.
+
+
+================================================================================
+18. ДОПОЛНИТЕЛЬНЫЕ ГРУППЫ РАБОЧИХ МЕСТ И CRITICAL GROUPS
+================================================================================
+
+18.1. Назначение
+
+Для пользовательских устройств необходимо поддержать многоуровневую агрегацию.
+
+Задача:
+- не связывать бизнес-сервисы с каждым рабочим местом напрямую;
+- считать доступность групп рабочих мест;
+- учитывать критичные филиалы, отделы или площадки;
+- позволить бизнес-сервисам зависеть от группы рабочих мест или общего сервиса рабочих мест.
+
+--------------------------------------------------------------------------------
+
+18.2. Новые CI Type
+
+Добавить следующие типы CI:
+
+- UserEndpoint
+  Конкретное рабочее место: ПК, ноутбук, тонкий клиент, VDI-сессия.
+
+- WorkplaceGroup
+  Группа рабочих мест: филиал, отдел, площадка, зона обслуживания.
+
+- WorkplaceService
+  Общий сервис рабочих мест.
+
+- CriticalWorkplaceGroup
+  Логически критичная группа рабочих мест, отказ которой должен сильнее влиять на сервис.
+
+Пример:
+
+UserEndpoint:
+  PC-001
+  PC-002
+  PC-003
+
+WorkplaceGroup:
+  Рабочие места филиал Казань
+  Рабочие места филиал Самара
+  Рабочие места бухгалтерия
+
+WorkplaceService:
+  Сервис рабочих мест
+
+CriticalWorkplaceGroup:
+  Рабочие места контакт-центр
+  Рабочие места операционный зал
+  Рабочие места дежурная смена
+
+--------------------------------------------------------------------------------
+
+18.3. Модель связей
+
+Базовая схема:
+
+UserEndpoint
+  → member_of
+WorkplaceGroup
+
+WorkplaceGroup
+  → aggregates_to
+WorkplaceService
+
+CriticalWorkplaceGroup
+  → aggregates_to
+WorkplaceService
+
+BusinessService
+  → depends_on_service
+WorkplaceGroup / WorkplaceService / CriticalWorkplaceGroup
+
+Пример:
+
+PC-001
+PC-002
+PC-003
+  → member_of → WorkplaceGroup: Филиал Казань
+
+PC-101
+PC-102
+PC-103
+  → member_of → WorkplaceGroup: Филиал Самара
+
+WorkplaceGroup: Филиал Казань
+WorkplaceGroup: Филиал Самара
+  → aggregates_to → WorkplaceService: Рабочие места
+
+BusinessService: Обслуживание клиентов Казань
+  → depends_on_service → WorkplaceGroup: Филиал Казань
+
+BusinessService: Общий бизнес-процесс
+  → depends_on_service → WorkplaceService: Рабочие места
+
+--------------------------------------------------------------------------------
+
+18.4. Новые Relation Type
+
+Добавить:
+
+- member_of
+  Используется для включения endpoint в группу.
+
+- aggregates_to
+  Используется для агрегации группы в общий сервис.
+
+- depends_on_service
+  Используется для зависимости бизнес-сервиса от группы или сервиса рабочих мест.
+
+- marked_as_critical
+  Опциональная связь или признак, указывающий, что группа является критичной.
+
+Примечание:
+member_of и aggregates_to не должны автоматически превращаться в Zabbix trigger dependency.
+Они используются для расчета состояния агрегата.
+
+--------------------------------------------------------------------------------
+
+18.5. Новые Signals
+
+Добавить signals:
+
+- endpoint_availability
+  Доступность конкретного рабочего места.
+
+- group_availability
+  Доступность группы рабочих мест.
+
+- group_health
+  Общее состояние группы рабочих мест.
+
+- workplace_health
+  Состояние общего сервиса рабочих мест.
+
+- critical_group_health
+  Состояние критичной группы.
+
+--------------------------------------------------------------------------------
+
+18.6. Aggregation Rules
+
+Для WorkplaceGroup:
+
+WorkplaceGroup unavailable
+if unavailable_endpoints_percent >= X
+
+Пример:
+Рабочие места филиал Казань unavailable
+if unavailable_endpoints_percent >= 10
+
+Для WorkplaceService:
+
+WorkplaceService degraded
+if unavailable_workplace_groups_percent >= Y
+
+Пример:
+Сервис рабочих мест degraded
+if unavailable_workplace_groups_percent >= 20
+
+Для CriticalWorkplaceGroup:
+
+CriticalWorkplaceGroup unavailable
+if unavailable_endpoints_percent >= X
+
+Но влияние на WorkplaceService должно быть сильнее:
+
+WorkplaceService unavailable
+if any CriticalWorkplaceGroup unavailable
+
+или:
+
+WorkplaceService degraded
+if any CriticalWorkplaceGroup degraded
+
+--------------------------------------------------------------------------------
+
+18.7. Critical Groups
+
+Critical Group — это группа рабочих мест, отказ которой критичен для бизнес-процесса независимо от общего процента отказа по компании.
+
+Примеры:
+- контакт-центр;
+- операционный зал;
+- дежурная смена;
+- кассовая зона;
+- складская зона отгрузки;
+- рабочие места диспетчеров.
+
+Critical Group может определяться:
+
+Вариант 1:
+атрибутом:
+  is_critical = true
+
+Вариант 2:
+отдельным CI Type:
+  CriticalWorkplaceGroup
+
+Вариант 3:
+связью:
+  WorkplaceGroup → marked_as_critical → BusinessService
+
+Рекомендуемый вариант для MVP:
+использовать атрибут is_critical на WorkplaceGroup.
+
+--------------------------------------------------------------------------------
+
+18.8. Пример правил агрегации
+
+Rule 1:
+name: Workplace group unavailable by endpoint percentage
+object_type: WorkplaceGroup
+signal: group_availability
+condition:
+  unavailable_endpoints_percent >= 10
+
+Rule 2:
+name: Workplace service degraded by group percentage
+object_type: WorkplaceService
+signal: workplace_health
+condition:
+  unavailable_workplace_groups_percent >= 20
+
+Rule 3:
+name: Workplace service unavailable by critical group
+object_type: WorkplaceService
+signal: workplace_health
+condition:
+  any critical WorkplaceGroup has group_availability = unavailable
+
+--------------------------------------------------------------------------------
+
+18.9. Пример Dependency Rules
+
+Rule:
+  name: Branch business service depends on workplace group
+  child_type: BusinessService
+  relation_type: depends_on_service
+  parent_type: WorkplaceGroup
+  child_signal: service_health
+  parent_signal: group_availability
+  priority: 55
+
+Rule:
+  name: Company business service depends on workplace service
+  child_type: BusinessService
+  relation_type: depends_on_service
+  parent_type: WorkplaceService
+  child_signal: service_health
+  parent_signal: workplace_health
+  priority: 55
+
+Rule:
+  name: Business service depends on critical workplace group
+  child_type: BusinessService
+  relation_type: depends_on_service
+  parent_type: WorkplaceGroup
+  child_signal: service_health
+  parent_signal: critical_group_health
+  priority: 75
+
+--------------------------------------------------------------------------------
+
+18.10. Псевдокод агрегации WorkplaceGroup
+
+function calculate_workplace_group_status(group):
+    endpoints = get_members(group, type = "UserEndpoint")
+
+    total = count(endpoints)
+
+    if total == 0:
+        return "unknown"
+
+    unavailable = count(
+        endpoint in endpoints
+        where endpoint.signal("endpoint_availability") == "unavailable"
+    )
+
+    unavailable_percent = unavailable / total * 100
+
+    if unavailable_percent >= group.threshold_unavailable_percent:
+        return "unavailable"
+
+    if unavailable_percent >= group.threshold_degraded_percent:
+        return "degraded"
+
+    return "available"
+
+
+--------------------------------------------------------------------------------
+
+18.11. Псевдокод агрегации WorkplaceService
+
+function calculate_workplace_service_status(service):
+    groups = get_related(
+        service,
+        relation_type = "aggregates_to",
+        reverse = true
+    )
+
+    critical_groups = filter(groups, group.is_critical == true)
+
+    for group in critical_groups:
+        if group.signal("group_availability") == "unavailable":
+            return "unavailable"
+
+    unavailable_groups = count(
+        group in groups
+        where group.signal("group_availability") == "unavailable"
+    )
+
+    unavailable_percent = unavailable_groups / count(groups) * 100
+
+    if unavailable_percent >= service.threshold_unavailable_groups_percent:
+        return "unavailable"
+
+    degraded_groups = count(
+        group in groups
+        where group.signal("group_availability") == "degraded"
+    )
+
+    degraded_percent = degraded_groups / count(groups) * 100
+
+    if degraded_percent >= service.threshold_degraded_groups_percent:
+        return "degraded"
+
+    return "available"
+
+
+--------------------------------------------------------------------------------
+
+18.12. Влияние на DAG
+
+member_of и aggregates_to используются для расчета агрегатов.
+Они не должны напрямую создавать trigger dependencies.
+
+В DAG попадают только итоговые зависимости:
+
+BusinessService.service_health
+  depends on
+WorkplaceGroup.group_availability
+
+или:
+
+BusinessService.service_health
+  depends on
+WorkplaceService.workplace_health
+
+Таким образом:
+
+UserEndpoint
+  → member_of → WorkplaceGroup
+  → aggregates_to → WorkplaceService
+  → depends_on_service ← BusinessService
+
+не превращается полностью в цепочку Zabbix dependencies.
+
+В Zabbix dependencies попадает только логически значимая часть:
+
+BusinessService trigger
+  depends on
+WorkplaceGroup / WorkplaceService trigger
+
+--------------------------------------------------------------------------------
+
+18.13. Изменения в MVP
+
+В MVP добавить:
+
+1. CI Type:
+   - UserEndpoint
+   - WorkplaceGroup
+   - WorkplaceService
+
+2. Атрибут WorkplaceGroup:
+   - is_critical
+   - threshold_unavailable_percent
+   - threshold_degraded_percent
+
+3. Aggregation Rule:
+   - расчет состояния WorkplaceGroup;
+   - расчет состояния WorkplaceService;
+   - отдельная логика для critical groups.
+
+4. UI Rule Editor:
+   - показать группы рабочих мест;
+   - показать critical flag;
+   - показать impact preview:
+     сколько бизнес-сервисов зависит от группы.
+
+5. Audit Log:
+   - логировать изменение статуса группы;
+   - логировать срабатывание critical group condition.
+
+--------------------------------------------------------------------------------
+
+18.14. Анти-паттерны для рабочих мест
+
+Не делать:
+
+1. Не связывать каждый UserEndpoint напрямую с BusinessService.
+2. Не превращать member_of в trigger dependency.
+3. Не считать падение одного рабочего места отказом WorkplaceService.
+4. Не смешивать инфраструктурную доступность ПК и бизнес-критичность группы.
+5. Не задавать critical вручную в Zabbix — признак должен идти из CMDB.
+
+================================================================================
+17. ИТОГ
+================================================================================
+
+Приложение должно строить управляемую прослойку между CMDBuild и Zabbix.
+
+CMDB хранит объекты и связи.
+Rule Engine решает, какие связи становятся зависимостями.
+Graph Builder гарантирует отсутствие циклов.
+Desired State описывает целевое состояние.
+Zabbix API Writer применяет только проверенный Apply Plan.
+
+Ключевая идея:
+пользователь работает с CI Type, Relation Type, Monitoring Profile и Signal,
+а не с техническими triggerid и templateid.
+
+
+================================================================================
+19. SLA МОДЕЛЬ И СЕРВИСНЫЕ СВЯЗИ
+================================================================================
+
+19.1. Назначение
+
+SLA модель предназначена для расчета доступности сервисов на основе их зависимостей.
+
+Важно:
+Dependency Graph используется для подавления каскадов.
+SLA Model используется для расчета доступности.
+
+Эти модели независимы.
+
+--------------------------------------------------------------------------------
+
+19.2. SLA объект
+
+Service является объектом SLA.
+
+Поля:
+- service_id
+- name
+- service_type (BusinessService, ApplicationService, PlatformService, WorkplaceService)
+- sla_target (например 99.9)
+- time_window (месяц, неделя)
+
+--------------------------------------------------------------------------------
+
+19.3. Service Dependency
+
+Основной тип связи:
+
+service_depends_on
+
+Поля:
+- parent_service
+- child_object (Service | CI | Fleet)
+- aggregation_type
+- threshold
+- n
+- weight
+- is_critical
+
+--------------------------------------------------------------------------------
+
+19.4. Aggregation Types
+
+- all
+- any
+- n_of_m
+- percentage
+- weighted
+
+--------------------------------------------------------------------------------
+
+19.5. Critical Dependencies
+
+Если любой critical dependency unavailable → сервис unavailable
+
+--------------------------------------------------------------------------------
+
+19.6. Пример
+
+WorkplaceService:
+  aggregation: percentage
+  threshold: 80
+  deps: WorkplaceGroups
+
+--------------------------------------------------------------------------------
+
+19.7. Псевдокод
+
+function calculate_service_status(service):
+    deps = get_dependencies(service)
+
+    for dep in deps:
+        if dep.is_critical and dep.status == "unavailable":
+            return "unavailable"
+
+    if service.aggregation_type == "all":
+        if any(dep.status == "unavailable"):
+            return "unavailable"
+        return "available"
+
+    if service.aggregation_type == "n_of_m":
+        if count_available(deps) < service.n:
+            return "unavailable"
+        return "available"
+
+    if service.aggregation_type == "percentage":
+        if percent_available(deps) < service.threshold:
+            return "unavailable"
+        return "available"
+
+    return "unknown"
+
+--------------------------------------------------------------------------------
+
+19.8. Интеграция с Zabbix
+
+SLA модель транслируется в Zabbix Service Tree.
+
+
+
+================================================================================
+20. SLA BUILDER → ZABBIX SERVICE TREE (РЕАЛИЗАЦИЯ)
+================================================================================
+
+20.1. Маппинг
+
+Service → Zabbix Service
+ServiceDependency → children (services/triggers)
+aggregation_type → algorithm
+
+Mapping:
+
+all → algorithm=1
+any → algorithm=2
+n_of_m → algorithm=3 (value = M-N+1)
+percentage → calculated trigger
+weighted → не поддерживается (MVP не реализуется)
+
+--------------------------------------------------------------------------------
+
+20.2. Псевдокод генерации Service Tree
+
+for each service:
+    z = ensure_service(service)
+
+    children = []
+
+    for dep in service.deps:
+        if dep.type == Service:
+            children.add(ensure_service(dep).id)
+
+        if dep.type == CI:
+            children.add(resolve_trigger(dep).id)
+
+        if dep.type == Fleet:
+            children.add(resolve_fleet_trigger(dep).id)
+
+    algo = map_aggregation(service)
+
+    update_service(z, children, algo)
+
+================================================================================
+21. КЕЙС: ФИЛИАЛЫ + WORKPLACE + БИЗНЕС-СЕРВИС
+================================================================================
+
+21.1. Входная модель (CMDB)
+
+UserEndpoint:
+ PC-KZN-001..100 → WorkplaceGroup: Казань
+ PC-SMR-001..80  → WorkplaceGroup: Самара
+
+WorkplaceGroup:
+ Казань (is_critical = true)
+ Самара
+
+WorkplaceService:
+ deps: [Казань, Самара]
+ aggregation: percentage (threshold=80)
+
+BusinessService:
+ CallCenter-Kazan
+  depends_on WorkplaceGroup: Казань
+
+CompanyService:
+ CustomerSupport
+  depends_on WorkplaceService
+
+--------------------------------------------------------------------------------
+
+21.2. Агрегация
+
+WorkplaceGroup Казань:
+ unavailable if >=10% endpoints down
+
+WorkplaceService:
+ unavailable if any critical group down
+ OR <80% groups available
+
+--------------------------------------------------------------------------------
+
+21.3. Zabbix модель
+
+Service: WorkplaceGroup-Kazan
+ trigger: percent_down >=10%
+
+Service: WorkplaceGroup-Samara
+ trigger: percent_down >=10%
+
+Service: WorkplaceService
+ children:
+  - WorkplaceGroup-Kazan
+  - WorkplaceGroup-Samara
+ algorithm = 1 (any)
+
++ calculated trigger (optional for %)
+
+Service: CallCenter-Kazan
+ child:
+  - WorkplaceGroup-Kazan
+ algorithm = 1
+
+Service: CustomerSupport
+ child:
+  - WorkplaceService
+ algorithm = 1
+
+--------------------------------------------------------------------------------
+
+21.4. Поведение
+
+Сценарий 1:
+10% ПК в Казани упали
+→ WorkplaceGroup-Kazan = PROBLEM
+→ CallCenter-Kazan = PROBLEM
+→ WorkplaceService = PROBLEM
+→ CustomerSupport = PROBLEM
+
+Сценарий 2:
+Самара упала, Казань жива
+→ WorkplaceService = DEGRADED/OK (зависит от правил)
+→ CustomerSupport может остаться OK
+
+Сценарий 3:
+Казань (critical) упала
+→ WorkplaceService = PROBLEM
+→ все верхние сервисы = PROBLEM
+
+--------------------------------------------------------------------------------
+
+21.5. Вывод
+
+- филиальные группы — основной уровень влияния
+- WorkplaceService — агрегатор
+- BusinessService может зависеть либо от группы, либо от общего сервиса
+- critical группы меняют поведение SLA без усложнения графа

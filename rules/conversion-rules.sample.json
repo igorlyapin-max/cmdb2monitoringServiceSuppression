@@ -1,0 +1,50 @@
+{
+  "version": "1",
+  "rules": [
+    {
+      "rule_id": "service-workplace-group-by-branch",
+      "name": "Create service workplace group from customer branch",
+      "layer": "service",
+      "enabled": true,
+      "source": {
+        "class_code": "CustomerWorkplace",
+        "key_attribute": "branch_code",
+        "conditions": [
+          {
+            "attribute": "status",
+            "operator": "equals",
+            "value": "active"
+          }
+        ]
+      },
+      "target": {
+        "class_code": "C2M_ServiceWorkplaceGroup",
+        "idempotency_key": "${source.branch_code}",
+        "attribute_mappings": {
+          "name": "${source.branch_name}",
+          "is_critical": "${source.is_critical_branch}"
+        }
+      },
+      "relations": []
+    },
+    {
+      "rule_id": "suppression-network-zone-by-subnet",
+      "name": "Create suppression network access zone from subnet",
+      "layer": "suppression",
+      "enabled": true,
+      "source": {
+        "class_code": "CustomerSubnet",
+        "key_attribute": "subnet_id",
+        "conditions": []
+      },
+      "target": {
+        "class_code": "C2M_SuppressionNetworkAccessZone",
+        "idempotency_key": "${source.subnet_id}",
+        "attribute_mappings": {
+          "name": "${source.name}"
+        }
+      },
+      "relations": []
+    }
+  ]
+}

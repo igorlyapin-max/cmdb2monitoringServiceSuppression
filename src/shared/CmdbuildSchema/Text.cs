@@ -124,11 +124,32 @@ internal static class Text
 
     public static string ClassHelp(string purpose, SchemaLanguage language)
     {
+        return ClassHelp("", purpose, language);
+    }
+
+    public static string ClassHelp(string kind, string purpose, SchemaLanguage language)
+    {
         var managedNotice = language == SchemaLanguage.En
             ? "This class is managed automatically by the monitoring configuration preparation system. To exclude an object from automated population or change population rules, contact the monitoring owner."
             : "Класс управляется автоматизировано системой подготовки конфигурации мониторинга. Если необходимо исключить объект из автонаполнения или изменить правила наполнения, свяжитесь с ответственным за мониторинг.";
 
-        return $"{purpose} {managedNotice}";
+        var detail = kind == "endpoint_fleet"
+            ? EndpointFleetHelp(language)
+            : "";
+
+        return string.IsNullOrWhiteSpace(detail)
+            ? $"{purpose} {managedNotice}"
+            : $"{purpose}\n\n{detail}\n\n{managedNotice}";
+    }
+
+    private static string EndpointFleetHelp(SchemaLanguage language)
+    {
+        if (language == SchemaLanguage.En)
+        {
+            return "Why this class exists: ServiceUserEndpointFleet groups many similar user endpoints into one service-model object so Zabbix service aggregation does not have to contain hundreds or thousands of individual workplace cards at the same level. Role in the model: it is an intermediate aggregation node between normalized resources and higher-level workplace groups or platform services. The fleet calculates its state from member endpoints by aggregation_type: all, any, threshold, or n_of_m. What should be included: laptops, desktops, thin clients, VDI sessions, kiosks, terminals, or other user endpoint cards that share one service meaning and can be evaluated as one population. Typical grouping keys are location, office, floor, building, city, department, owner group, endpoint type, criticality, operating system, or a rule-selected source class. Examples: 'All NTbook laptops' with threshold 80%; 'Moscow office notebooks' grouped by city and building; 'Call-center thin clients' with n_of_m 20; 'VIP endpoints' marked is_critical=true. What should not be included: servers, network devices, databases, storage pools, or platform components; use the dedicated service classes for those objects. Each managed card must have a stable Code and name, for example Code=NTbookGroup and name='All laptops'.";
+        }
+
+        return "Зачем нужен класс: ServiceUserEndpointFleet объединяет множество однотипных пользовательских endpoint-объектов в один объект сервисной модели, чтобы в дерево сервисов Zabbix не попадали сотни или тысячи отдельных рабочих мест на одном уровне. Роль в модели: это промежуточный узел агрегации между нормализованными ресурсами и вышестоящими группами рабочих мест или платформенными сервисами. Состояние пула рассчитывается по дочерним endpoint-объектам через aggregation_type: all, any, threshold или n_of_m. Что должно попадать внутрь: ноутбуки, ПК, тонкие клиенты, VDI-сессии, киоски, терминалы и другие пользовательские endpoint-карточки, которые имеют общий сервисный смысл и могут оцениваться как одна популяция. Типовые ключи группировки: локация, офис, этаж, здание, город, подразделение, группа владельцев, тип endpoint, критичность, ОС или выбранный правилом source-класс. Примеры: 'Все ноутбуки NTbook' с threshold 80%; 'Ноутбуки московского офиса' по городу и зданию; 'Тонкие клиенты call-центра' с n_of_m 20; 'VIP рабочие места' с is_critical=true. Что не должно попадать внутрь: серверы, сетевые устройства, базы данных, storage-пулы и платформенные компоненты; для них используются отдельные сервисные классы. У каждой управляемой карточки должны быть стабильные Code и name, например Code=NTbookGroup и name='Все ноутбуки'.";
     }
 
     public static string ModelRootSuperclassPurpose(BuilderLayer layer, string rootPath, SchemaLanguage language)

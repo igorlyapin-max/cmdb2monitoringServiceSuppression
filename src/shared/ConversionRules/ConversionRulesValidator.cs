@@ -52,9 +52,10 @@ public sealed class ConversionRulesValidator
                 errors.Add($"{rule.RuleId}: target.class_code is required.");
             }
 
-            if (string.IsNullOrWhiteSpace(rule.Target.IdempotencyKey))
+            if (string.IsNullOrWhiteSpace(rule.Target.IdempotencyKey)
+                && string.IsNullOrWhiteSpace(rule.Target.CardId))
             {
-                errors.Add($"{rule.RuleId}: target.idempotency_key is required.");
+                errors.Add($"{rule.RuleId}: target.idempotency_key or target.card_id is required.");
             }
 
             foreach (var relation in rule.Relations)

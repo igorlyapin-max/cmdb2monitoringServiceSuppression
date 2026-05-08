@@ -259,7 +259,7 @@ public sealed class CmdbuildSchemaFactory
             DisplayName = displayName,
             Layer = layer,
             Purpose = purpose,
-            Help = Text.ClassHelp(purpose, language),
+            Help = Text.ClassHelp(kind, purpose, language),
             ParentClassCode = ApplyPrefix(prefix, ManagedObjectBaseCode(layer)),
             Attributes = attributes
         };

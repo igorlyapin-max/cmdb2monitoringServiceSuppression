@@ -9,6 +9,28 @@ public sealed record ConversionRulesDocument
 
     [JsonPropertyName("rules")]
     public IReadOnlyList<ConversionRule> Rules { get; init; } = [];
+
+    [JsonPropertyName("source")]
+    public ConversionRulesSourceCatalog Source { get; init; } = new();
+}
+
+public sealed record ConversionRulesSourceCatalog
+{
+    [JsonPropertyName("entityClasses")]
+    public IReadOnlyList<string> EntityClasses { get; init; } = [];
+
+    [JsonPropertyName("fields")]
+    public IReadOnlyDictionary<string, SourceFieldDefinition> Fields { get; init; } =
+        new Dictionary<string, SourceFieldDefinition>(StringComparer.Ordinal);
+}
+
+public sealed record SourceFieldDefinition
+{
+    [JsonPropertyName("classCode")]
+    public string ClassCode { get; init; } = "";
+
+    [JsonPropertyName("cmdbAttribute")]
+    public string CmdbAttribute { get; init; } = "";
 }
 
 public sealed record ConversionRule
@@ -25,6 +47,9 @@ public sealed record ConversionRule
     [JsonPropertyName("source")]
     public required SourceSelector Source { get; init; }
 
+    [JsonPropertyName("when")]
+    public RuleWhen When { get; init; } = new();
+
     [JsonPropertyName("target")]
     public required TargetObject Target { get; init; }
 
@@ -33,6 +58,9 @@ public sealed record ConversionRule
 
     [JsonPropertyName("enabled")]
     public bool Enabled { get; init; } = true;
+
+    [JsonPropertyName("priority")]
+    public int Priority { get; init; } = 100;
 }
 
 public sealed record SourceSelector
@@ -45,6 +73,33 @@ public sealed record SourceSelector
 
     [JsonPropertyName("conditions")]
     public IReadOnlyList<SourceCondition> Conditions { get; init; } = [];
+
+    [JsonPropertyName("filters")]
+    public IReadOnlyList<SourceCondition> Filters { get; init; } = [];
+}
+
+public sealed record RuleWhen
+{
+    [JsonPropertyName("allRegex")]
+    public IReadOnlyList<RegexMatcher> AllRegex { get; init; } = [];
+
+    [JsonPropertyName("anyRegex")]
+    public IReadOnlyList<RegexMatcher> AnyRegex { get; init; } = [];
+
+    [JsonPropertyName("noneRegex")]
+    public IReadOnlyList<RegexMatcher> NoneRegex { get; init; } = [];
+
+    [JsonPropertyName("fieldExists")]
+    public string? FieldExists { get; init; }
+}
+
+public sealed record RegexMatcher
+{
+    [JsonPropertyName("field")]
+    public required string Field { get; init; }
+
+    [JsonPropertyName("pattern")]
+    public required string Pattern { get; init; }
 }
 
 public sealed record SourceCondition
@@ -65,11 +120,27 @@ public sealed record TargetObject
     public required string ClassCode { get; init; }
 
     [JsonPropertyName("idempotency_key")]
-    public required string IdempotencyKey { get; init; }
+    public string IdempotencyKey { get; init; } = "";
+
+    [JsonPropertyName("create_instance")]
+    public bool CreateInstance { get; init; } = true;
+
+    [JsonPropertyName("card_id")]
+    public string CardId { get; init; } = "";
+
+    [JsonPropertyName("card_description")]
+    public string CardDescription { get; init; } = "";
 
     [JsonPropertyName("attribute_mappings")]
     public IReadOnlyDictionary<string, string> AttributeMappings { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    [JsonPropertyName("initial_user_values")]
+    public IReadOnlyDictionary<string, string> InitialUserValues { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    [JsonPropertyName("user_responsibility_attributes")]
+    public IReadOnlyList<string> UserResponsibilityAttributes { get; init; } = [];
 }
 
 public sealed record TargetRelation

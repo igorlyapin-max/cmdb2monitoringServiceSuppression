@@ -4,23 +4,24 @@ public sealed class ZabbixOptions
 {
     public const string SectionName = "Zabbix";
 
-    public string ApiEndpoint { get; init; } = "";
+    public string ApiEndpoint { get; set; } = "";
 
-    public string AuthMode { get; init; } = "Login";
+    public string AuthMode { get; set; } = "Login";
 
-    public string ApiToken { get; init; } = "";
+    public string ApiToken { get; set; } = "";
 
-    public string User { get; init; } = "";
+    public string User { get; set; } = "";
 
-    public string Password { get; init; } = "";
+    public string Password { get; set; } = "";
 
-    public int RequestTimeoutMs { get; init; } = 30000;
+    public int RequestTimeoutMs { get; set; } = 30000;
 
     public bool HasValidAuthMode()
     {
         return string.Equals(AuthMode, "None", StringComparison.OrdinalIgnoreCase)
             || string.Equals(AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
             || string.Equals(AuthMode, "Login", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(AuthMode, "LoginOrToken", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(AuthMode, "LoginOrToken", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase);
     }
 }

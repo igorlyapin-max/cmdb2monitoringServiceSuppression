@@ -2,13 +2,14 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 
-public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptions> options)
+public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<CmdbuildOptions> options)
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -20,6 +21,11 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         bool RootFound,
         string Error);
 
+    private sealed record CmdbuildClassMetadata(
+        string Parent,
+        string Description,
+        string Help);
+
     public async Task<CmdbuildSchemaApplyResult> ApplySchemaAsync(
         CmdbuildSchemaDefinition schema,
         CmdbuildSchemaSelection selection,
@@ -28,9 +34,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(selection);
 
-        var endpoint = options.Value.BaseUrl.TrimEnd('/');
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
         var items = new List<CmdbuildSchemaApplyItemResult>();
         var selectedClassCodes = ExpandSelectedClasses(schema, selection);
@@ -375,46 +381,33 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         CancellationToken cancellationToken)
     {
         var classUri = $"{endpoint}/classes/{Uri.EscapeDataString(classDefinition.Code)}";
-        var existingParent = await ReadClassParentAsync(classUri, cancellationToken);
-        if (existingParent is not null)
+        var payload = ClassPayload(classDefinition, expectedParent);
+        var existingClass = await ReadClassMetadataAsync(classUri, cancellationToken);
+        if (existingClass is not null)
         {
-            existingParent = NormalizeClassParent(existingParent);
+            var existingParent = NormalizeClassParent(existingClass.Parent);
             if (!string.Equals(existingParent, expectedParent, StringComparison.Ordinal))
             {
-                if (await CanReuseLegacySuperclassAsync(endpoint, classDefinition, existingParent, expectedParent, cancellationToken))
-                {
-                    items.Add(Skipped(
-                        "class",
-                        classDefinition.Code,
-                        $"Class already exists with parent '{existingParent}', while expected parent '{expectedParent}' exists. CMDBuild does not change superclass parent after creation; apply will reuse the existing superclass."));
-                }
-                else
-                {
-                    items.Add(Failed(
-                        "class",
-                        classDefinition.Code,
-                        $"Class already exists with parent '{existingParent}', expected '{expectedParent}'. Reparent the existing class manually or recreate it in the correct branch before applying dependent objects."));
-                    return false;
-                }
+                items.Add(Failed(
+                    "class",
+                    classDefinition.Code,
+                    $"Class already exists with parent '{existingParent}', expected '{expectedParent}'. Reparent the existing class manually or recreate it in the correct branch before applying dependent objects."));
+                return false;
             }
             else
             {
-                items.Add(Skipped("class", classDefinition.Code, "Class already exists."));
+                if (ClassMetadataNeedsUpdate(existingClass, classDefinition))
+                {
+                    items.Add(await PutJsonItemAsync(classUri, "class", classDefinition.Code, payload, cancellationToken));
+                }
+                else
+                {
+                    items.Add(Skipped("class", classDefinition.Code, "Class already exists."));
+                }
             }
         }
         else
         {
-            var payload = new Dictionary<string, object?>
-            {
-                ["name"] = classDefinition.Code,
-                ["description"] = classDefinition.DisplayName,
-                ["parent"] = expectedParent,
-                ["prototype"] = classDefinition.IsSuperclass,
-                ["active"] = true,
-                ["type"] = "standard",
-                ["speciality"] = "default",
-                ["help"] = classDefinition.Help
-            };
             var result = await PostJsonItemAsync($"{endpoint}/classes", "class", classDefinition.Code, payload, cancellationToken);
             items.Add(result);
             if (!result.Success)
@@ -441,21 +434,28 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         return true;
     }
 
-    private async Task<bool> CanReuseLegacySuperclassAsync(
-        string endpoint,
-        CmdbuildClassDefinition classDefinition,
-        string existingParent,
-        string expectedParent,
-        CancellationToken cancellationToken)
+    private static Dictionary<string, object?> ClassPayload(CmdbuildClassDefinition classDefinition, string expectedParent)
     {
-        return classDefinition.IsSuperclass
-            && classDefinition.Origin != "model_root_superclass"
-            && string.Equals(existingParent, "Class", StringComparison.Ordinal)
-            && !string.Equals(expectedParent, "Class", StringComparison.Ordinal)
-            && await ResourceExistsAsync($"{endpoint}/classes/{Uri.EscapeDataString(expectedParent)}", cancellationToken);
+        return new Dictionary<string, object?>
+        {
+            ["name"] = classDefinition.Code,
+            ["description"] = classDefinition.DisplayName,
+            ["parent"] = expectedParent,
+            ["prototype"] = classDefinition.IsSuperclass,
+            ["active"] = true,
+            ["type"] = "standard",
+            ["speciality"] = "default",
+            ["help"] = classDefinition.Help
+        };
     }
 
-    private async Task<string?> ReadClassParentAsync(string requestUri, CancellationToken cancellationToken)
+    private static bool ClassMetadataNeedsUpdate(CmdbuildClassMetadata existingClass, CmdbuildClassDefinition classDefinition)
+    {
+        return !string.Equals(existingClass.Description.Trim(), classDefinition.DisplayName.Trim(), StringComparison.Ordinal)
+            || !string.Equals(existingClass.Help.Trim(), classDefinition.Help.Trim(), StringComparison.Ordinal);
+    }
+
+    private async Task<CmdbuildClassMetadata?> ReadClassMetadataAsync(string requestUri, CancellationToken cancellationToken)
     {
         using var request = AuthorizedRequest(HttpMethod.Get, requestUri);
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -475,7 +475,10 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
             return null;
         }
 
-        return ReadString(data, "parent") ?? "";
+        return new CmdbuildClassMetadata(
+            Parent: ReadString(data, "parent") ?? "",
+            Description: ReadString(data, "description") ?? ReadString(data, "_description") ?? "",
+            Help: ReadString(data, "help") ?? ReadString(data, "_help_translation") ?? "");
     }
 
     private async Task ApplyDomainAsync(
@@ -804,11 +807,406 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         return result.Classes;
     }
 
+    public async Task<CmdbuildCreatedCardResult> CreateClassCardAsync(
+        string classCode,
+        IReadOnlyDictionary<string, JsonElement> values,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(classCode))
+        {
+            throw new InvalidOperationException("CMDBuild class code is required.");
+        }
+
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+
+        using var request = AuthorizedRequest(
+            HttpMethod.Post,
+            $"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(values ?? new Dictionary<string, JsonElement>(), JsonOptions),
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await httpClient.SendAsync(request, timeout.Token);
+        var text = await response.Content.ReadAsStringAsync(timeout.Token);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new CmdbuildCreatedCardResult
+            {
+                ClassCode = classCode,
+                Id = "",
+                Description = "",
+                Values = values ?? new Dictionary<string, JsonElement>()
+            };
+        }
+
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("success", out var success)
+            && success.ValueKind == JsonValueKind.False)
+        {
+            throw new InvalidOperationException(Trim(text));
+        }
+
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+
+        return new CmdbuildCreatedCardResult
+        {
+            ClassCode = classCode,
+            Id = ReadRaw(data, "_id") ?? ReadRaw(data, "id") ?? "",
+            Description = ReadString(data, "_description")
+                ?? ReadString(data, "Description")
+                ?? ReadString(data, "description")
+                ?? "",
+            Values = values ?? new Dictionary<string, JsonElement>()
+        };
+    }
+
+    public async Task<CmdbuildAggregationApplyResult> ApplyAggregationCommandAsync(
+        AggregationCommand command,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        if (!command.CommandType.Equals(AggregationCommandTypes.EnsureMembership, StringComparison.OrdinalIgnoreCase))
+        {
+            return new CmdbuildAggregationApplyResult
+            {
+                Success = true,
+                CommandId = command.CommandId,
+                TargetAction = "skipped",
+                RelationAction = "skipped",
+                Message = $"Command type '{command.CommandType}' is not applied by CMDBuild applier yet."
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(command.Target.ClassCode))
+        {
+            throw new InvalidOperationException("Aggregation command target.class_code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(command.Source.ClassCode) || string.IsNullOrWhiteSpace(command.Source.CardId))
+        {
+            throw new InvalidOperationException("Aggregation command source class/card id are required.");
+        }
+
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+
+        var values = ManagedTargetValues(command);
+        var targetCardId = await ResolveTargetCardIdAsync(endpoint, command, values, timeout.Token);
+        var targetAction = "updated";
+        if (string.IsNullOrWhiteSpace(targetCardId))
+        {
+            var created = await CreateClassCardAsync(endpoint, command.Target.ClassCode, values, timeout.Token);
+            targetCardId = created.Id;
+            targetAction = "created";
+        }
+        else
+        {
+            await UpdateClassCardAsync(endpoint, command.Target.ClassCode, targetCardId, values, timeout.Token);
+        }
+
+        var relationResult = await EnsureSourceLinkRelationAsync(endpoint, command, targetCardId, timeout.Token);
+        return new CmdbuildAggregationApplyResult
+        {
+            Success = true,
+            CommandId = command.CommandId,
+            TargetCardId = targetCardId,
+            TargetAction = targetAction,
+            RelationDomain = relationResult.DomainCode,
+            RelationId = relationResult.RelationId,
+            RelationAction = relationResult.Action,
+            Message = relationResult.Message
+        };
+    }
+
+    private async Task<string> ResolveTargetCardIdAsync(
+        string endpoint,
+        AggregationCommand command,
+        IReadOnlyDictionary<string, object?> values,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(command.Target.CardId)
+            && await ClassCardExistsAsync(endpoint, command.Target.ClassCode, command.Target.CardId, cancellationToken))
+        {
+            return command.Target.CardId;
+        }
+
+        var code = StringValue(values, "Code") ?? StringValue(values, "code");
+        return string.IsNullOrWhiteSpace(code)
+            ? ""
+            : await FindClassCardIdByCodeAsync(endpoint, command.Target.ClassCode, code, cancellationToken) ?? "";
+    }
+
+    private static Dictionary<string, object?> ManagedTargetValues(AggregationCommand command)
+    {
+        var values = new Dictionary<string, object?>(command.Target.Attributes, StringComparer.Ordinal);
+        var code = StringValue(values, "Code") ?? StringValue(values, "code") ?? command.Target.IdempotencyKey;
+        var name = StringValue(values, "name") ?? code;
+        var description = StringValue(values, "Description")
+            ?? StringValue(values, "description")
+            ?? command.Target.CardDescription
+            ?? name;
+
+        values["Code"] = code;
+        values["Description"] = description;
+        values["name"] = name;
+        values["is_active"] = ValueOrDefault(values, "is_active", true);
+        values["managed_by_builder"] = ValueOrDefault(values, "managed_by_builder", true);
+        values["auto_population_enabled"] = ValueOrDefault(values, "auto_population_enabled", true);
+        values["population_rule_id"] = command.RuleId;
+        return values;
+    }
+
+    private async Task<bool> ClassCardExistsAsync(
+        string endpoint,
+        string classCode,
+        string cardId,
+        CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedGet($"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards/{Uri.EscapeDataString(cardId)}");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
+    private async Task<string?> FindClassCardIdByCodeAsync(
+        string endpoint,
+        string classCode,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        const int pageSize = 1000;
+        var offset = 0;
+        int? total = null;
+
+        while (true)
+        {
+            using var request = AuthorizedGet($"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards?limit={pageSize}&offset={offset}");
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+            }
+
+            using var document = JsonDocument.Parse(text);
+            total ??= ReadTotalInt(document.RootElement);
+            if (!TryReadDataArray(document.RootElement, out var data))
+            {
+                return null;
+            }
+
+            var pageCount = 0;
+            foreach (var card in data.EnumerateArray())
+            {
+                pageCount++;
+                if (string.Equals(ReadString(card, "Code") ?? "", code, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ReadRaw(card, "_id") ?? ReadRaw(card, "Id") ?? ReadRaw(card, "id");
+                }
+            }
+
+            offset += pageCount;
+            if (pageCount == 0 || (total is not null && offset >= total.Value))
+            {
+                return null;
+            }
+        }
+    }
+
+    private async Task<CmdbuildCreatedCardResult> CreateClassCardAsync(
+        string endpoint,
+        string classCode,
+        IReadOnlyDictionary<string, object?> values,
+        CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedRequest(
+            HttpMethod.Post,
+            $"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards");
+        request.Content = new StringContent(JsonSerializer.Serialize(values, JsonOptions), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        using var document = JsonDocument.Parse(text);
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+        return new CmdbuildCreatedCardResult
+        {
+            ClassCode = classCode,
+            Id = ReadRaw(data, "_id") ?? ReadRaw(data, "id") ?? "",
+            Description = ReadString(data, "_description") ?? ReadString(data, "Description") ?? ReadString(data, "description") ?? "",
+            Values = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        };
+    }
+
+    private async Task UpdateClassCardAsync(
+        string endpoint,
+        string classCode,
+        string cardId,
+        IReadOnlyDictionary<string, object?> values,
+        CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedRequest(
+            HttpMethod.Put,
+            $"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards/{Uri.EscapeDataString(cardId)}");
+        request.Content = new StringContent(JsonSerializer.Serialize(values, JsonOptions), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+    }
+
+    private async Task<CmdbuildRelationApplyResult> EnsureSourceLinkRelationAsync(
+        string endpoint,
+        AggregationCommand command,
+        string targetCardId,
+        CancellationToken cancellationToken)
+    {
+        var expectedDomainCode = $"{command.Target.ClassCode}PopulatedFrom{command.Source.ClassCode}";
+        var domain = await ReadDomainAsync(endpoint, expectedDomainCode, cancellationToken);
+        if (domain is null || !IsSourceLinkDomain(domain, command))
+        {
+            var domains = await ListDomainsAsync(null, cancellationToken);
+            domain = domains.FirstOrDefault(item => IsSourceLinkDomain(item, command));
+        }
+
+        if (domain is null)
+        {
+            return new CmdbuildRelationApplyResult("", "", "skipped", "source-link domain is not configured");
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["_type"] = domain.Code,
+            ["_sourceType"] = command.Target.ClassCode,
+            ["_sourceId"] = targetCardId,
+            ["_destinationType"] = command.Source.ClassCode,
+            ["_destinationId"] = command.Source.CardId,
+            ["is_active"] = true,
+            ["source"] = "cmdb2monitoring",
+            ["population_rule_id"] = command.RuleId
+        };
+
+        using var request = AuthorizedRequest(HttpMethod.Post, $"{endpoint}/domains/{Uri.EscapeDataString(domain.Code)}/relations");
+        request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            if (IsDuplicateResponse(text))
+            {
+                return new CmdbuildRelationApplyResult(domain.Code, "", "skipped", "relation already exists");
+            }
+
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        if (IsDuplicateResponse(text))
+        {
+            return new CmdbuildRelationApplyResult(domain.Code, "", "skipped", "relation already exists");
+        }
+
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("success", out var success)
+            && success.ValueKind == JsonValueKind.False)
+        {
+            var duplicate = text.Contains("duplicate value", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("\"code\":\"201\"", StringComparison.OrdinalIgnoreCase);
+            if (duplicate)
+            {
+                return new CmdbuildRelationApplyResult(domain.Code, "", "skipped", "relation already exists");
+            }
+
+            throw new InvalidOperationException(Trim(text));
+        }
+
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+        return new CmdbuildRelationApplyResult(
+            domain.Code,
+            ReadRaw(data, "_id") ?? "",
+            "created",
+            "");
+    }
+
+    private static bool IsSourceLinkDomain(CmdbuildDomainCatalogItem domain, AggregationCommand command)
+    {
+        return domain.Active
+            && domain.SourceClassCode.Equals(command.Target.ClassCode, StringComparison.Ordinal)
+            && domain.TargetClassCode.Equals(command.Source.ClassCode, StringComparison.Ordinal)
+            && domain.Code.Contains("PopulatedFrom", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<CmdbuildDomainCatalogItem?> ReadDomainAsync(
+        string endpoint,
+        string domainCode,
+        CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedGet($"{endpoint}/domains/{Uri.EscapeDataString(domainCode)}?includeModel=true");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("success", out var success)
+            && success.ValueKind == JsonValueKind.False)
+        {
+            return null;
+        }
+
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+        return ReadDomainCatalogItem(data);
+    }
+
+    private static object? ValueOrDefault(IReadOnlyDictionary<string, object?> values, string key, object? defaultValue)
+    {
+        return values.TryGetValue(key, out var value) && value is not null && !string.IsNullOrWhiteSpace(Convert.ToString(value))
+            ? value
+            : defaultValue;
+    }
+
+    private static string? StringValue(IReadOnlyDictionary<string, object?> values, string key)
+    {
+        return values.TryGetValue(key, out var value) ? Convert.ToString(value)?.Trim() : null;
+    }
+
+    private static bool IsDuplicateResponse(string text)
+    {
+        return text.Contains("duplicate value", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("\"code\":\"201\"", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<IReadOnlyList<CmdbuildClassSchemaCatalogItem>> ListClassSchemasAsync(CancellationToken cancellationToken)
     {
-        var endpoint = options.Value.BaseUrl.TrimEnd('/');
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
         var classes = await ListAllClassesAsync(endpoint, timeout.Token);
         var result = new List<CmdbuildClassSchemaCatalogItem>();
@@ -834,9 +1232,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         string? prefix,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.Value.BaseUrl.TrimEnd('/');
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
         using var request = AuthorizedGet($"{endpoint}/domains?limit=1000");
         using var response = await httpClient.SendAsync(request, timeout.Token);
@@ -880,9 +1278,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         string? suppressionRootPath,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.Value.BaseUrl.TrimEnd('/');
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
         var classes = new List<CmdbuildClassInstanceCatalogItem>();
         await AddManagedLayerInstancesAsync(endpoint, classes, "Service", prefix, serviceRootPath, timeout.Token);
@@ -988,9 +1386,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         bool includePrototypes,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.Value.BaseUrl.TrimEnd('/');
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
         var allClasses = await ListAllClassesAsync(endpoint, timeout.Token);
         var normalizedRootPath = NormalizeRootPath(rootPath);
@@ -1172,14 +1570,11 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
             .GroupBy(item => item.Code, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Parent, StringComparer.Ordinal);
         var managedBaseClassCode = ManagedBaseClassCode(managedFilter);
-        var allowLegacyManagedTree = rootResolution.RootFound
-            && parentByCode.TryGetValue(managedBaseClassCode, out var managedBaseParent)
-            && string.Equals(NormalizeClassParent(managedBaseParent), "Class", StringComparison.Ordinal);
         var classes = allClasses
             .Where(item => rootClassCodes.Contains(item.Code, StringComparer.Ordinal)
                 || (string.Equals(item.Code, managedBaseClassCode, StringComparison.Ordinal)
                     || IsDescendantOf(item.Code, managedBaseClassCode, parentByCode))
-                    && (allowLegacyManagedTree || IsDescendantOf(item.Code, lastRootClassCode, parentByCode)))
+                    && IsDescendantOf(item.Code, lastRootClassCode, parentByCode))
             .Select(item => item with
             {
                 InRequestedRoot = true,
@@ -1558,7 +1953,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
 
     public async Task<IntegrationCheckResult> CheckConnectionAsync(CancellationToken cancellationToken)
     {
-        var endpoint = options.Value.BaseUrl.TrimEnd('/');
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
         if (string.IsNullOrWhiteSpace(endpoint))
         {
             return Failed(endpoint, "CMDBuild base URL is not configured.");
@@ -1567,7 +1962,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
             using var request = AuthorizedGet($"{endpoint}/classes?limit=1");
             using var response = await httpClient.SendAsync(request, timeout.Token);
@@ -1612,10 +2007,39 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
     {
         var request = new HttpRequestMessage(method, requestUri);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        ApplyAuthorization(request);
+        return request;
+    }
+
+    private void ApplyAuthorization(HttpRequestMessage request)
+    {
+        var authMode = options.CurrentValue.AuthMode;
+        if (authMode.Equals("None", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (authMode.Equals("Token", StringComparison.OrdinalIgnoreCase)
+            || (authMode.Equals("IndeedPam", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken)))
+        {
+            if (string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))
+            {
+                throw new InvalidOperationException("CMDBuild API token is required for Token auth mode.");
+            }
+
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.CurrentValue.ApiToken);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(options.CurrentValue.Username) || string.IsNullOrWhiteSpace(options.CurrentValue.Password))
+        {
+            throw new InvalidOperationException("CMDBuild username/password are required for Login auth mode.");
+        }
+
         request.Headers.Authorization = new AuthenticationHeaderValue(
             "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.Value.Username}:{options.Value.Password}")));
-        return request;
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.CurrentValue.Username}:{options.CurrentValue.Password}")));
     }
 
     private static CmdbuildClassCatalogItem? ReadClassCatalogItem(JsonElement item)
@@ -1681,8 +2105,8 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
                 ?? ReadString(item, "_description_translation")
                 ?? code,
             Active = ReadBool(item, "active", defaultValue: true),
-            SourceClassCode = ReadString(item, "source") ?? "",
-            TargetClassCode = ReadString(item, "destination") ?? ""
+            SourceClassCode = ReadFirstString(item, "source", "sources", "sourceClass", "sourceClassName") ?? "",
+            TargetClassCode = ReadFirstString(item, "destination", "destinations", "target", "targetClass", "targetClassName") ?? ""
         };
     }
 
@@ -1828,6 +2252,18 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptions<CmdbuildOptio
                     {
                         return text;
                     }
+                }
+            }
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var nested in value.EnumerateArray())
+            {
+                var text = ReadStringValue(nested);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
                 }
             }
         }
@@ -2047,6 +2483,49 @@ public sealed record CmdbuildClassCardCatalogItem
 
     public required IReadOnlyList<CmdbuildCardAttributeValue> Attributes { get; init; }
 }
+
+public sealed record CmdbuildCreateCardRequest
+{
+    public IReadOnlyDictionary<string, JsonElement> Values { get; init; } =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+}
+
+public sealed record CmdbuildCreatedCardResult
+{
+    public required string ClassCode { get; init; }
+
+    public required string Id { get; init; }
+
+    public string Description { get; init; } = "";
+
+    public IReadOnlyDictionary<string, JsonElement> Values { get; init; } =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+}
+
+public sealed record CmdbuildAggregationApplyResult
+{
+    public bool Success { get; init; }
+
+    public string CommandId { get; init; } = "";
+
+    public string TargetCardId { get; init; } = "";
+
+    public string TargetAction { get; init; } = "";
+
+    public string RelationDomain { get; init; } = "";
+
+    public string RelationId { get; init; } = "";
+
+    public string RelationAction { get; init; } = "";
+
+    public string Message { get; init; } = "";
+}
+
+public sealed record CmdbuildRelationApplyResult(
+    string DomainCode,
+    string RelationId,
+    string Action,
+    string Message);
 
 public sealed record CmdbuildCardAttributeValue
 {

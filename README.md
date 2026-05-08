@@ -11,6 +11,51 @@ Initial services:
 - `zabbixconfig2api`: applies approved configuration changes to Zabbix.
 - `monitoring-ui-api`: Node.js UI/BFF for schema setup, conversion rules, and manual apply.
 
+Operational documentation:
+
+- [ADMINISTRATION.md](ADMINISTRATION.md): runtime administration, debug levels,
+  log routing, Kafka/ELK/syslog behavior, and secret management.
+- [DEPLOYMENT.md](DEPLOYMENT.md): deployment prerequisites, external
+  configuration, Kafka topics, service startup order, and validation checklist.
+
+## Runtime pipeline
+
+The .NET services now use a single pipeline contract:
+
+`CMDBuild webhook -> cmdb.events.raw -> rule engine -> monitoring.aggregation.commands -> target appliers`.
+
+- `cmdbwebhooks2kafka` normalizes the incoming webhook into `CmdbRawEvent` and
+  publishes it to `KafkaTopics:CmdbWebhookEvents`.
+- `cmdbconfigbuilder` reads raw events, loads the external
+  `ConversionRules:FilePath`, evaluates service/suppression rules, and
+  publishes canonical `AggregationCommand` messages to
+  `KafkaTopics:AggregationCommands`.
+- `zabbixconfig2api` reads the same canonical command topic and owns only the
+  Zabbix apply side.
+- `cmdbaggregation2cmdbuild` reads the same canonical command topic and owns
+  only CMDBuild aggregation objects and relation reconciliation.
+
+The readiness attribute for Zabbix-managed source objects is `zabbix_hostid`.
+`CREATE` and `UPDATE` events must be treated as eligible for Zabbix service or
+suppression reconciliation only after the CMDBuild card contains this value.
+`CREATE` without `zabbix_hostid` is a normal intermediate state: the neighboring
+monitoring application has not finished creating or binding the Zabbix host yet.
+`DELETE` must be idempotent and must remove only previously recorded managed
+memberships; if the object was never applied by this service, `DELETE` is a
+no-op.
+
+Kafka is configured only through external settings: `Kafka`, `KafkaTopics`, and
+optional `KafkaLogging`. The services do not create topics at startup. Service
+credentials are selected through config `AuthMode`: `Login`, `Token`, `None`,
+or `IndeedPam`. `IndeedPam` resolves `secret://...` / `aapm://...` references
+from the shared `Secrets` section before options are validated.
+
+Debug logging is controlled by `Debug:Enabled` and `Debug:Level` (`Basic` or
+`Verbose`). Debug events are written through normal `ILogger` at `Information`,
+so they appear in Docker stdout/stderr, direct ELK logging when `ElkLogging` is
+enabled, Kafka log topics when `KafkaLogging` is enabled, and Docker syslog when
+the container is started with a syslog logging driver.
+
 The first implemented block is CMDBuild schema preview with separated service and
 suppression layers, localized captions/help text, and domains configured to drop
 relations when a linked card is deleted. Each layer has its own managed-object
@@ -43,10 +88,14 @@ controls are enabled for the class (`managed_by_builder` and
 `auto_population_enabled`). Planned classes found in that managed inheritance
 tree are marked `Готовы к работе`; planned classes missing from it are marked
 `Рекомендовано к созданию`. Existing managed descendants are also shown under
-their parent class and can receive population source links.
+their parent class.
+`Готовы к работе` means the class exists under the selected model root and
+inherits from the expected managed superclass. A class with the same code under
+another parent is a CMDBuild conflict, not a ready class, because CMDBuild does
+not reparent classes during apply.
 The schema view is split into `Ready classes/domains` and
 `Planned classes/domains`. Domains are not shown as a detached list; each
-planned, suggested, or source-link domain is rendered under its source class so
+planned or suggested domain is rendered under its source class so
 the operator can review the class/domain structure together.
 Each class and domain row has an apply checkbox. Planned rows are selected by
 default, ready rows can be selected manually and are treated idempotently by
@@ -71,6 +120,17 @@ Service schema keeps aggregation settings on objects, not on links:
   aggregation attributes: `aggregation_type`, `threshold`, and `n`. The common
   object attributes include `population_source_key`, which stores the source
   key copied from the customer CMDBuild card during automated population.
+- `ServiceUserEndpointFleet` is the service-model aggregation class for
+  populations of similar user endpoints. It should contain managed cards such
+  as "all NTbook laptops", "Moscow office notebooks", "call-center thin
+  clients", or "VIP endpoints", not servers, network devices, databases,
+  storage pools, or platform components. Use it when individual workplace cards
+  are too numerous or too low-level to appear directly under a service node.
+  Typical grouping keys are location, office, floor/building/city, department,
+  owner group, endpoint type, criticality, OS, or the selected source class.
+  Each managed card must have stable `Code` and `name`; for example
+  `Code=NTbookGroup`, `name=Все ноутбуки`, `aggregation_type=threshold`,
+  `threshold=80`.
 - `aggregation_type` is a CMDBuild lookup attribute using the
   `ServiceAggregationType` lookup, not a free string. Planned values are
   `all`, `any`, `threshold`, and `n_of_m`.
@@ -141,53 +201,85 @@ Suppression schema is intentionally uniform:
   IP, DNS, hostname, tags, or status, arrive as object `UPDATE` events and are
   handled by recalculating that object and its relations.
 
-## Population source links
-
-Managed object instances are tied to customer CMDBuild objects by explicit
-source-link domains:
-
-- For every concrete managed class, the schema UI lets the operator choose an
-  existing customer CMDBuild class.
-- The preview generates a `populated_from` domain from the managed class to the
-  selected customer class, for example
-  `C2M_ServiceWorkplaceGroupPopulatedFromCustomerWorkplace`.
-- Superclasses are not linked to customer classes because cards are created in
-  concrete managed classes.
-- Source-link domains are marked separately in the UI and use the relation
-  attributes `is_active`, `source`, and `population_rule_id`.
-- The source-link domain is the structural relation used by automated
-  population to keep a generated object connected to the customer object that
-  produced it.
-
 ## Conversion rule editing
 
+- The UI does not seed demo conversion rules on startup. Without a loaded local
+  cache or manually created rules, the service and suppression rule sets start
+  empty so sample `Bind ...` rules cannot be mistaken for customer mappings.
+  Legacy local caches that still contain the old built-in demo rule ids are
+  ignored during rule document normalization.
 - In service and suppression modification screens, `Целевой класс\экземпляр
-  класса` selects the managed class whose card must be created by the
-  conversion rule. This selector works at class/instance level, not at leaf
-  attribute level.
+  класса` selects either a managed class or an already existing managed card.
+  Selecting a class means the UI must create a new CMDBuild card before saving
+  the rule; selecting an existing card means the rule reuses that card and does
+  not ask for object attributes again.
+- Customer CMDBuild classes are tied to managed service/suppression classes by
+  conversion rules, not by manual links in the schema view. Creating a rule is
+  the fact that declares which source class population uses for the selected
+  target class.
 - `Класс-источник` lists customer CMDBuild classes in inheritance-path order:
   superclass branches are grouped first, then their descendants.
+- Class selectors and schema lists use the same inheritance-path order. In
+  `Целевой класс\экземпляр класса`, each managed class is followed immediately
+  by its existing target cards as `Класс -> экземпляр`, so search/filter keeps
+  the instance attached to its class.
+- In `Просмотр автонаполнения`, clicking a source class attribute, conversion
+  rule, target class, or target instance keeps only the related chain visible
+  until the operator presses `Снять выделение`; parent target classes may remain
+  as minimal context to keep the tree path readable. Each preview column has an
+  independent search field, and search is applied inside the current chain when
+  a selection is active. The target schema column shows managed classes and
+  known instances; instances come from the CMDBuild cache and from rule
+  `target.card_id` fallback metadata. Source classes referenced by rules are
+  shown even when they are missing from the loaded source catalog, using the
+  fields referenced by the rule as a fallback schema.
 - CMDBuild cache key `cmdbuild.catalogs.v3` stores prototype/superclass nodes
   for sorting, while rule source selection still exposes only non-prototype
   customer classes.
-- `create_instance` is mandatory for rules created or normalized by the UI and
-  is always stored as `true`; choosing a target class means the builder must
-  create or idempotently find the target card by the rule key.
-- Attribute mapping and user-responsibility attributes are edited in one list:
-  `source` is always on the left and `target` on the right. A row with both
-  values is stored as an automatic mapping; a row with only `target` is stored
-  as a target attribute left for the user to fill.
-- User-responsibility attributes are restricted by layer. Service rules expose
-  only `description`, `is_critical`, `aggregation_type`, `threshold`, and `n`;
-  `threshold` is used by `aggregation_type=threshold`, and `n` is the N
+- Rules created against an existing/just-created target card store
+  `target.card_id`, `create_instance=false`, and a static CMDBuild idempotency
+  key. Legacy/template rules without `target.card_id` can still use
+  `create_instance=true`.
+- Source object selection is edited as a list of regex conditions, not as a
+  single mapped attribute. Each condition chooses an available source attribute
+  and either includes matching cards in the group or excludes matching cards
+  from it. Include conditions are stored in `when.allRegex`; exclude conditions
+  are stored in `when.noneRegex`.
+- Rule modification screens show a read-only source identifier helper below
+  `Атрибуты целевого объекта`: choose the recursive source attribute on the
+  left, then use the generated identifier from the right in regex conditions or
+  as `${source.<identifier>}` in runtime placeholders.
+- Regex conditions are boolean selectors. Capture groups such as `(prod|dev)`
+  or named groups such as `(?<site>msk)` may be used inside the pattern, but
+  their captured text is not exported to target fields automatically. Template
+  variables and target fields can use whole placeholders such as
+  `${class.code}`, `${class.description}`, `${source.<attribute>}`, and
+  `${vars.<name>}`. They can also transform already available template values
+  with functions such as `extract(...)`, `replace(...)`, `lower(...)`,
+  `upper(...)`, `trim(...)`, and `default(...)`.
+- `Атрибуты целевого объекта` is shown only when the operator chooses a class,
+  not an existing card. The table contains target attribute name, value, and
+  help. The UI creates the CMDBuild card with these values, then saves the rule
+  pointing to the created card. The created card is added to the local instance
+  list so later rules can target the same object or create another one. Only
+  attributes that really exist in the selected target class are editable and
+  sent to CMDBuild; allowed layer attributes missing from that class are shown
+  as a muted note and are not written as synthetic fields.
+- In rule modification screens, target object attribute values may use the same
+  template expression engine against the selected source class metadata:
+  `${class.code}`, `${class.description}`, `${class.hierarchyPath}`,
+  `extract(...)`, `replace(...)`, `lower(...)`, `upper(...)`, `trim(...)`, and
+  `default(...)`. They cannot use `${source.<attribute>}` because no concrete
+  source card is being processed while the target card is created.
+- Target object attributes are restricted by layer. Service creation exposes
+  `name`, `description`, `is_critical`, `aggregation_type`, `threshold`, and
+  `n`; `threshold` is used by `aggregation_type=threshold`, and `n` is the N
   parameter for `n_of_m` while M is the current active child count. Suppression
-  rules expose only `description` and `is_critical`.
-- The rule key is not edited as a separate UI field. It is derived from the
-  required target mapping `population_source_key <- ${source.<attribute>}`.
-  On create/update the builder writes this value into the managed target card;
-  the same source value is stored as `source.key_attribute`, `when.fieldExists`,
-  and `target.idempotency_key` so repeated processing finds the existing card
-  instead of creating a duplicate.
+  creation exposes `name`, `description`, and `is_critical`.
+- The source key is derived from the first source-selection condition, or falls
+  back to CMDBuild card `_id` when no condition is configured. It is used for
+  rule source field metadata and delete/update correlation, not for creating a
+  separate target object per source card.
 
 ## Population Templates
 
@@ -198,16 +290,134 @@ source-link domains:
   against class code, display name, and inheritance path. This is intended for
   repeated service/suppression structures where hundreds of source classes have
   the same pattern.
+- Templates use the same include/exclude regex condition model as manual
+  rules. The attribute chooser is built from the source classes matched by the
+  template class regex.
 - Template fields can use `${class.code}`, `${class.description}`,
   `${class.hierarchyPath}`, `${source.<attribute>}`, and `${vars.<name>}`.
   Variables are stored in the template and are rendered before target
   `name`, initial `description`, and `population_source_key` are written into
   generated rules.
+- Source placeholders for reference, lookup, and domain attributes use the
+  generated field names from the source attribute chooser. Examples:
+  `${source.ownerEmail}` for reference path `Owner -> Email`,
+  `${source.status}` for lookup `Status`,
+  `${source.domainNetworkSegmentCode}` for domain path
+  `NetworkSegment -> Code`, and `${source.domainServiceOwnerEmail}` for
+  domain path `Service -> Owner -> Email`.
+- Template variables and target fields support transform/extract expressions:
+  `extract(value, regex, group, fallback)`, `replace(value, regex, replacement,
+  flags)`, `lower(value)`, `upper(value)`, `trim(value)`, and
+  `default(value, fallback)`. These functions run when the UI applies the
+  template and therefore can read `class.*` and previously rendered `vars.*`.
+  `${source.<attribute>}` stays as a runtime placeholder in the generated rule;
+  extracting from source-card values requires runtime conversion logic.
+- Keep this one-line example visible for operators when explaining templates:
+  `${class.code}` · `${class.description}` · `${class.hierarchyPath}` ·
+  `${vars.site}` · `${source.id}` ·
+  `${source.ownerEmail}` · `${source.status}` ·
+  `${source.domainNetworkSegmentCode}` · `${source.domainServiceOwnerEmail}` ·
+  `${extract(class.code, "^C2M_(.+)$", 1)}` ·
+  `${extract(class.description, "^(?<site>[A-Z]{3}) - .*$", "site", "unknown")}` ·
+  `${replace(class.code, "^C2M_", "")}` ·
+  `${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}` ·
+  `${lower(trim(vars.site))}`.
 - Applying templates replaces previously generated rules for the layer and
   keeps manually maintained rules. Template audit compares expected generated
   rules with existing generated rules and reports missing or stale items.
+- Generated rules and target objects carry template origin metadata:
+  `generated_from_template`, `template_generation`, and
+  `target.created_by_template`. This makes it possible to detach a single rule
+  from a template while preserving the target object.
+- Deleting a template has two UI modes: detach generated rules and keep target
+  objects, or remove generated rules and add their target objects to
+  `templateDeletionPlans` for manual deletion handling together with generated
+  relations. Changing a template
+  regex block is treated as delete/create: old generated rules are removed and
+  their targets are added to the same deletion plan. Changing variables is
+  treated as an in-place template modification.
+
+## Administrator instruction: regex examples
+
+Use regular expressions only to decide which source classes and source cards
+belong to a service/suppression population group.
+
+- `(?i).*Workplace.*`: match class code, description, or hierarchy path
+  containing `Workplace`, ignoring case.
+- `^Server$`: match exactly `Server`.
+- `^(Server|Notebook|PC)$`: match one class from a fixed list.
+- `^/Monitoring/Infrastructure/.*`: match a class hierarchy branch.
+- `^prod-.*`: match attribute values that start with `prod-`.
+- `.*\.corp\.example$`: match DNS names ending with `.corp.example`.
+- `^(10\.10\.|10\.20\.).*`: match addresses from two network prefixes.
+- `^$`: match an empty value.
+- `.+`: require a non-empty value.
+- `^test-.*` as an exclude condition: remove test objects from a broader
+  include result.
+- `^(?!test-).*`: also excludes values starting with `test-`, but a separate
+  exclude row is usually easier to audit.
+- `^db-[0-9]{2}$`: match `db-01`, `db-02`, and other two-digit database names.
+- `^(msk|spb|nsk)-.*`: match values prefixed with approved site codes.
+
+Operational rules:
+
+- Include rows are cumulative AND conditions: a card must match every include
+  row.
+- Exclude rows are subtractive: if a card matches any exclude row, it is removed
+  from the result.
+- Escape literal regex metacharacters. For example, use `\.` for a dot in DNS
+  names and `\+` for a plus sign.
+- Prefer simple include/exclude rows over complex negative lookaheads when the
+  same logic can be expressed by two readable conditions.
+- Regex capture groups in selection conditions are not a field-mapping
+  mechanism. Marking a substring with `(…)` or `(?<name>…)` does not make it
+  available as `${name}` in target object attributes.
+- Use transform/extract in template variables or target templates when the
+  value is known at template-application time:
+  `${extract(class.code, "^C2M_Service(.+)$", 1)}`,
+  `${extract(class.description, "^(?<site>[A-Z]{3}) - .*$", "site", "unknown")}`,
+  `${replace(class.code, "^C2M_", "")}`,
+  `${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}`,
+  `${lower(trim(vars.site))}`, and `${default(vars.owner, "monitoring")}`.
+- One-line operator reminder for different attributes and extraction methods:
+  `${class.code}` · `${class.description}` · `${class.hierarchyPath}` ·
+  `${vars.site}` · `${source.id}` · `${source.ownerEmail}` ·
+  `${source.status}` · `${source.domainNetworkSegmentCode}` ·
+  `${source.domainServiceOwnerEmail}` ·
+  `${extract(class.code, "^C2M_(.+)$", 1)}` ·
+  `${extract(class.description, "^(?<site>[A-Z]{3}) - .*$", "site", "unknown")}` ·
+  `${replace(class.code, "^C2M_", "")}` ·
+  `${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}` ·
+  `${lower(trim(vars.site))}`.
+- Transform functions can use regex capture groups inside their own regex
+  argument, including named groups. They currently evaluate `class.*` and
+  rendered `vars.*`; `${source.<attribute>}` is preserved whole for runtime
+  source-card processing.
 
 ## Monitoring UI data-source sync
+
+The top-level `Панель` menu aggregates configured microservice healthchecks
+from `monitoring-ui-api` `healthChecks`. Reloadable appliers expose
+`ConfigurationReload:Route`; the UI shows their application/configuration
+versions and calls the route with one shared Bearer Token. Configure that token
+either as the same literal value in `zabbixconfig2api`,
+`cmdbaggregation2cmdbuild`, and `monitoring-ui-api`, or as the same PAM secret
+reference through `BearerTokenSecret` / `reloadBearerTokenSecret`. After a
+successful reload the UI refreshes the applier health data so the displayed
+running configuration version is updated. The `cmdbconfigbuilder` health card
+also shows the conversion rule version loaded by the microservice and compares
+it with the current service/suppression rule versions in the UI. The top-level
+`События` menu lists
+only managed Kafka topics returned by `cmdbconfigbuilder` and opens the last
+five events of the selected topic by default. Kafka topics are identified by
+`KafkaTopics:ManagedIdentifier`, `KafkaTopics:ManagedPrefix`, and the explicit
+topic settings; foreign customer topics are not shown.
+
+The `Администрирование -> Основные` menu shows the Zabbix readiness attribute
+name: `zabbix_hostid`. This is the CMDBuild card attribute that signals that the
+source object already has a corresponding Zabbix host and can enter the service
+or suppression model. The same menu shows the server folder used to store
+conversion rules and templates.
 
 The top-level `Синхронизация с источниками данных` menu is split by source:
 
@@ -217,17 +427,35 @@ The top-level `Синхронизация с источниками данных
   and stored with attribute values.
 - `Zabbix` checks the configured Zabbix API through `zabbixconfig2api` and
   shows connection version, endpoint, and error details.
-- `Конфигурации конвертации` re-reads local service and suppression rule
-  documents and refreshes the rule previews/editors against the current source
-  catalogs.
+- `Webhooks` checks the configured `cmdbwebhooks2kafka` health endpoint and
+  shows the CMDBuild webhook target route plus the raw event Kafka topic. The
+  view also shows how many managed webhook definitions are loaded for
+  `CREATE`, `UPDATE`, and `DELETE`. CMDBuild may contain webhooks or Kafka
+  topics owned by other integrations, so only definitions with the configured
+  `webhooks.managedIdentifier` are treated as ours. The
+  `Проверить правила онлайн` action calls the live webhooks endpoint and
+  compares managed webhooks with source classes used by current conversion
+  rules; it does not use the local cache. If the live endpoint exposes only
+  health status, the comparison uses the managed webhook inventory from UI
+  configuration after the endpoint is reached online.
+- `Конфигурации конвертации` saves and loads service/suppression rule documents
+  and rule templates through the configured server folder. The current format
+  writes separate JSON files for service rules, suppression rules, service
+  templates, suppression templates, and a manifest; this folder can later be
+  placed under Git control.
 - Each source separates `Провести синхронизацию` from `Загрузить локальный
   кэш`. Synchronization reads the real source and stores an IndexedDB browser
   cache; loading the cache restores the last stored snapshot without rereading a
   potentially large source. The UI shows the last cache update timestamp for
-  each source.
+  each source. For conversion configurations the primary action is
+  `Сохранить в папку`, with separate `Загрузить из папки` and
+  `Загрузить локальный кэш` actions; successful folder load/save also turns on
+  the top `Конвертация загружена` indicator.
 
 Development integration defaults:
 
-- CMDBuild REST API: `http://localhost:8090/cmdbuild/services/rest/v3`, `admin/admin`.
-- Zabbix JSON-RPC API: `http://localhost:8081/api_jsonrpc.php`, `Admin/zabbix`.
+- CMDBuild REST API URL, auth mode, login/password, token, or PAM references
+  are supplied through external service config or environment variables.
+- Zabbix JSON-RPC API URL, auth mode, login/password, token, or PAM references
+  are supplied through external service config or environment variables.
 - New service launch ports: `5180-5183`, kept separate from the existing test stand ports `5080-5083`.

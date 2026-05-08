@@ -11,38 +11,41 @@
       <aside class="sidebar">
         <div class="brand">CMDB → Zabbix</div>
         <nav class="nav" aria-label="Main">
-          <div class="nav-group open">
-            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="true">Управление схемами</button>
-            <div class="nav-sublist">
-              <button class="nav-item active" data-view="serviceSchema">Сервисная схема</button>
-              <button class="nav-item" data-view="suppressionSchema">Схема подавления</button>
-            </div>
-          </div>
-          <div class="nav-group open">
-            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="true">Автонаполнение</button>
-            <div class="nav-sublist">
-              <button class="nav-item" data-view="serviceRulesViewOnly">Сервис просмотр</button>
-              <button class="nav-item" data-view="serviceRulesEdit">Сервис модификация</button>
-              <button class="nav-item" data-view="suppressionRulesViewOnly">Подавление просмотр</button>
-              <button class="nav-item" data-view="suppressionRulesEdit">Подавление модификация</button>
-              <button class="nav-item" data-view="apply">Manual apply</button>
-            </div>
-          </div>
+          <button class="nav-item nav-top-item active" data-view="dashboard">Панель</button>
+          <button class="nav-item nav-top-item" data-view="events">События</button>
           <div class="nav-group">
-            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Шаблоны автонаполнения</button>
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Сервисный слой</button>
             <div class="nav-sublist">
-              <button class="nav-item" data-view="serviceTemplates">Шаблоны сервиса</button>
-              <button class="nav-item" data-view="suppressionTemplates">Шаблоны подавления</button>
-              <button class="nav-item" data-view="templateApply">Применение шаблонов</button>
+              <button class="nav-item" data-view="serviceSchema">Схема</button>
+              <button class="nav-item" data-view="serviceRulesViewOnly">Просмотр автонаполнения</button>
+              <button class="nav-item" data-view="serviceRulesEdit">Модификация автонаполнения</button>
+              <button class="nav-item" data-view="serviceTemplates">Шаблоны</button>
               <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
             </div>
           </div>
-          <button class="nav-item nav-top-item" data-view="help">Помощь</button>
-          <div class="nav-group open">
-            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="true">Синхронизация с источниками данных</button>
+          <div class="nav-group">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Каскадное подавление</button>
+            <div class="nav-sublist">
+              <button class="nav-item" data-view="suppressionSchema">Схема</button>
+              <button class="nav-item" data-view="suppressionRulesViewOnly">Просмотр автонаполнения</button>
+              <button class="nav-item" data-view="suppressionRulesEdit">Модификация автонаполнения</button>
+              <button class="nav-item" data-view="suppressionTemplates">Шаблоны</button>
+              <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Управление правилами</button>
+            <div class="nav-sublist">
+              <button class="nav-item" data-view="templateApply">Создать правила по шаблонам</button>
+              <button class="nav-item" data-view="apply">Верификация и применение</button>
+            </div>
+          </div>
+          <div class="nav-group">
+            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Синхронизация с источниками данных</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="dataSourceSync">CMDBuild</button>
               <button class="nav-item" data-view="zabbixSync">Zabbix</button>
+              <button class="nav-item" data-view="webhooksSync">Webhooks</button>
               <button class="nav-item" data-view="conversionConfigSync">Конфигурации конвертации</button>
             </div>
           </div>
@@ -50,9 +53,10 @@
             <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Администрирование</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="generalSettings">Основные</button>
-              <button class="nav-item" data-view="about">О программе</button>
             </div>
           </div>
+          <button class="nav-item nav-top-item" data-view="help">Помощь</button>
+          <button class="nav-item nav-top-item" data-view="about">О программе</button>
         </nav>
       </aside>
       <main class="workspace">
@@ -71,6 +75,10 @@
                 <span class="lamp-dot" aria-hidden="true"></span>
                 <span class="lamp-label">Zabbix не загружен</span>
               </span>
+              <span id="webhooksLoadedLamp" class="source-lamp" title="Webhooks не загружены">
+                <span class="lamp-dot" aria-hidden="true"></span>
+                <span class="lamp-label">Webhooks не загружены</span>
+              </span>
               <span id="conversionLoadedLamp" class="source-lamp" title="Конвертация не загружена">
                 <span class="lamp-dot" aria-hidden="true"></span>
                 <span class="lamp-label">Конвертация не загружена</span>
@@ -86,7 +94,89 @@
           </div>
         </header>
 
-        <section id="schemaView" class="view">
+        <section id="dashboardView" class="view">
+          <div class="section-heading">
+            <h2>Панель</h2>
+            <p>Оперативный healthcheck микросервисов контура.</p>
+          </div>
+          <section class="panel dashboard-panel">
+            <div class="sync-actions">
+              <button id="refreshDashboardHealthButton" class="primary-button" type="button">Обновить healthcheck</button>
+            </div>
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">Сервисы</span>
+                <strong id="dashboardServiceCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Доступны</span>
+                <strong id="dashboardHealthyCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Ошибки</span>
+                <strong id="dashboardFailedCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Последняя проверка</span>
+                <strong id="dashboardHealthCheckedAt">нет</strong>
+              </div>
+            </div>
+            <p id="dashboardHealthStatus" class="status-line"></p>
+            <div id="dashboardHealthList" class="dashboard-health-list"></div>
+          </section>
+        </section>
+
+        <section id="eventsView" class="view hidden">
+          <div class="section-heading">
+            <h2>События</h2>
+            <p>Просмотр только явно управляемых Kafka topics. По умолчанию показываются пять последних событий выбранного топика.</p>
+          </div>
+          <section class="panel events-panel">
+            <div class="event-controls">
+              <label class="select-field event-topic-field">
+                <span>Topic</span>
+                <select id="kafkaTopicSelect"></select>
+              </label>
+              <label class="text-field event-limit-field">
+                <span>Последние события</span>
+                <input id="kafkaEventLimitInput" type="number" min="1" max="100" step="1" value="5">
+              </label>
+              <button id="refreshKafkaTopicsButton" class="secondary-button" type="button">Обновить топики</button>
+              <button id="refreshKafkaEventsButton" class="primary-button" type="button">Обновить события</button>
+            </div>
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">Managed identifier</span>
+                <strong id="kafkaManagedIdentifier">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Managed prefix</span>
+                <strong id="kafkaManagedPrefix">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Topics</span>
+                <strong id="kafkaTopicCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Последнее обновление</span>
+                <strong id="kafkaTopicsCheckedAt">нет</strong>
+              </div>
+            </div>
+            <p id="kafkaEventsStatus" class="status-line"></p>
+            <div class="events-layout">
+              <section class="events-column">
+                <h2>Topics</h2>
+                <div id="kafkaTopicList" class="topic-list"></div>
+              </section>
+              <section class="events-column">
+                <h2>События</h2>
+                <div id="kafkaEventList" class="event-list"></div>
+              </section>
+            </div>
+          </section>
+        </section>
+
+        <section id="schemaView" class="view hidden">
           <div class="section-heading">
             <h2 id="schemaTitle">Service schema</h2>
             <p id="schemaLead">Classes and domains for the Zabbix service tree.</p>
@@ -135,22 +225,35 @@
           </div>
         </section>
 
-        <section id="serviceRulesViewOnlyView" class="view hidden">
+        <section id="serviceRulesViewOnlyView" class="view hidden" data-rules-preview-layer="service">
           <div class="section-heading">
             <h2>Сервис просмотр</h2>
+            <button class="secondary-button compact-button" type="button" data-clear-rules-preview-selection>Снять выделение</button>
           </div>
           <div class="rules-preview-grid">
             <section class="panel preview-panel">
               <h2>Схема классов и атрибутов</h2>
+              <label class="text-field preview-search-field">
+                <span>Поиск в колонке</span>
+                <input data-rules-preview-search="source" placeholder="class, attribute, path" autocomplete="off">
+              </label>
               <p id="serviceSourceSchemaStatus" class="status-line"></p>
               <div id="serviceSourceSchemaList" class="preview-list"></div>
             </section>
             <section class="panel preview-panel">
               <h2>Правила конвертации</h2>
+              <label class="text-field preview-search-field">
+                <span>Поиск в колонке</span>
+                <input data-rules-preview-search="rules" placeholder="rule, source, target, filter" autocomplete="off">
+              </label>
               <div id="serviceRulesPreviewList" class="preview-list"></div>
             </section>
             <section class="panel preview-panel">
               <h2>Целевая схема сервиса</h2>
+              <label class="text-field preview-search-field">
+                <span>Поиск в колонке</span>
+                <input data-rules-preview-search="target" placeholder="class, instance, card id" autocomplete="off">
+              </label>
               <div id="serviceTargetSchemaList" class="preview-list"></div>
             </section>
           </div>
@@ -181,14 +284,6 @@
                 <input id="serviceRuleSourceClass" data-rule-source-class list="cmdbClassOptions" autocomplete="off">
               </label>
               <label class="text-field">
-                <span>Атрибут фильтра</span>
-                <input id="serviceRuleFilterField" data-rule-filter-field list="serviceRuleSourceFieldOptions" autocomplete="off">
-              </label>
-              <label class="text-field">
-                <span>Regex фильтра</span>
-                <input id="serviceRuleFilterRegex" placeholder="(?i)^active$" autocomplete="off">
-              </label>
-              <label class="text-field">
                 <span>Priority</span>
                 <input id="serviceRulePriority" type="number" min="1" step="1" placeholder="100">
               </label>
@@ -196,8 +291,14 @@
                 <span>Целевой класс\экземпляр класса</span>
                 <select id="serviceRuleTargetClass" data-rule-target-class></select>
               </label>
+              <div class="selection-filter-editor rule-editor-wide">
+                <span class="field-label">Условия выборки объектов</span>
+                <p class="selection-filter-help">Все строки Включить применяются совместно: объект должен пройти каждую из них. Все строки Исключить вычитаются из результата: если объект совпал хотя бы с одной такой строкой, он не попадает в группу.</p>
+                <div id="serviceRuleSelectionFilterList" class="selection-filter-list"></div>
+              </div>
               <div class="rule-attribute-editor rule-editor-wide">
                 <span class="field-label">Атрибуты целевого объекта</span>
+                <p class="template-expression-examples">Примеры: <code>${class.code}</code> · <code>${class.description}</code> · <code>${class.hierarchyPath}</code> · <code>${extract(class.code, "^C2M_(.+)$", 1)}</code> · <code>${extract(class.description, "^(?&lt;site&gt;[A-Z]{3}) - .*$", "site", "unknown")}</code> · <code>${replace(class.code, "^C2M_", "")}</code> · <code>${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}</code> · <code>${lower(trim(class.description))}</code></p>
                 <div id="serviceRuleAttributeList" class="rule-attribute-list"></div>
               </div>
             </div>
@@ -210,22 +311,35 @@
           </section>
         </section>
 
-        <section id="suppressionRulesViewOnlyView" class="view hidden">
+        <section id="suppressionRulesViewOnlyView" class="view hidden" data-rules-preview-layer="suppression">
           <div class="section-heading">
             <h2>Подавление просмотр</h2>
+            <button class="secondary-button compact-button" type="button" data-clear-rules-preview-selection>Снять выделение</button>
           </div>
           <div class="rules-preview-grid">
             <section class="panel preview-panel">
               <h2>Схема классов и атрибутов</h2>
+              <label class="text-field preview-search-field">
+                <span>Поиск в колонке</span>
+                <input data-rules-preview-search="source" placeholder="class, attribute, path" autocomplete="off">
+              </label>
               <p id="suppressionSourceSchemaStatus" class="status-line"></p>
               <div id="suppressionSourceSchemaList" class="preview-list"></div>
             </section>
             <section class="panel preview-panel">
               <h2>Правила конвертации</h2>
+              <label class="text-field preview-search-field">
+                <span>Поиск в колонке</span>
+                <input data-rules-preview-search="rules" placeholder="rule, source, target, filter" autocomplete="off">
+              </label>
               <div id="suppressionRulesPreviewList" class="preview-list"></div>
             </section>
             <section class="panel preview-panel">
               <h2>Целевая схема подавления</h2>
+              <label class="text-field preview-search-field">
+                <span>Поиск в колонке</span>
+                <input data-rules-preview-search="target" placeholder="class, instance, card id" autocomplete="off">
+              </label>
               <div id="suppressionTargetSchemaList" class="preview-list"></div>
             </section>
           </div>
@@ -256,14 +370,6 @@
                 <input id="suppressionRuleSourceClass" data-rule-source-class list="cmdbClassOptions" autocomplete="off">
               </label>
               <label class="text-field">
-                <span>Атрибут фильтра</span>
-                <input id="suppressionRuleFilterField" data-rule-filter-field list="suppressionRuleSourceFieldOptions" autocomplete="off">
-              </label>
-              <label class="text-field">
-                <span>Regex фильтра</span>
-                <input id="suppressionRuleFilterRegex" placeholder="(?i)^true$" autocomplete="off">
-              </label>
-              <label class="text-field">
                 <span>Priority</span>
                 <input id="suppressionRulePriority" type="number" min="1" step="1" placeholder="100">
               </label>
@@ -271,8 +377,14 @@
                 <span>Целевой класс\экземпляр класса</span>
                 <select id="suppressionRuleTargetClass" data-rule-target-class></select>
               </label>
+              <div class="selection-filter-editor rule-editor-wide">
+                <span class="field-label">Условия выборки объектов</span>
+                <p class="selection-filter-help">Все строки Включить применяются совместно: объект должен пройти каждую из них. Все строки Исключить вычитаются из результата: если объект совпал хотя бы с одной такой строкой, он не попадает в группу.</p>
+                <div id="suppressionRuleSelectionFilterList" class="selection-filter-list"></div>
+              </div>
               <div class="rule-attribute-editor rule-editor-wide">
                 <span class="field-label">Атрибуты целевого объекта</span>
+                <p class="template-expression-examples">Примеры: <code>${class.code}</code> · <code>${class.description}</code> · <code>${class.hierarchyPath}</code> · <code>${extract(class.code, "^C2M_(.+)$", 1)}</code> · <code>${extract(class.description, "^(?&lt;site&gt;[A-Z]{3}) - .*$", "site", "unknown")}</code> · <code>${replace(class.code, "^C2M_", "")}</code> · <code>${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}</code> · <code>${lower(trim(class.description))}</code></p>
                 <div id="suppressionRuleAttributeList" class="rule-attribute-list"></div>
               </div>
             </div>
@@ -287,22 +399,22 @@
 
         <section id="applyView" class="view hidden">
           <section class="panel">
-            <h2>Manual apply</h2>
+            <h2>Верификация и применение</h2>
             <div class="apply-grid">
               <div>
-                <span class="metric-label">Mode</span>
-                <strong>manual</strong>
+                <span class="metric-label">Режим</span>
+                <strong>ручной</strong>
               </div>
               <div>
-                <span class="metric-label">Safe apply</span>
-                <strong>enabled</strong>
+                <span class="metric-label">Безопасное применение</span>
+                <strong>включено</strong>
               </div>
               <div>
-                <span class="metric-label">Auto apply</span>
-                <strong>dev only</strong>
+                <span class="metric-label">Автоприменение</span>
+                <strong>только dev</strong>
               </div>
             </div>
-            <button class="primary-button">Request apply</button>
+            <button class="primary-button">Запросить применение</button>
           </section>
         </section>
 
@@ -324,15 +436,7 @@
               </label>
               <label class="text-field">
                 <span>Source class regex</span>
-                <input id="serviceTemplateSourceRegex" placeholder="(?i).*Workplace.*" autocomplete="off">
-              </label>
-              <label class="text-field">
-                <span>Атрибут фильтра</span>
-                <input id="serviceTemplateFilterField" placeholder="status" autocomplete="off">
-              </label>
-              <label class="text-field">
-                <span>Regex фильтра</span>
-                <input id="serviceTemplateFilterRegex" placeholder="(?i)^active$" autocomplete="off">
+                <input id="serviceTemplateSourceRegex" data-template-source-regex placeholder="(?i).*Workplace.*" autocomplete="off">
               </label>
               <label class="text-field">
                 <span>Priority</span>
@@ -342,6 +446,11 @@
                 <span>Целевой класс\экземпляр класса</span>
                 <select id="serviceTemplateTargetClass" data-template-target-class></select>
               </label>
+              <div class="selection-filter-editor template-editor-wide">
+                <span class="field-label">Условия выборки объектов</span>
+                <p class="selection-filter-help">Все строки Включить применяются совместно: объект должен пройти каждую из них. Все строки Исключить вычитаются из результата: если объект совпал хотя бы с одной такой строкой, он не попадает в группу.</p>
+                <div id="serviceTemplateSelectionFilterList" class="selection-filter-list"></div>
+              </div>
               <label class="text-field template-editor-wide">
                 <span>Шаблон name</span>
                 <input id="serviceTemplateTargetName" placeholder="${class.description}" autocomplete="off">
@@ -356,14 +465,23 @@
               </label>
               <div class="template-variable-editor template-editor-wide">
                 <span class="field-label">Переменные шаблона</span>
+                <p class="template-expression-examples">Примеры: <code>${class.code}</code> · <code>${class.description}</code> · <code>${class.hierarchyPath}</code> · <code>${vars.site}</code> · <code>${source.id}</code> · <code>${source.ownerEmail}</code> reference Owner -> Email · <code>${source.status}</code> lookup Status · <code>${source.domainNetworkSegmentCode}</code> domain NetworkSegment -> Code · <code>${source.domainServiceOwnerEmail}</code> domain Service -> Owner -> Email · <code>${extract(class.code, "^C2M_Service(.+)$", 1)}</code> · <code>${extract(class.description, "^(?&lt;site&gt;[A-Z]{3}) - .*$", "site", "unknown")}</code> · <code>${replace(class.code, "^C2M_", "")}</code> · <code>${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}</code> · <code>${lower(trim(vars.site))}</code></p>
                 <div id="serviceTemplateVariableList" class="template-variable-list"></div>
               </div>
             </div>
             <div class="rule-editor-actions">
               <button id="serviceTemplateSaveButton" class="primary-button" type="button" data-template-save>Применить</button>
+              <label class="select-field template-delete-mode">
+                <span>Удаление шаблона</span>
+                <select id="serviceTemplateDeleteMode" data-template-delete-mode>
+                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
+                  <option value="delete_rules_and_objects">Удалить созданные правила и объекты</option>
+                </select>
+              </label>
               <button id="serviceTemplateDeleteButton" class="secondary-button" type="button" data-template-delete>Удалить шаблон</button>
               <span id="serviceTemplateStatus" class="status-line"></span>
             </div>
+            <datalist id="serviceTemplateSourceFieldOptions"></datalist>
           </section>
         </section>
 
@@ -385,15 +503,7 @@
               </label>
               <label class="text-field">
                 <span>Source class regex</span>
-                <input id="suppressionTemplateSourceRegex" placeholder="(?i).*Resource.*" autocomplete="off">
-              </label>
-              <label class="text-field">
-                <span>Атрибут фильтра</span>
-                <input id="suppressionTemplateFilterField" placeholder="monitoring_enabled" autocomplete="off">
-              </label>
-              <label class="text-field">
-                <span>Regex фильтра</span>
-                <input id="suppressionTemplateFilterRegex" placeholder="(?i)^true$" autocomplete="off">
+                <input id="suppressionTemplateSourceRegex" data-template-source-regex placeholder="(?i).*Resource.*" autocomplete="off">
               </label>
               <label class="text-field">
                 <span>Priority</span>
@@ -403,6 +513,11 @@
                 <span>Целевой класс\экземпляр класса</span>
                 <select id="suppressionTemplateTargetClass" data-template-target-class></select>
               </label>
+              <div class="selection-filter-editor template-editor-wide">
+                <span class="field-label">Условия выборки объектов</span>
+                <p class="selection-filter-help">Все строки Включить применяются совместно: объект должен пройти каждую из них. Все строки Исключить вычитаются из результата: если объект совпал хотя бы с одной такой строкой, он не попадает в группу.</p>
+                <div id="suppressionTemplateSelectionFilterList" class="selection-filter-list"></div>
+              </div>
               <label class="text-field template-editor-wide">
                 <span>Шаблон name</span>
                 <input id="suppressionTemplateTargetName" placeholder="${class.description}" autocomplete="off">
@@ -417,43 +532,52 @@
               </label>
               <div class="template-variable-editor template-editor-wide">
                 <span class="field-label">Переменные шаблона</span>
+                <p class="template-expression-examples">Примеры: <code>${class.code}</code> · <code>${class.description}</code> · <code>${class.hierarchyPath}</code> · <code>${vars.site}</code> · <code>${source.id}</code> · <code>${source.ownerEmail}</code> reference Owner -> Email · <code>${source.status}</code> lookup Status · <code>${source.domainNetworkSegmentCode}</code> domain NetworkSegment -> Code · <code>${source.domainServiceOwnerEmail}</code> domain Service -> Owner -> Email · <code>${extract(class.code, "^C2M_Suppression(.+)$", 1)}</code> · <code>${extract(class.description, "^(?&lt;site&gt;[A-Z]{3}) - .*$", "site", "unknown")}</code> · <code>${replace(class.code, "^C2M_", "")}</code> · <code>${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}</code> · <code>${lower(trim(vars.site))}</code></p>
                 <div id="suppressionTemplateVariableList" class="template-variable-list"></div>
               </div>
             </div>
             <div class="rule-editor-actions">
               <button id="suppressionTemplateSaveButton" class="primary-button" type="button" data-template-save>Применить</button>
+              <label class="select-field template-delete-mode">
+                <span>Удаление шаблона</span>
+                <select id="suppressionTemplateDeleteMode" data-template-delete-mode>
+                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
+                  <option value="delete_rules_and_objects">Удалить созданные правила и объекты</option>
+                </select>
+              </label>
               <button id="suppressionTemplateDeleteButton" class="secondary-button" type="button" data-template-delete>Удалить шаблон</button>
               <span id="suppressionTemplateStatus" class="status-line"></span>
             </div>
+            <datalist id="suppressionTemplateSourceFieldOptions"></datalist>
           </section>
         </section>
 
         <section id="templateApplyView" class="view hidden">
           <div class="section-heading">
-            <h2>Применение шаблонов</h2>
+            <h2>Создать правила по шаблонам</h2>
             <p>Материализация шаблонов в обычные правила автонаполнения.</p>
           </div>
           <section class="panel">
             <div class="sync-grid">
               <div>
-                <span class="metric-label">Service templates</span>
+                <span class="metric-label">Сервисные шаблоны</span>
                 <strong id="templateApplyServiceCount">0</strong>
               </div>
               <div>
-                <span class="metric-label">Suppression templates</span>
+                <span class="metric-label">Шаблоны подавления</span>
                 <strong id="templateApplySuppressionCount">0</strong>
               </div>
               <div>
-                <span class="metric-label">Generated rules</span>
+                <span class="metric-label">Созданные правила</span>
                 <strong id="templateApplyRuleCount">0</strong>
               </div>
               <div>
-                <span class="metric-label">Candidate source classes</span>
+                <span class="metric-label">Классы-источники</span>
                 <strong id="templateApplyCandidateCount">0</strong>
               </div>
             </div>
             <div class="sync-actions">
-              <button id="applyTemplatesButton" class="primary-button" type="button">Сгенерировать правила из шаблонов</button>
+              <button id="applyTemplatesButton" class="primary-button" type="button">Создать правила по шаблонам</button>
             </div>
             <p id="templateApplyStatus" class="status-line"></p>
             <div id="templateApplyPlanList" class="preview-list"></div>
@@ -483,7 +607,7 @@
                 <li>Проверьте planned и ready классы/domains отдельно для service и suppression.</li>
                 <li>Для конкретных классов добавьте связи наполнения с существующими классами CMDBuild заказчика.</li>
                 <li>Отправьте выбранные классы и domains в CMDBuild кнопкой <strong>Send selected to CMDBuild</strong>.</li>
-                <li>Настройте правила конвертации и выполняйте применение через manual apply.</li>
+                <li>Настройте правила конвертации и выполняйте применение через <strong>Управление правилами -> Верификация и применение</strong>.</li>
               </ol>
             </section>
 
@@ -493,7 +617,7 @@
                 <li>Root по умолчанию: <code>/Мониторинг</code> для RU и <code>/Monitoring</code> для EN.</li>
                 <li>Если root отсутствует, builder создает пустой prototype superclass, например <code>C2M_Monitoring</code>.</li>
                 <li>Service и suppression разделяются ниже root через <code>C2M_ServiceManagedObject</code> и <code>C2M_SuppressionManagedObject</code>.</li>
-                <li>Если старый managed superclass уже создан под <code>Class</code>, builder переиспользует его, когда root уже существует.</li>
+                <li>Если старый managed superclass уже создан под <code>Class</code>, а текущий root требует другого parent, это конфликт схемы; такой класс нужно удалить или перенести вручную перед apply.</li>
               </ul>
             </section>
 
@@ -524,8 +648,20 @@
                 <li>Domains создаются с удалением связи при удалении связанной карточки.</li>
                 <li>Если объект выходит из агрегата, builder удаляет stale-связь при сверке desired state.</li>
                 <li>Если меняются IP, DNS, hostname, tags или status карточки, это обычный object UPDATE.</li>
+                <li><code>zabbix_hostid</code> является признаком готовности карточки к Zabbix-цепочке; CREATE и UPDATE без него не должны создавать membership.</li>
                 <li>В правиле автонаполнения target class означает создание или обеспечение экземпляра; атрибуты зоны ответственности пользователя автоматика не заполняет.</li>
+                <li>В модификации автонаполнения атрибуты создаваемого target-объекта могут использовать только значения выбранного класса: <code>${class.code}</code>, <code>${class.description}</code>, <code>${class.hierarchyPath}</code> и функции над ними. <code>${source.*}</code> используется только в runtime-маппингах правил.</li>
                 <li>Агрегатор удаляет заказчик; после DELETE builder убирает соответствующие структуры из Zabbix.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Webhooks и правила</h2>
+              <ul class="help-list">
+                <li>В меню <strong>Синхронизация с источниками данных -> Webhooks</strong> кнопка <strong>Проверить правила онлайн</strong> не использует локальный кэш.</li>
+                <li>Проверка онлайн вызывает live endpoint webhooks и сравнивает managed webhooks с source-классами текущих правил конвертации.</li>
+                <li>Для каждого source-класса правила должны быть покрыты события <code>CREATE</code>, <code>UPDATE</code> и <code>DELETE</code>. Если webhook описан без classCode, он считается общим для всех классов.</li>
+                <li>Чужие webhooks не учитываются: проверяются только записи с настроенным managed identifier.</li>
               </ul>
             </section>
 
@@ -535,7 +671,34 @@
                 <li>Шаблон не исполняется микросервисом напрямую: он материализуется в обычные правила с меткой <code>generated_from_template</code>.</li>
                 <li>Source classes выбираются регулярным выражением по коду, описанию или пути наследования класса.</li>
                 <li><code>name</code>, initial <code>description</code> и <code>population_source_key</code> могут использовать <code>${class.code}</code>, <code>${class.description}</code>, <code>${source.attr}</code> и <code>${vars.name}</code>.</li>
+                <li>Для reference, lookup и domain-атрибутов используйте имена из списка атрибутов source-класса: <code>${source.ownerEmail}</code> для reference <code>Owner -> Email</code>, <code>${source.status}</code> для lookup <code>Status</code>, <code>${source.domainNetworkSegmentCode}</code> для domain <code>NetworkSegment -> Code</code>, <code>${source.domainServiceOwnerEmail}</code> для domain <code>Service -> Owner -> Email</code>.</li>
+                <li>Для переменных шаблона и target-полей доступны функции <code>extract</code>, <code>replace</code>, <code>lower</code>, <code>upper</code>, <code>trim</code>, <code>default</code>.</li>
                 <li>Повторное применение шаблонов удаляет старые generated-правила и создает новый набор, сохраняя ручные правила.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Regexp в автонаполнении</h2>
+              <ul class="help-list">
+                <li>Regexp в <strong>Source class regex</strong> выбирает классы-источники по code, description и inheritance path.</li>
+                <li>Regexp в <strong>Условия выборки объектов</strong> выбирает карточки внутри выбранного класса. Все строки <strong>Включить</strong> работают как AND; любая строка <strong>Исключить</strong> удаляет объект из результата.</li>
+                <li><code>(?i).*Workplace.*</code> — выбрать классы, где встречается Workplace без учета регистра.</li>
+                <li><code>^Server$</code> — выбрать только точное имя класса Server.</li>
+                <li><code>^(Server|Notebook|PC)$</code> — выбрать один из перечисленных классов.</li>
+                <li><code>^/Monitoring/Infrastructure/.*</code> — выбрать ветку по inheritance path.</li>
+                <li><code>^prod-.*</code> — включить карточки, у которых выбранный атрибут начинается с prod-.</li>
+                <li><code>.*\\.corp\\.example$</code> — включить DNS-имена в домене corp.example.</li>
+                <li><code>^(?!test-).*</code> — включить значения, которые не начинаются с test-; чаще понятнее сделать это отдельной строкой <strong>Исключить</strong> с <code>^test-.*</code>.</li>
+                <li><code>^(10\\.10\\.|10\\.20\\.).*</code> — включить адреса из двух сетевых префиксов.</li>
+                <li><code>^$</code> — найти пустое значение; <code>.+</code> — значение должно быть непустым.</li>
+                <li>Символы <code>.</code>, <code>+</code>, <code>*</code>, <code>?</code>, <code>|</code>, <code>(</code>, <code>)</code>, <code>[</code>, <code>]</code>, <code>{</code>, <code>}</code>, <code>^</code>, <code>$</code> имеют специальный смысл. Для буквальной точки пишите <code>\\.</code>.</li>
+                <li>Capture-группы в regexp выборки <code>(...)</code> и <code>(?&lt;site&gt;...)</code> используются только для проверки совпадения; они не становятся переменными автоматически.</li>
+                <li><code>${extract(class.code, "^C2M_Service(.+)$", 1)}</code> — взять первую группу из имени класса.</li>
+                <li><code>${extract(class.description, "^(?&lt;site&gt;[A-Z]{3}) - .*$", "site", "unknown")}</code> — взять именованную группу или вернуть fallback.</li>
+                <li><code>${replace(class.code, "^C2M_", "")}</code> — удалить префикс; <code>${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}</code> — переставить группы.</li>
+                <li><code>${lower(trim(vars.site))}</code>, <code>${upper(vars.code)}</code>, <code>${default(vars.owner, "monitoring")}</code> — нормализация и значение по умолчанию.</li>
+                <li>Однострочная памятка для разных источников и вырезки: <code>${class.code}</code> · <code>${class.description}</code> · <code>${class.hierarchyPath}</code> · <code>${vars.site}</code> · <code>${source.id}</code> · <code>${source.ownerEmail}</code> · <code>${source.status}</code> · <code>${source.domainNetworkSegmentCode}</code> · <code>${source.domainServiceOwnerEmail}</code> · <code>${extract(class.code, "^C2M_(.+)$", 1)}</code> · <code>${extract(class.description, "^(?&lt;site&gt;[A-Z]{3}) - .*$", "site", "unknown")}</code> · <code>${replace(class.code, "^C2M_", "")}</code> · <code>${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}</code> · <code>${lower(trim(vars.site))}</code>.</li>
+                <li>Transform/extract выполняется при применении шаблона и может читать <code>class.*</code> и уже вычисленные <code>vars.*</code>. <code>${source.attr}</code> остается отложенным значением карточки-источника в обычном правиле; <code>extract(source.attr, ...)</code> требует отдельного runtime-преобразования.</li>
               </ul>
             </section>
 
@@ -566,15 +729,32 @@
             <h2>Основные</h2>
           </div>
           <section class="panel">
-            <label class="select-field settings-field">
-              <span class="normal-case-label">Максимальная глубина рекурсии domains&amp;reference&amp;lookups</span>
-              <select id="maxTraversalDepthSelect">
-                <option value="2">2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-                <option value="5">5</option>
-              </select>
-            </label>
+            <div class="settings-list">
+              <label class="select-field settings-field">
+                <span class="normal-case-label">Максимальная глубина рекурсии domains&amp;reference&amp;lookups</span>
+                <select id="maxTraversalDepthSelect">
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                </select>
+              </label>
+              <label class="text-field settings-field">
+                <span class="normal-case-label">Атрибут готовности Zabbix host</span>
+                <input id="zabbixHostIdAttributeInput" value="zabbix_hostid" readonly>
+              </label>
+              <p class="settings-help">CREATE и UPDATE должны попадать в Zabbix-цепочку только после появления значения в этом атрибуте карточки CMDBuild.</p>
+              <label class="text-field settings-field wide-settings-field">
+                <span class="normal-case-label">Папка хранения правил конвертации</span>
+                <input id="conversionConfigFolderInput" readonly>
+              </label>
+              <p class="settings-help">Сервисный слой и каскадное подавление сохраняют правила и шаблоны в эту серверную папку. Позже ее можно подключить к Git без изменения интерфейса.</p>
+              <div class="sync-actions settings-actions">
+                <button id="saveGeneralSettingsButton" class="primary-button" type="button">Сохранить настройки</button>
+                <button id="loadGeneralSettingsButton" class="secondary-button" type="button">Загрузить настройки</button>
+              </div>
+              <p id="generalSettingsStatus" class="status-line"></p>
+            </div>
           </section>
         </section>
 
@@ -650,10 +830,74 @@
           </section>
         </section>
 
+        <section id="webhooksSyncView" class="view hidden">
+          <div class="section-heading">
+            <h2>Webhooks</h2>
+            <p>Проверка endpoint приема CMDBuild webhooks и покрытия правил конвертации. Онлайн-проверка не использует локальный кэш; считаются только наши webhooks по явному identifier.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">API</span>
+                <strong id="webhooksSyncApiState">Не проверен</strong>
+              </div>
+              <div>
+                <span class="metric-label">Endpoint</span>
+                <strong id="webhooksSyncEndpoint">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Route</span>
+                <strong id="webhooksSyncRoute">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Raw topic</span>
+                <strong id="webhooksSyncRawTopic">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Identifier</span>
+                <strong id="webhooksSyncIdentifier">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">CREATE</span>
+                <strong id="webhooksSyncCreateCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">UPDATE</span>
+                <strong id="webhooksSyncUpdateCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">DELETE</span>
+                <strong id="webhooksSyncDeleteCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Rule classes</span>
+                <strong id="webhooksRuleClassCount">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Missing webhooks</span>
+                <strong id="webhooksMissingClassCount">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Последнее обновление</span>
+                <strong id="webhooksSyncLastUpdatedAt">нет</strong>
+              </div>
+            </div>
+            <div class="sync-actions">
+              <button id="syncWebhooksButton" class="primary-button" type="button">Провести синхронизацию</button>
+              <button id="deployConversionRulesButton" class="secondary-button" type="button">Отправить изменения на сервер</button>
+              <button id="checkWebhookRulesButton" class="secondary-button" type="button">Проверить правила онлайн</button>
+              <button id="loadCachedWebhooksButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
+            </div>
+            <p id="syncWebhooksStatus" class="status-line"></p>
+            <p id="webhookRuleCoverageStatus" class="status-line">Онлайн-проверка не выполнялась.</p>
+            <div id="webhookRuleCoverageList"></div>
+          </section>
+        </section>
+
         <section id="conversionConfigSyncView" class="view hidden">
           <div class="section-heading">
             <h2>Конфигурации конвертации</h2>
-            <p>Синхронизация локальных правил сервиса и подавления с текущими каталогами источников.</p>
+            <p>Сохранение и загрузка правил сервиса и каскадного подавления из серверной папки с дополнительным локальным кэшем браузера.</p>
           </div>
           <section class="panel">
             <div class="sync-grid">
@@ -670,12 +914,21 @@
                 <strong id="conversionTraversalDepth">2</strong>
               </div>
               <div>
-                <span class="metric-label">Последнее обновление</span>
+                <span class="metric-label">Папка</span>
+                <strong id="conversionConfigFolder">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Файлы обновлены</span>
+                <strong id="conversionConfigStorageUpdatedAt">нет</strong>
+              </div>
+              <div>
+                <span class="metric-label">Локальный кэш</span>
                 <strong id="conversionConfigLastUpdatedAt">нет</strong>
               </div>
             </div>
             <div class="sync-actions">
-              <button id="syncConversionConfigButton" class="primary-button" type="button">Провести синхронизацию</button>
+              <button id="syncConversionConfigButton" class="primary-button" type="button">Сохранить в папку</button>
+              <button id="loadStoredConversionConfigButton" class="secondary-button" type="button">Загрузить из папки</button>
               <button id="loadCachedConversionConfigButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
             </div>
             <p id="syncConversionConfigStatus" class="status-line"></p>

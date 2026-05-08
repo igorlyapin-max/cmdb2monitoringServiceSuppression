@@ -1,0 +1,95 @@
+{
+  "version": "1",
+  "source": {
+    "entityClasses": [
+      "Notebook",
+      "NTbook"
+    ],
+    "fields": {
+      "OS": {
+        "source": "OS",
+        "cmdbAttribute": "OS",
+        "cmdbPath": "Notebook.OS",
+        "required": false,
+        "type": "lookup",
+        "resolve": {
+          "mode": "lookup",
+          "lookupType": "OS",
+          "valueMode": "code"
+        },
+        "lookupType": "OS"
+      },
+      "Code": {
+        "source": "Code",
+        "cmdbAttribute": "Code",
+        "cmdbPath": "Notebook.Code",
+        "required": false,
+        "type": "string",
+        "resolve": {
+          "mode": "none"
+        }
+      },
+      "Critical": {
+        "source": "Critical",
+        "cmdbAttribute": "Critical",
+        "cmdbPath": "NTbook.Critical",
+        "required": false,
+        "type": "lookup",
+        "resolve": {
+          "mode": "lookup",
+          "lookupType": "GKMCritical",
+          "valueMode": "code"
+        },
+        "lookupType": "GKMCritical"
+      }
+    }
+  },
+  "rules": [
+    {
+      "rule_id": "service-ntbook-c2m-serviceuserendpointfleet-critical",
+      "name": "service-ntbook-c2m-serviceuserendpointfleet-critical",
+      "layer": "service",
+      "priority": 100,
+      "source": {
+        "class_code": "NTbook",
+        "key_attribute": "Critical",
+        "conditions": [],
+        "filters": []
+      },
+      "when": {
+        "allRegex": [
+          {
+            "field": "className",
+            "pattern": "(?i)^NTbook$"
+          },
+          {
+            "field": "Critical",
+            "pattern": ".*"
+          }
+        ],
+        "fieldExists": "Critical",
+        "anyRegex": [],
+        "noneRegex": []
+      },
+      "target": {
+        "class_code": "C2M_ServiceUserEndpointFleet",
+        "create_instance": true,
+        "card_id": "",
+        "card_description": "Все ноуты вместе",
+        "idempotency_key": "cmdbuild:C2M_ServiceUserEndpointFleet:Code:NTbookGroup",
+        "attribute_mappings": {},
+        "initial_user_values": {
+          "Code": "NTbookGroup",
+          "Description": "Все ноуты вместе",
+          "name": "NTbookGroup",
+          "description": "Все ноуты вместе",
+          "is_critical": "false",
+          "aggregation_type": "threshold",
+          "threshold": "80"
+        },
+        "user_responsibility_attributes": []
+      },
+      "relations": []
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "savedAt": "2026-05-08T16:47:08.350Z",
+  "prefix": "C2M_",
+  "files": {
+    "serviceRules": "service-rules.json",
+    "suppressionRules": "suppression-rules.json",
+    "serviceTemplates": "service-templates.json",
+    "suppressionTemplates": "suppression-templates.json",
+    "manifest": "manifest.json"
+  }
+}

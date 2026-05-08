@@ -7,14 +7,14 @@ using Microsoft.Extensions.Options;
 
 namespace Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 
-public sealed class ZabbixClient(HttpClient httpClient, IOptions<ZabbixOptions> options)
+public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOptions> options)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private string? loginToken;
 
     public async Task<IntegrationCheckResult> CheckConnectionAsync(CancellationToken cancellationToken)
     {
-        var endpoint = options.Value.ApiEndpoint;
+        var endpoint = options.CurrentValue.ApiEndpoint;
         if (string.IsNullOrWhiteSpace(endpoint))
         {
             return Failed(endpoint, "Zabbix API endpoint is not configured.");
@@ -23,7 +23,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptions<ZabbixOptions> 
         try
         {
             var version = await GetApiVersionAsync(cancellationToken);
-            if (!string.Equals(options.Value.AuthMode, "None", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(options.CurrentValue.AuthMode, "None", StringComparison.OrdinalIgnoreCase))
             {
                 await EnsureAuthenticatedAsync(cancellationToken);
             }
@@ -63,20 +63,24 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptions<ZabbixOptions> 
 
     private async Task EnsureAuthenticatedAsync(CancellationToken cancellationToken)
     {
-        if (string.Equals(options.Value.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(options.Value.ApiToken))
+        if (string.Equals(options.CurrentValue.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))
         {
             throw new InvalidOperationException("Zabbix API token is required for Token auth mode.");
         }
 
-        if (string.Equals(options.Value.AuthMode, "Login", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(options.Value.AuthMode, "LoginOrToken", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(options.CurrentValue.AuthMode, "Login", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(options.CurrentValue.AuthMode, "LoginOrToken", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken)))
         {
             loginToken ??= await LoginAsync(cancellationToken);
             return;
         }
 
-        if (string.Equals(options.Value.AuthMode, "Token", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(options.CurrentValue.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken)))
         {
             await SendJsonRpcAsync(new JsonObject
             {
@@ -100,8 +104,8 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptions<ZabbixOptions> 
             ["method"] = "user.login",
             ["params"] = new JsonObject
             {
-                ["username"] = options.Value.User,
-                ["password"] = options.Value.Password
+                ["username"] = options.CurrentValue.User,
+                ["password"] = options.CurrentValue.Password
             },
             ["id"] = 2
         }, authenticated: false, cancellationToken);
@@ -124,17 +128,19 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptions<ZabbixOptions> 
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.Value.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, options.Value.ApiEndpoint)
+        using var request = new HttpRequestMessage(HttpMethod.Post, options.CurrentValue.ApiEndpoint)
         {
             Content = new StringContent(payload.ToJsonString(JsonOptions), Encoding.UTF8, "application/json")
         };
 
         if (authenticated)
         {
-            var token = string.Equals(options.Value.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
-                ? options.Value.ApiToken
+            var token = string.Equals(options.CurrentValue.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))
+                ? options.CurrentValue.ApiToken
                 : loginToken;
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }

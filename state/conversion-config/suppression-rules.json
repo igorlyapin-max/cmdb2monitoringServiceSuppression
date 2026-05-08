@@ -1,0 +1,15 @@
+{
+  "layer": "suppression",
+  "source": {
+    "entityClasses": [],
+    "fields": {}
+  },
+  "runtimePolicy": {
+    "create": "Evaluate binding rules and create missing managed cards/relations for matching source cards.",
+    "update": "Re-evaluate the same rules, merge rule-owned managed attributes, and preserve user responsibility attributes/external values.",
+    "delete": "Remove generated source relations and reconcile derived Zabbix structures; the customer owns aggregator card deletion."
+  },
+  "rules": [],
+  "templateDeletionPlans": [],
+  "version": "1"
+}

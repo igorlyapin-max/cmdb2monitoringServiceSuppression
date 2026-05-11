@@ -77,12 +77,27 @@ public abstract class KafkaJsonConsumerWorker<TMessage>(
                 await HandleMessageAsync(message, result.Message.Key, stoppingToken);
                 consumer.Commit(result);
             }
-            catch (Exception ex) when (ex is JsonException or InvalidOperationException or HttpRequestException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or HttpRequestException or TaskCanceledException)
             {
                 logger.LogError(ex, "Kafka message processing failed for topic {Topic}, partition {Partition}, offset {Offset}.",
                     Topic,
                     result.Partition.Value,
                     result.Offset.Value);
+                consumer.Seek(result.TopicPartitionOffset);
+                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogError(ex, "Kafka message processing failed unexpectedly for topic {Topic}, partition {Partition}, offset {Offset}.",
+                    Topic,
+                    result.Partition.Value,
+                    result.Offset.Value);
+                consumer.Seek(result.TopicPartitionOffset);
+                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
             }
         }
     }

@@ -26,11 +26,35 @@ public sealed record ConversionRulesSourceCatalog
 
 public sealed record SourceFieldDefinition
 {
+    [JsonPropertyName("source")]
+    public string Source { get; init; } = "";
+
     [JsonPropertyName("classCode")]
     public string ClassCode { get; init; } = "";
 
     [JsonPropertyName("cmdbAttribute")]
     public string CmdbAttribute { get; init; } = "";
+
+    [JsonPropertyName("cmdbPath")]
+    public string CmdbPath { get; init; } = "";
+
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "";
+
+    [JsonPropertyName("resolve")]
+    public SourceFieldResolveDefinition Resolve { get; init; } = new();
+}
+
+public sealed record SourceFieldResolveDefinition
+{
+    [JsonPropertyName("mode")]
+    public string Mode { get; init; } = "";
+
+    [JsonPropertyName("valueMode")]
+    public string ValueMode { get; init; } = "";
+
+    [JsonPropertyName("maxDepth")]
+    public int MaxDepth { get; init; }
 }
 
 public sealed record ConversionRule

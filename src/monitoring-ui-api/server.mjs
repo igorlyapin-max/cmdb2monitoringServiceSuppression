@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,7 +29,7 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, {
         roles: config.auth.roles,
         cmdbuildSchema: config.cmdbuildSchema,
-        webhooks: config.webhooks ?? {},
+        webhooks: publicWebhooksConfig(),
         kafka: config.kafka ?? {},
         readiness: config.readiness ?? {},
         conversionConfig: publicConversionConfig()
@@ -41,7 +42,8 @@ const server = http.createServer(async (request, response) => {
 
     if (url.pathname === '/api/conversion-config/storage' && request.method === 'PUT') {
       const body = await readJsonBody(request);
-      return sendJson(response, 200, await writeConversionConfigStorage(body));
+      const result = await writeConversionConfigStorage(body);
+      return sendJson(response, result.statusCode, result.body);
     }
 
     if (url.pathname === '/api/conversion-config/deploy' && request.method === 'POST') {
@@ -97,6 +99,18 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
+    if (url.pathname === '/api/rules/apply-current' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      return proxyJson(response, config.backend.rulesApplyCurrentUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+    }
+
     if (url.pathname === '/api/cmdbuild/classes' && request.method === 'GET') {
       const backendUrl = new URL(config.backend.cmdbuildClassesUrl);
       if (url.searchParams.has('rootPath')) {
@@ -132,6 +146,17 @@ const server = http.createServer(async (request, response) => {
     }
 
     const cardCreateMatch = url.pathname.match(/^\/api\/cmdbuild\/classes\/([^/]+)\/cards$/);
+    if (cardCreateMatch && request.method === 'GET') {
+      const classCode = decodeURIComponent(cardCreateMatch[1]);
+      const backendUrl = new URL(`${config.backend.cmdbuildClassesUrl}/${encodeURIComponent(classCode)}/cards`);
+      for (const key of ['layer']) {
+        if (url.searchParams.has(key)) {
+          backendUrl.searchParams.set(key, url.searchParams.get(key));
+        }
+      }
+      return proxyJson(response, backendUrl);
+    }
+
     if (cardCreateMatch && request.method === 'POST') {
       const classCode = decodeURIComponent(cardCreateMatch[1]);
       const backendUrl = new URL(`${config.backend.cmdbuildClassesUrl}/${encodeURIComponent(classCode)}/cards`);
@@ -154,12 +179,26 @@ const server = http.createServer(async (request, response) => {
       return proxyJson(response, backendUrl);
     }
 
+    if (url.pathname === '/api/cmdbuild/domains/relations' && request.method === 'GET') {
+      const backendUrl = appendPath(config.backend.cmdbuildDomainsUrl, 'relations');
+      if (url.searchParams.has('prefix')) {
+        backendUrl.searchParams.set('prefix', url.searchParams.get('prefix'));
+      }
+      return proxyJson(response, backendUrl);
+    }
+
     if (url.pathname === '/api/zabbix/check' && request.method === 'GET') {
       return proxyJson(response, config.backend.zabbixCheckUrl);
     }
 
     if (url.pathname === '/api/webhooks/check' && request.method === 'GET') {
       const result = await checkConfiguredWebhooks();
+      return sendJson(response, result.statusCode, result.body);
+    }
+
+    if (url.pathname === '/api/webhooks/publish' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const result = await publishManagedWebhooksToCmdbuild(body);
       return sendJson(response, result.statusCode, result.body);
     }
 
@@ -184,7 +223,8 @@ const server = http.createServer(async (request, response) => {
 
     const body = await readFile(filePath);
     response.writeHead(200, {
-      'content-type': mimeTypes.get(path.extname(filePath)) ?? 'application/octet-stream'
+      'content-type': mimeTypes.get(path.extname(filePath)) ?? 'application/octet-stream',
+      'cache-control': 'no-store'
     });
     response.end(body);
   } catch (error) {
@@ -232,6 +272,15 @@ function publicConversionConfig() {
   };
 }
 
+function publicWebhooksConfig() {
+  const {
+    targetBearerToken,
+    targetBearerTokenSecret,
+    ...publicConfig
+  } = config.webhooks ?? {};
+  return publicConfig;
+}
+
 function conversionConfigStorage() {
   const conversionConfig = config.conversionConfig ?? {};
   const configuredFolder = String(conversionConfig.storageFolder ?? 'state/conversion-config');
@@ -246,6 +295,7 @@ function conversionConfigStorage() {
       suppressionRules: String(conversionConfig.suppressionRulesFile ?? 'suppression-rules.json'),
       serviceTemplates: String(conversionConfig.serviceTemplatesFile ?? 'service-templates.json'),
       suppressionTemplates: String(conversionConfig.suppressionTemplatesFile ?? 'suppression-templates.json'),
+      sharedTemplates: String(conversionConfig.sharedTemplatesFile ?? 'shared-templates.json'),
       manifest: String(conversionConfig.manifestFile ?? 'manifest.json')
     }
   };
@@ -270,41 +320,62 @@ async function readConversionConfigStorage() {
   const suppressionRulesPath = path.join(storage.folder, storage.files.suppressionRules);
   const serviceTemplatesPath = path.join(storage.folder, storage.files.serviceTemplates);
   const suppressionTemplatesPath = path.join(storage.folder, storage.files.suppressionTemplates);
+  const sharedTemplatesPath = path.join(storage.folder, storage.files.sharedTemplates);
 
-  const [manifest, serviceRules, suppressionRules, serviceTemplates, suppressionTemplates] = await Promise.all([
+  const [manifest, serviceRules, suppressionRules, serviceTemplates, suppressionTemplates, sharedTemplates] = await Promise.all([
     readJsonFileIfExists(manifestPath),
     readJsonFileIfExists(serviceRulesPath),
     readJsonFileIfExists(suppressionRulesPath),
     readJsonFileIfExists(serviceTemplatesPath),
-    readJsonFileIfExists(suppressionTemplatesPath)
+    readJsonFileIfExists(suppressionTemplatesPath),
+    readJsonFileIfExists(sharedTemplatesPath)
   ]);
 
-  const exists = Boolean(serviceRules || suppressionRules || serviceTemplates || suppressionTemplates);
-  return {
-    success: true,
-    exists,
-    storage: publicConversionConfig(),
-    savedAt: manifest?.savedAt ?? await latestMtime([
-      serviceRulesPath,
-      suppressionRulesPath,
-      serviceTemplatesPath,
-      suppressionTemplatesPath
-    ]),
-    prefix: manifest?.prefix ?? '',
+  const exists = Boolean(serviceRules || suppressionRules || serviceTemplates || suppressionTemplates || sharedTemplates);
+  const prefix = manifest?.prefix ?? '';
+  const version = storageVersion(manifest);
+  const etag = storageEtag(manifest, {
+    prefix,
     ruleDocuments: {
       service: serviceRules,
       suppression: suppressionRules
     },
     templateDocuments: {
       service: serviceTemplates,
-      suppression: suppressionTemplates
+      suppression: suppressionTemplates,
+      shared: sharedTemplates
+    }
+  });
+  return {
+    success: true,
+    exists,
+    storage: publicConversionConfig(),
+    version,
+    etag,
+    savedAt: manifest?.savedAt ?? await latestMtime([
+      serviceRulesPath,
+      suppressionRulesPath,
+      serviceTemplatesPath,
+      suppressionTemplatesPath,
+      sharedTemplatesPath
+    ]),
+    prefix,
+    ruleDocuments: {
+      service: serviceRules,
+      suppression: suppressionRules
+    },
+    templateDocuments: {
+      service: serviceTemplates,
+      suppression: suppressionTemplates,
+      shared: sharedTemplates
     }
   };
 }
 
 async function deployConversionConfigToRuntime(body) {
   const runtime = conversionConfigRuntimeRulesFile();
-  const document = buildRuntimeConversionRulesDocument(body);
+  const runtimeBuild = buildRuntimeConversionRulesDocument(body);
+  const document = runtimeBuild.document;
   const validation = await validateRuntimeConversionRules(document);
   if (!validation.ok) {
     return {
@@ -313,12 +384,15 @@ async function deployConversionConfigToRuntime(body) {
         success: false,
         error: validation.error,
         validation: validation.payload ?? null,
-        runtimeRules: runtimePublicInfo(runtime, document)
+        runtimeRules: runtimePublicInfo(runtime, document, runtimeBuild)
       }
     };
   }
 
   const storageResult = await writeConversionConfigStorage(body);
+  if (storageResult.statusCode !== 200) {
+    return storageResult;
+  }
   await mkdir(path.dirname(runtime.file), { recursive: true });
   await writeJsonFile(runtime.file, document);
 
@@ -331,9 +405,11 @@ async function deployConversionConfigToRuntime(body) {
     statusCode: 200,
     body: {
       success: true,
-      savedAt: storageResult.savedAt,
-      storage: storageResult.storage,
-      runtimeRules: runtimePublicInfo(runtime, document),
+      savedAt: storageResult.body.savedAt,
+      storage: storageResult.body.storage,
+      version: storageResult.body.version,
+      etag: storageResult.body.etag,
+      runtimeRules: runtimePublicInfo(runtime, document, runtimeBuild),
       validation: validation.payload ?? null,
       rulesStatus: rulesStatus?.ok ? rulesStatus.payload : null,
       rulesStatusError: rulesStatus && !rulesStatus.ok ? rulesStatus.error : ''
@@ -351,13 +427,126 @@ function buildRuntimeConversionRulesDocument(body) {
     .filter(Boolean);
   const uniqueVersions = [...new Set(versions)];
   const source = mergeRuntimeSources(documents);
+  const runtimeRules = ensureGlobalRuntimeRuleIds(documents.flatMap((document) => document.rules));
   return {
-    version: uniqueVersions.length === 1
-      ? uniqueVersions[0]
-      : uniqueVersions.join('+') || '1',
-    source,
-    rules: documents.flatMap((document) => document.rules)
+    document: {
+      version: uniqueVersions.length === 1
+        ? uniqueVersions[0]
+        : uniqueVersions.join('+') || '1',
+      source,
+      rules: runtimeRules.rules
+    },
+    ruleIdAliases: runtimeRules.aliases
   };
+}
+
+function ensureGlobalRuntimeRuleIds(rules) {
+  const groups = new Map();
+  for (const [index, rule] of rules.entries()) {
+    const ruleId = stringValue(rule?.rule_id);
+    if (!ruleId) {
+      continue;
+    }
+
+    const refs = groups.get(ruleId) ?? [];
+    refs.push({
+      index,
+      layer: normalizeRuntimeLayer(rule?.layer)
+    });
+    groups.set(ruleId, refs);
+  }
+
+  const crossLayerDuplicateIds = new Set();
+  const sameLayerDuplicateIds = new Set();
+  for (const [ruleId, refs] of groups.entries()) {
+    if (refs.length <= 1) {
+      continue;
+    }
+
+    const layers = new Set(refs.map((ref) => ref.layer));
+    if (layers.size === refs.length) {
+      crossLayerDuplicateIds.add(ruleId);
+    } else {
+      sameLayerDuplicateIds.add(ruleId);
+    }
+  }
+
+  const reservedIds = new Set();
+  for (const rule of rules) {
+    const ruleId = stringValue(rule?.rule_id);
+    if (!ruleId || crossLayerDuplicateIds.has(ruleId)) {
+      continue;
+    }
+
+    reservedIds.add(ruleId);
+  }
+
+  const aliases = [];
+  const normalizedRules = rules.map((rule, index) => {
+    const ruleId = stringValue(rule?.rule_id);
+    if (!ruleId || !crossLayerDuplicateIds.has(ruleId) || sameLayerDuplicateIds.has(ruleId)) {
+      return rule;
+    }
+
+    const layer = normalizeRuntimeLayer(rule?.layer);
+    const runtimeRuleId = uniqueRuntimeRuleId(`${layer}-${ruleId}`, reservedIds, rule, index);
+    reservedIds.add(runtimeRuleId);
+    aliases.push({
+      layer,
+      originalRuleId: ruleId,
+      runtimeRuleId
+    });
+    return {
+      ...rule,
+      rule_id: runtimeRuleId
+    };
+  });
+
+  return {
+    rules: normalizedRules,
+    aliases
+  };
+}
+
+function normalizeRuntimeLayer(layer) {
+  const normalized = stringValue(layer).toLowerCase();
+  if (normalized === 'service' || normalized === 'suppression') {
+    return normalized;
+  }
+
+  return 'rule';
+}
+
+function uniqueRuntimeRuleId(baseValue, reservedIds, rule, index) {
+  const base = normalizeRuntimeRuleId(baseValue);
+  if (!reservedIds.has(base)) {
+    return base;
+  }
+
+  const hash = createHash('sha1')
+    .update(stableJson({
+      index,
+      rule_id: rule?.rule_id ?? '',
+      layer: rule?.layer ?? '',
+      name: rule?.name ?? '',
+      source: rule?.source ?? {},
+      target: rule?.target ?? {}
+    }))
+    .digest('hex')
+    .slice(0, 8);
+  for (let suffix = 0; ; suffix += 1) {
+    const candidate = normalizeRuntimeRuleId(`${base}-${hash}${suffix > 0 ? `-${suffix}` : ''}`);
+    if (!reservedIds.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+function normalizeRuntimeRuleId(value) {
+  return stringValue(value || 'rule')
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'rule';
 }
 
 function normalizeRuntimeRuleDocument(document, fallbackLayer) {
@@ -532,15 +721,18 @@ function configuredRulesStatusUrl() {
   return checks.find((item) => item.id === 'cmdbconfigbuilder' && item.rulesStatusUrl)?.rulesStatusUrl ?? '';
 }
 
-function runtimePublicInfo(runtime, document) {
+function runtimePublicInfo(runtime, document, runtimeBuild = null) {
   const rules = Array.isArray(document.rules) ? document.rules : [];
+  const aliases = Array.isArray(runtimeBuild?.ruleIdAliases) ? runtimeBuild.ruleIdAliases : [];
   return {
     configuredFile: runtime.configuredFile,
     filePath: runtime.file,
     version: document.version,
     ruleCount: rules.length,
     serviceRuleCount: rules.filter((rule) => stringValue(rule.layer).toLowerCase() === 'service').length,
-    suppressionRuleCount: rules.filter((rule) => stringValue(rule.layer).toLowerCase() === 'suppression').length
+    suppressionRuleCount: rules.filter((rule) => stringValue(rule.layer).toLowerCase() === 'suppression').length,
+    ruleIdAliasCount: aliases.length,
+    ruleIdAliases: aliases.slice(0, 20)
   };
 }
 
@@ -551,27 +743,133 @@ async function writeConversionConfigStorage(body) {
   const savedAt = new Date().toISOString();
   const ruleDocuments = body?.ruleDocuments ?? {};
   const templateDocuments = body?.templateDocuments ?? {};
+  const current = await readConversionConfigStorage();
+  const conflict = storageWriteConflict(body, current);
+  if (conflict) {
+    return {
+      statusCode: 409,
+      body: {
+        success: false,
+        error: 'conversion_config_conflict',
+        message: conflict,
+        currentVersion: current.version,
+        currentEtag: current.etag,
+        currentSavedAt: current.savedAt
+      }
+    };
+  }
+
+  const nextVersion = current.exists
+    ? Math.max(1, Number(current.version) || 0) + 1
+    : 1;
+  const nextPayload = {
+    prefix: String(body?.prefix ?? ''),
+    ruleDocuments: {
+      service: ruleDocuments.service ?? null,
+      suppression: ruleDocuments.suppression ?? null
+    },
+    templateDocuments: {
+      service: templateDocuments.service ?? null,
+      suppression: templateDocuments.suppression ?? null,
+      shared: templateDocuments.shared ?? null
+    }
+  };
+  const etag = computeStorageEtag(nextPayload);
   const manifest = {
     schemaVersion: 1,
+    version: nextVersion,
+    etag,
     savedAt,
-    prefix: String(body?.prefix ?? ''),
+    prefix: nextPayload.prefix,
+    writer: 'monitoring-ui-api',
     files: storage.files
   };
 
   await Promise.all([
-    writeJsonFile(path.join(storage.folder, storage.files.serviceRules), ruleDocuments.service ?? null),
-    writeJsonFile(path.join(storage.folder, storage.files.suppressionRules), ruleDocuments.suppression ?? null),
-    writeJsonFile(path.join(storage.folder, storage.files.serviceTemplates), templateDocuments.service ?? null),
-    writeJsonFile(path.join(storage.folder, storage.files.suppressionTemplates), templateDocuments.suppression ?? null),
-    writeJsonFile(path.join(storage.folder, storage.files.manifest), manifest)
+    writeJsonFile(path.join(storage.folder, storage.files.serviceRules), nextPayload.ruleDocuments.service),
+    writeJsonFile(path.join(storage.folder, storage.files.suppressionRules), nextPayload.ruleDocuments.suppression),
+    writeJsonFile(path.join(storage.folder, storage.files.serviceTemplates), nextPayload.templateDocuments.service),
+    writeJsonFile(path.join(storage.folder, storage.files.suppressionTemplates), nextPayload.templateDocuments.suppression),
+    writeJsonFile(path.join(storage.folder, storage.files.sharedTemplates), nextPayload.templateDocuments.shared)
   ]);
+  await writeJsonFile(path.join(storage.folder, storage.files.manifest), manifest);
 
   return {
-    success: true,
-    storage: publicConversionConfig(),
-    savedAt,
-    prefix: manifest.prefix
+    statusCode: 200,
+    body: {
+      success: true,
+      storage: publicConversionConfig(),
+      version: nextVersion,
+      etag,
+      savedAt,
+      prefix: manifest.prefix
+    }
   };
+}
+
+function storageWriteConflict(body, current) {
+  if (!current.exists) {
+    return '';
+  }
+
+  const expectedVersion = optionalNumber(body?.baseVersion ?? body?.version);
+  const expectedEtag = stringValue(body?.baseEtag ?? body?.etag);
+  if (expectedVersion == null && !expectedEtag) {
+    return '';
+  }
+
+  if (expectedVersion != null && expectedVersion !== current.version) {
+    return `Stored conversion config is v${current.version}, but editor is based on v${expectedVersion}. Reload folder before saving.`;
+  }
+
+  if (expectedEtag && current.etag && expectedEtag !== current.etag) {
+    return `Stored conversion config etag changed from ${expectedEtag} to ${current.etag}. Reload folder before saving.`;
+  }
+
+  return '';
+}
+
+function storageVersion(manifest) {
+  const parsed = Number(manifest?.version);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function storageEtag(manifest, payload) {
+  return stringValue(manifest?.etag) || computeStorageEtag(payload);
+}
+
+function computeStorageEtag(payload) {
+  return createHash('sha256')
+    .update(stableJson({
+      prefix: payload?.prefix ?? '',
+      ruleDocuments: payload?.ruleDocuments ?? {},
+      templateDocuments: payload?.templateDocuments ?? {}
+    }))
+    .digest('hex');
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(',')}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.floor(parsed) : null;
 }
 
 async function readJsonFileIfExists(filePath) {
@@ -587,7 +885,10 @@ async function readJsonFileIfExists(filePath) {
 }
 
 async function writeJsonFile(filePath, value) {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(tempPath, filePath);
 }
 
 async function latestMtime(filePaths) {
@@ -638,12 +939,23 @@ async function checkConfiguredWebhooks() {
       body.Webhooks,
       body.config?.events,
       body.Config?.Events);
+    const cmdbuildInventory = await readCmdbuildManagedWebhookInventory();
+    const cmdbuildEvents = Array.isArray(cmdbuildInventory?.events) ? cmdbuildInventory.events : [];
+    const effectiveEvents = dedupeWebhookEvents([...cmdbuildEvents, ...onlineEvents]);
 
     body.endpoint ??= webhooks.targetUrl ?? '';
     body.route ??= webhooks.route ?? '';
     body.rawTopic ??= webhooks.rawTopic ?? '';
     body.identifier ??= webhooks.managedIdentifier ?? '';
-    body.events = onlineEvents.length > 0 ? onlineEvents : configuredEvents;
+    body.events = effectiveEvents.length > 0 ? effectiveEvents : configuredEvents;
+    body.cmdbuild = cmdbuildInventory
+      ? {
+          success: cmdbuildInventory.success,
+          total: cmdbuildInventory.total,
+          managed: cmdbuildInventory.events.length,
+          error: cmdbuildInventory.error ?? ''
+        }
+      : { success: false, total: 0, managed: 0, error: 'cmdbuild_webhook_inventory_not_configured' };
     body.config = {
       ...(body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}),
       managedIdentifier: webhooks.managedIdentifier ?? '',
@@ -673,6 +985,540 @@ async function checkConfiguredWebhooks() {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+const WEBHOOK_EVENTS = [
+  { eventType: 'CREATE', suffix: 'create', cmdbuildEvent: 'card_create_after' },
+  { eventType: 'UPDATE', suffix: 'update', cmdbuildEvent: 'card_update_after' },
+  { eventType: 'DELETE', suffix: 'delete', cmdbuildEvent: 'card_delete_after' }
+];
+
+async function publishManagedWebhooksToCmdbuild(body) {
+  const cmdbuild = cmdbuildConfiguration();
+  if (!cmdbuild.baseUrl) {
+    return {
+      statusCode: 500,
+      body: {
+        success: false,
+        error: 'cmdbuild_base_url_not_configured'
+      }
+    };
+  }
+
+  const targetUrl = stringValue(config.webhooks?.targetUrl);
+  if (!targetUrl) {
+    return {
+      statusCode: 500,
+      body: {
+        success: false,
+        error: 'webhooks_target_url_not_configured'
+      }
+    };
+  }
+
+  const sourceClasses = managedWebhookSourceClasses(body);
+  if (sourceClasses.length === 0) {
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        error: 'webhook_source_classes_empty'
+      }
+    };
+  }
+
+  const existingInventory = await readCmdbuildWebhookList();
+  if (!existingInventory.success) {
+    return {
+      statusCode: existingInventory.status || 502,
+      body: {
+        success: false,
+        error: existingInventory.error || 'cmdbuild_webhook_inventory_failed'
+      }
+    };
+  }
+
+  const existingCodes = new Set(existingInventory.items.map((item) => stringValue(item.code ?? item._id)));
+  const results = [];
+  const errors = [];
+  for (const sourceClass of sourceClasses) {
+    for (const event of WEBHOOK_EVENTS) {
+      const payload = buildCmdbuildWebhookPayload(sourceClass, event);
+      const exists = existingCodes.has(payload.code);
+      const url = exists
+        ? cmdbuildUrl('etl', 'webhook', payload.code)
+        : cmdbuildUrl('etl', 'webhook');
+      const result = await fetchCmdbuildJson(url, {
+        method: exists ? 'PUT' : 'POST',
+        body: JSON.stringify(payload)
+      });
+      const item = {
+        code: payload.code,
+        classCode: sourceClass.code,
+        eventType: event.eventType,
+        action: exists ? 'updated' : 'created',
+        status: result.status
+      };
+      if (result.ok) {
+        results.push(item);
+      } else {
+        errors.push({
+          ...item,
+          error: result.error
+        });
+      }
+    }
+  }
+
+  const inventory = await readCmdbuildManagedWebhookInventory();
+  return {
+    statusCode: errors.length > 0 ? 502 : 200,
+    body: {
+      success: errors.length === 0,
+      publishedAt: new Date().toISOString(),
+      sourceClassCount: sourceClasses.length,
+      created: results.filter((item) => item.action === 'created').length,
+      updated: results.filter((item) => item.action === 'updated').length,
+      failed: errors.length,
+      results,
+      errors,
+      events: inventory?.events ?? [],
+      cmdbuild: inventory
+        ? {
+            success: inventory.success,
+            total: inventory.total,
+            managed: inventory.events.length,
+            error: inventory.error ?? ''
+          }
+        : null
+    }
+  };
+}
+
+async function readCmdbuildManagedWebhookInventory() {
+  const inventory = await readCmdbuildWebhookList();
+  if (!inventory.configured) {
+    return null;
+  }
+  if (!inventory.success) {
+    return {
+      success: false,
+      total: 0,
+      events: [],
+      error: inventory.error
+    };
+  }
+
+  const events = inventory.items
+    .filter(isManagedCmdbuildWebhook)
+    .map(normalizeCmdbuildWebhookEvent)
+    .filter(Boolean);
+  return {
+    success: true,
+    total: inventory.items.length,
+    events
+  };
+}
+
+async function readCmdbuildWebhookList() {
+  if (!cmdbuildConfiguration().baseUrl) {
+    return {
+      configured: false,
+      success: false,
+      status: 0,
+      items: [],
+      error: 'cmdbuild_base_url_not_configured'
+    };
+  }
+
+  const url = cmdbuildUrl('etl', 'webhook');
+  url.searchParams.set('detailed', 'true');
+  const result = await fetchCmdbuildJson(url);
+  const data = Array.isArray(result.payload?.data)
+    ? result.payload.data
+    : (Array.isArray(result.payload) ? result.payload : []);
+  return {
+    configured: true,
+    success: result.ok,
+    status: result.status,
+    items: result.ok ? data : [],
+    error: result.ok ? '' : result.error
+  };
+}
+
+function managedWebhookSourceClasses(body) {
+  const explicit = Array.isArray(body?.sourceClasses) ? body.sourceClasses : [];
+  const fromExplicit = explicit
+    .map((item) => normalizeManagedWebhookSourceClass(item))
+    .filter(Boolean);
+  if (fromExplicit.length > 0) {
+    return fromExplicit;
+  }
+
+  const byCode = new Map();
+  for (const layerKey of ['service', 'suppression']) {
+    const document = normalizeRuntimeRuleDocument(body?.ruleDocuments?.[layerKey], layerKey);
+    for (const rule of document.rules) {
+      if (rule?.enabled === false || !rule?.source?.class_code) {
+        continue;
+      }
+      const classCode = rule.source.class_code;
+      const key = classCode.toLowerCase();
+      const current = byCode.get(key) ?? {
+        code: classCode,
+        displayName: classCode,
+        requiredFields: new Set(),
+        payloadFields: new Set()
+      };
+      for (const field of sourceFieldsForWebhookRule(rule)) {
+        current.requiredFields.add(field);
+        if (isSafeCmdbuildAttributeName(field)) {
+          current.payloadFields.add(field);
+        }
+      }
+      byCode.set(key, current);
+    }
+  }
+
+  return [...byCode.values()].map((item) => ({
+    ...item,
+    requiredFields: [...item.requiredFields],
+    payloadFields: [...item.payloadFields]
+  }));
+}
+
+function normalizeManagedWebhookSourceClass(item) {
+  const code = stringValue(item?.code ?? item?.classCode ?? item?.sourceClass ?? item?.source_class);
+  if (!code) {
+    return null;
+  }
+
+  return {
+    code,
+    displayName: stringValue(item?.displayName ?? item?.name ?? item?.description) || code,
+    requiredFields: stringArray(item?.requiredFields ?? item?.required_fields),
+    payloadFields: stringArray(item?.payloadFields ?? item?.payload_fields)
+  };
+}
+
+function sourceFieldsForWebhookRule(rule) {
+  const fields = new Set([
+    rule?.source?.key_attribute,
+    rule?.when?.fieldExists
+  ]);
+  for (const condition of [...(rule?.source?.conditions ?? []), ...(rule?.source?.filters ?? [])]) {
+    fields.add(condition?.attribute);
+  }
+  for (const matcher of [
+    ...(rule?.when?.allRegex ?? []),
+    ...(rule?.when?.anyRegex ?? []),
+    ...(rule?.when?.noneRegex ?? [])
+  ]) {
+    if (!isWebhookSystemField(matcher?.field)) {
+      fields.add(matcher?.field);
+    }
+  }
+  for (const value of [
+    rule?.target?.idempotency_key,
+    rule?.target?.card_id,
+    rule?.target?.card_description,
+    ...Object.values(rule?.target?.attribute_mappings ?? {}),
+    ...Object.values(rule?.target?.initial_user_values ?? {})
+  ]) {
+    for (const field of sourceTemplateFields(value)) {
+      fields.add(field);
+    }
+  }
+  return [...fields].map(stringValue).filter(Boolean);
+}
+
+function sourceTemplateFields(template) {
+  const fields = [];
+  const text = stringValue(template);
+  if (!text) {
+    return fields;
+  }
+
+  for (const match of text.matchAll(/\$\{\s*source\.([A-Za-z_][A-Za-z0-9_]*)\s*\}/gi)) {
+    fields.push(match[1]);
+  }
+  return fields;
+}
+
+function isWebhookSystemField(field) {
+  return ['classname', 'classcode', 'class-code', 'eventtype', 'event-type'].includes(stringValue(field).toLowerCase());
+}
+
+function buildCmdbuildWebhookPayload(sourceClass, event) {
+  const webhooks = config.webhooks ?? {};
+  const identifier = stringValue(webhooks.managedIdentifier);
+  const targetTopic = stringValue(webhooks.rawTopic);
+  const body = {
+    source: 'cmdbuild',
+    managedIdentifier: identifier,
+    targetTopic,
+    className: sourceClass.code,
+    class_code: sourceClass.code,
+    eventType: event.eventType.toLowerCase(),
+    cmdbuildEvent: event.cmdbuildEvent,
+    id: '{card:Id}',
+    card_id: '{card:Id}',
+    code: '{card:Code}',
+    description: '{card:Description}'
+  };
+  for (const field of sourceClass.payloadFields ?? []) {
+    const name = stringValue(field);
+    if (!isSafeCmdbuildAttributeName(name) || isWebhookSystemPayloadField(name) || Object.hasOwn(body, name)) {
+      continue;
+    }
+    body[name] = `{card:${name}}`;
+  }
+
+  const headers = webhookTargetHeaders();
+  return {
+    code: managedWebhookCode(sourceClass.code, event.suffix),
+    description: `${identifier || webhookCodePrefix()} ${sourceClass.displayName || sourceClass.code} ${event.suffix}`,
+    event: event.cmdbuildEvent,
+    target: sourceClass.code,
+    method: 'post',
+    url: stringValue(webhooks.targetUrl),
+    headers,
+    body,
+    language: stringValue(config.cmdbuildSchema?.defaultLanguage || 'ru') || 'ru',
+    active: true
+  };
+}
+
+function webhookTargetHeaders() {
+  const token = stringValue(config.webhooks?.targetBearerToken);
+  return token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+}
+
+function isSafeCmdbuildAttributeName(value) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(stringValue(value));
+}
+
+function isWebhookSystemPayloadField(value) {
+  return new Set([
+    'source',
+    'managedidentifier',
+    'identifier',
+    'targettopic',
+    'rawtopic',
+    'classname',
+    'classcode',
+    'class_code',
+    'eventtype',
+    'event_type',
+    'cmdbuildevent',
+    'id',
+    '_id',
+    'cardid',
+    'card_id'
+  ]).has(stringValue(value).toLowerCase());
+}
+
+function isManagedCmdbuildWebhook(webhook) {
+  const body = webhookBodyObject(webhook);
+  const configuredTargetUrl = stringValue(config.webhooks?.targetUrl);
+  const webhookUrl = stringValue(webhook?.url);
+  if (configuredTargetUrl && webhookUrl && webhookUrl !== configuredTargetUrl) {
+    return false;
+  }
+
+  const identifier = stringValue(config.webhooks?.managedIdentifier);
+  const bodyIdentifier = stringValue(body.managedIdentifier ?? body.identifier);
+  const code = stringValue(webhook?.code ?? webhook?._id).toLowerCase();
+  return Boolean(
+    (identifier && bodyIdentifier === identifier)
+    || code.startsWith(`${webhookCodePrefix().toLowerCase()}-`));
+}
+
+function normalizeCmdbuildWebhookEvent(webhook) {
+  const eventType = cmdbuildWebhookEventType(webhook?.event);
+  if (!eventType) {
+    return null;
+  }
+
+  const body = webhookBodyObject(webhook);
+  const classCode = stringValue(
+    body.className
+    ?? body.class_code
+    ?? body.classCode
+    ?? webhook?.target);
+  if (!classCode) {
+    return null;
+  }
+
+  const bodyFields = Object.keys(body)
+    .filter((field) => !isWebhookSystemPayloadField(field))
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
+  return {
+    eventType,
+    classCode,
+    identifier: stringValue(config.webhooks?.managedIdentifier),
+    code: stringValue(webhook?.code ?? webhook?._id),
+    targetTopic: stringValue(body.targetTopic ?? body.rawTopic ?? config.webhooks?.rawTopic),
+    url: stringValue(webhook?.url),
+    bodyFields
+  };
+}
+
+function cmdbuildWebhookEventType(event) {
+  const value = stringValue(event).toLowerCase();
+  if (value === 'card_create_after') {
+    return 'CREATE';
+  }
+  if (value === 'card_update_after') {
+    return 'UPDATE';
+  }
+  if (value === 'card_delete_after') {
+    return 'DELETE';
+  }
+  return '';
+}
+
+function webhookBodyObject(webhook) {
+  const body = webhook?.body;
+  return body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+}
+
+function dedupeWebhookEvents(events) {
+  const byKey = new Map();
+  for (const event of events) {
+    const eventType = stringValue(event?.eventType ?? event?.type ?? event?.EventType ?? event?.Type).toUpperCase();
+    if (!eventType) {
+      continue;
+    }
+    const classCodes = webhookEventClassCodesForServer(event);
+    const classKey = classCodes.length > 0
+      ? classCodes.map((item) => item.toLowerCase()).sort().join(',')
+      : '*';
+    const identifier = stringValue(event?.identifier ?? event?.Identifier ?? config.webhooks?.managedIdentifier);
+    const key = `${identifier}|${eventType}|${classKey}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, event);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function webhookEventClassCodesForServer(event) {
+  const values = [
+    event?.classCode,
+    event?.class_code,
+    event?.ClassCode,
+    event?.class,
+    event?.Class,
+    event?.className,
+    event?.ClassName,
+    event?.sourceClass,
+    event?.source_class,
+    event?.sourceClassCode,
+    event?.source_class_code,
+    event?.cmdbClass,
+    event?.cmdbClassCode,
+    event?.filter?.class_code,
+    event?.filter?.classCode
+  ];
+  return values.map(stringValue).filter(Boolean);
+}
+
+async function fetchCmdbuildJson(targetUrl, init = {}) {
+  const timeoutMs = Number(config.cmdbuild?.timeoutMs ?? 10000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(targetUrl, {
+      ...init,
+      headers: {
+        accept: 'application/json',
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+        ...cmdbuildAuthHeaders(),
+        ...(init.headers ?? {})
+      },
+      signal: controller.signal
+    });
+    const text = await response.text();
+    const payload = parseJsonOrNull(text);
+    return response.ok
+      ? { ok: true, status: response.status, payload, text }
+      : {
+          ok: false,
+          status: response.status,
+          payload,
+          text,
+          error: payload?.messages?.[0]?.message ?? payload?.detail ?? payload?.error ?? text
+        };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      payload: null,
+      text: '',
+      error: error.name === 'AbortError' ? 'cmdbuild request timeout' : error.message
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function cmdbuildAuthHeaders() {
+  const cmdbuild = cmdbuildConfiguration();
+  if (cmdbuild.apiToken) {
+    return { authorization: `Bearer ${cmdbuild.apiToken}` };
+  }
+  if (cmdbuild.username || cmdbuild.password) {
+    return {
+      authorization: `Basic ${Buffer.from(`${cmdbuild.username}:${cmdbuild.password}`).toString('base64')}`
+    };
+  }
+  return {};
+}
+
+function cmdbuildUrl(...segments) {
+  return appendPath(cmdbuildConfiguration().baseUrl, ...segments);
+}
+
+function cmdbuildConfiguration() {
+  const section = config.cmdbuild ?? config.Cmdbuild ?? {};
+  return {
+    baseUrl: stringValue(section.baseUrl ?? section.BaseUrl),
+    username: stringValue(section.username ?? section.Username),
+    password: stringValue(section.password ?? section.Password),
+    apiToken: stringValue(section.apiToken ?? section.ApiToken)
+  };
+}
+
+function managedWebhookCode(classCode, eventSuffix) {
+  return `${webhookCodePrefix()}-${webhookCodeSegment(classCode)}-${eventSuffix}`;
+}
+
+function webhookCodePrefix() {
+  return stringValue(config.webhooks?.codePrefix ?? config.webhooks?.managedIdentifier ?? 'cmdbwebhooks2kafka')
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9_]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'cmdbwebhooks2kafka';
+}
+
+function webhookCodeSegment(value) {
+  const normalized = stringValue(value)
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (normalized) {
+    return normalized;
+  }
+
+  return `class-${createHash('sha256').update(stringValue(value)).digest('hex').slice(0, 8)}`;
+}
+
+function stringArray(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.map(stringValue).filter(Boolean))]
+    : [];
 }
 
 async function checkHealthService(check) {

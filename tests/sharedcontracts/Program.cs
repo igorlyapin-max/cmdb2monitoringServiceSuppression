@@ -1,5 +1,11 @@
+using System.Net;
+using System.Text.Json;
+using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
+using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.ConversionRules;
+using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
+using Microsoft.Extensions.Options;
 
 var factory = new CmdbuildSchemaFactory();
 var schema = factory.Build(new CmdbuildSchemaOptions
@@ -258,8 +264,224 @@ var validation = new ConversionRulesValidator().Validate(new ConversionRulesDocu
 });
 
 Assert(validation.IsValid, "sample conversion rule must be valid");
+AssertApplyModeContract();
+AssertRouterCoreAggregationContract();
+AssertSemanticFingerprintIncludesDimensionField();
+await AssertCmdbuildApplyCreatesSourceLinkAsync();
 
 Console.WriteLine("Shared contract checks passed.");
+
+static void AssertApplyModeContract()
+{
+    Assert(!new ApplyOptions { Mode = "manual", AutoApplyEnabled = false }.EffectiveAutoApplyEnabled(),
+        "manual apply mode must not start Kafka auto-apply.");
+    Assert(new ApplyOptions { Mode = "auto", AutoApplyEnabled = false }.EffectiveAutoApplyEnabled(),
+        "auto apply mode must enable Kafka auto-apply.");
+    Assert(new ApplyOptions { Mode = "manual", AutoApplyEnabled = true }.EffectiveAutoApplyEnabled(),
+        "AutoApplyEnabled flag must enable Kafka auto-apply.");
+}
+
+static void AssertRouterCoreAggregationContract()
+{
+    var commands = BuildRouterCorePlans("City04").Select(plan => plan.Command).ToArray();
+    Assert(commands.Length == 2, "routerCore event must produce the static core-router command and the city population command.");
+
+    var coreCommand = commands.Single(command => command.RuleId == "core-router");
+    Assert(coreCommand.CommandType == AggregationCommandTypes.EnsureMembership, "core-router command type is invalid.");
+    Assert(coreCommand.Source.ClassCode == "routerCore", "core-router source class is invalid.");
+    Assert(coreCommand.Source.CardId == "447411", "core-router source card id is invalid.");
+    Assert(coreCommand.Source.KeyAttribute == "Code", "core-router source key attribute is invalid.");
+    Assert(coreCommand.Source.KeyValue == "ctest2-routerCore-002", "core-router source key value is invalid.");
+    Assert(coreCommand.Target.ClassCode == "C2M_ServiceNetworkAccessZone", "core-router target class is invalid.");
+    Assert(coreCommand.Target.CardId == "576100", "core-router target card id is invalid.");
+    Assert(!coreCommand.Target.CreateInstance, "core-router command must attach to the existing target card.");
+    Assert(coreCommand.Target.IdempotencyKey == "cmdbuild:C2M_ServiceNetworkAccessZone:576100",
+        "core-router idempotency key is invalid.");
+    Assert(coreCommand.Target.Attributes["Code"]?.ToString() == "CoreRouter", "core-router target Code is invalid.");
+    Assert(coreCommand.Target.Attributes["name"]?.ToString() == "Маршрутизаторы ядра", "core-router target name is invalid.");
+
+    var cityCommand = commands.Single(command => command.RuleId == "network-access-zone-by-city-routercore-city04");
+    Assert(cityCommand.Source.KeyAttribute == "locationFloorBuildingCity", "city command source key attribute is invalid.");
+    Assert(cityCommand.Source.KeyValue == "City04", "city command source key value is invalid.");
+    Assert(cityCommand.Target.CreateInstance, "city command must create or resolve a managed city target.");
+    Assert(cityCommand.Target.IdempotencyKey == "network-access-zone-by-city:City04", "city command idempotency key is invalid.");
+    Assert(cityCommand.Target.Attributes["name"]?.ToString() == "City04", "city command target name is invalid.");
+    Assert(cityCommand.Target.Relations.Count == 1, "city command must contain a managed relation to core routers.");
+    Assert(cityCommand.Target.Relations[0].DomainCode == "C2M_ServiceNetworkZoneDependsOnNetworkZone",
+        "city command managed relation domain is invalid.");
+    Assert(cityCommand.Target.Relations[0].TargetLookup == "576100", "city command must link to the core-router target.");
+}
+
+static void AssertSemanticFingerprintIncludesDimensionField()
+{
+    var city04Plan = BuildRouterCorePlans("City04")
+        .Single(plan => plan.Command.RuleId == "network-access-zone-by-city-routercore-city04");
+    var city29Plan = BuildRouterCorePlans("City29")
+        .Single(plan => plan.Command.RuleId == "network-access-zone-by-city-routercore-city29");
+
+    Assert(city04Plan.SemanticKey != city29Plan.SemanticKey,
+        "semantic key must include the generated city rule id so different city targets are not deduplicated together.");
+    Assert(city04Plan.SemanticFingerprint != city29Plan.SemanticFingerprint,
+        "semantic fingerprint must change when the population dimension field changes.");
+}
+
+static async Task AssertCmdbuildApplyCreatesSourceLinkAsync()
+{
+    var command = BuildRouterCorePlans("City04")
+        .Select(plan => plan.Command)
+        .Single(command => command.RuleId == "core-router");
+    var handler = new DiagnosticCmdbuildHandler();
+    var client = new CmdbuildClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<CmdbuildOptions>(new CmdbuildOptions
+        {
+            BaseUrl = "http://cmdbuild.local/services/rest/v3",
+            AuthMode = "None",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyAggregationCommandAsync(command, CancellationToken.None);
+    Assert(result.Success, "CMDBuild apply result must be successful.");
+    Assert(result.TargetCardId == "576100", "CMDBuild apply must resolve the static core-router target card.");
+    Assert(result.TargetAction == "unchanged", "CMDBuild apply must not update an unchanged target card.");
+    Assert(result.RelationDomain == "C2M_ServiceNetworkAccessZonePopulatedFromrouterCore",
+        "CMDBuild apply must use the source-link domain.");
+    Assert(result.RelationId == "rel-core-router-447411", "CMDBuild apply must report created relation id.");
+    Assert(result.RelationAction == "created", "CMDBuild apply must create the missing source-link relation.");
+
+    var sourceLinkRelationPayload = handler.SourceLinkRelationPayload
+        ?? throw new InvalidOperationException("CMDBuild apply must post a source-link relation payload.");
+    using var document = JsonDocument.Parse(sourceLinkRelationPayload);
+    var payload = document.RootElement;
+    Assert(JsonString(payload, "_sourceType") == "C2M_ServiceNetworkAccessZone", "source-link source type is invalid.");
+    Assert(JsonString(payload, "_sourceId") == "576100", "source-link source id is invalid.");
+    Assert(JsonString(payload, "_destinationType") == "routerCore", "source-link destination type is invalid.");
+    Assert(JsonString(payload, "_destinationId") == "447411", "source-link destination id is invalid.");
+    Assert(JsonString(payload, "population_rule_id") == "core-router", "source-link population_rule_id is invalid.");
+}
+
+static IReadOnlyList<AggregationCommandPlan> BuildRouterCorePlans(string city)
+{
+    var rawEvent = new CmdbRawEvent
+    {
+        EventId = $"event-{city}",
+        Source = "CMDBuild",
+        EventType = "UPDATE",
+        ClassCode = "routerCore",
+        CardId = "447411",
+        Attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["className"] = "routerCore",
+            ["Code"] = "ctest2-routerCore-002",
+            ["locationFloorBuildingCity"] = city
+        }
+    };
+
+    return new AggregationRuleEngine().BuildCommandPlans(rawEvent, new ConversionRulesDocument
+    {
+        Version = "test",
+        Rules =
+        [
+            CoreRouterRule(),
+            RouterCityRule("City04"),
+            RouterCityRule("City29")
+        ]
+    });
+}
+
+static ConversionRule CoreRouterRule()
+{
+    return new ConversionRule
+    {
+        RuleId = "core-router",
+        Name = "маршрутизаторы ядра",
+        Layer = "service",
+        Priority = 50,
+        Source = new SourceSelector
+        {
+            ClassCode = "routerCore",
+            KeyAttribute = "Code"
+        },
+        When = new RuleWhen
+        {
+            FieldExists = "Code",
+            AllRegex =
+            [
+                new RegexMatcher { Field = "className", Pattern = "(?i)^routerCore$" },
+                new RegexMatcher { Field = "Code", Pattern = ".*" }
+            ]
+        },
+        Target = new TargetObject
+        {
+            ClassCode = "C2M_ServiceNetworkAccessZone",
+            CardId = "576100",
+            CardDescription = "Маршрутизаторы ядра",
+            IdempotencyKey = "cmdbuild:C2M_ServiceNetworkAccessZone:576100",
+            InitialUserValues = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Code"] = "CoreRouter",
+                ["Description"] = "Маршрутизаторы ядра",
+                ["name"] = "Маршрутизаторы ядра",
+                ["is_critical"] = "false",
+                ["aggregation_type"] = "any"
+            }
+        }
+    };
+}
+
+static ConversionRule RouterCityRule(string city)
+{
+    return new ConversionRule
+    {
+        RuleId = $"network-access-zone-by-city-routercore-{city.ToLowerInvariant()}",
+        Name = $"Уровень коммутации / {city}",
+        Layer = "service",
+        Priority = 100,
+        Source = new SourceSelector
+        {
+            ClassCode = "routerCore",
+            KeyAttribute = "locationFloorBuildingCity"
+        },
+        When = new RuleWhen
+        {
+            FieldExists = "locationFloorBuildingCity",
+            AllRegex =
+            [
+                new RegexMatcher { Field = "className", Pattern = "(?i)^routerCore$" },
+                new RegexMatcher { Field = "Code", Pattern = ".*" },
+                new RegexMatcher { Field = "locationFloorBuildingCity", Pattern = $"(?i)^{city}$" }
+            ]
+        },
+        Target = new TargetObject
+        {
+            ClassCode = "C2M_ServiceNetworkAccessZone",
+            CreateInstance = true,
+            IdempotencyKey = $"network-access-zone-by-city:{city}",
+            AttributeMappings = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["name"] = city,
+                ["population_source_key"] = $"network-access-zone-by-city:{city}"
+            },
+            InitialUserValues = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["description"] = $"Автоматически создано для {city}"
+            }
+        },
+        Relations =
+        [
+            new TargetRelation
+            {
+                DomainCode = "C2M_ServiceNetworkZoneDependsOnNetworkZone",
+                TargetClassCode = "C2M_ServiceNetworkAccessZone",
+                TargetLookup = "576100",
+                AttributeMappings = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["is_active"] = "true"
+                }
+            }
+        ]
+    };
+}
 
 static void AssertManagedInheritance(
     CmdbuildSchemaDefinition schema,
@@ -548,6 +770,12 @@ static void AssertSourceLinkDomain(
         absent: ["priority", "is_dynamic", "fallback_supported", "is_critical"]);
 }
 
+static string JsonString(JsonElement element, string propertyName)
+{
+    Assert(element.TryGetProperty(propertyName, out var property), $"JSON property '{propertyName}' is missing.");
+    return property.ValueKind == JsonValueKind.String ? property.GetString() ?? "" : property.GetRawText();
+}
+
 static string[] CommonAttributeCodes()
 {
     return
@@ -597,5 +825,107 @@ static void Assert(bool condition, string message)
     if (!condition)
     {
         throw new InvalidOperationException(message);
+    }
+}
+
+public sealed class StaticOptionsMonitor<TOptions>(TOptions value) : IOptionsMonitor<TOptions>
+{
+    public TOptions CurrentValue { get; } = value;
+
+    public TOptions Get(string? name)
+    {
+        return CurrentValue;
+    }
+
+    public IDisposable? OnChange(Action<TOptions, string?> listener)
+    {
+        return null;
+    }
+}
+
+public sealed class DiagnosticCmdbuildHandler : HttpMessageHandler
+{
+    public string? SourceLinkRelationPayload { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var path = (request.RequestUri?.AbsolutePath ?? "") + (request.RequestUri?.Query ?? "");
+        var body = request.Content is null
+            ? ""
+            : await request.Content.ReadAsStringAsync(cancellationToken);
+
+        if (request.Method == HttpMethod.Get
+            && path.EndsWith("/classes/C2M_ServiceNetworkAccessZone/cards/576100", StringComparison.Ordinal))
+        {
+            return Json(HttpStatusCode.OK, """
+            {
+              "success": true,
+              "data": {
+                "_id": "576100",
+                "Code": "CoreRouter",
+                "Description": "Маршрутизаторы ядра",
+                "name": "Маршрутизаторы ядра",
+                "is_active": true,
+                "managed_by_builder": true,
+                "auto_population_enabled": true,
+                "population_rule_id": "core-router",
+                "is_critical": false,
+                "aggregation_type": "any"
+              }
+            }
+            """);
+        }
+
+        if (request.Method == HttpMethod.Get
+            && path.EndsWith("/domains/C2M_ServiceNetworkAccessZonePopulatedFromrouterCore?includeModel=true", StringComparison.Ordinal))
+        {
+            return Json(HttpStatusCode.OK, """
+            {
+              "success": true,
+              "data": {
+                "_id": "C2M_ServiceNetworkAccessZonePopulatedFromrouterCore",
+                "name": "C2M_ServiceNetworkAccessZonePopulatedFromrouterCore",
+                "active": true,
+                "source": "C2M_ServiceNetworkAccessZone",
+                "destination": "routerCore"
+              }
+            }
+            """);
+        }
+
+        if (request.Method == HttpMethod.Post
+            && path.EndsWith("/domains/C2M_ServiceNetworkAccessZonePopulatedFromrouterCore/relations", StringComparison.Ordinal))
+        {
+            SourceLinkRelationPayload = body;
+            return Json(HttpStatusCode.OK, """
+            {
+              "success": true,
+              "data": {
+                "_id": "rel-core-router-447411"
+              }
+            }
+            """);
+        }
+
+        return Json(
+            HttpStatusCode.NotFound,
+            $$"""
+            {
+              "success": false,
+              "error": "unexpected request",
+              "method": "{{request.Method.Method}}",
+              "path": "{{path}}"
+            }
+            """);
+    }
+
+    private static HttpResponseMessage Json(HttpStatusCode statusCode, string json)
+    {
+        return new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent(json)
+        };
     }
 }

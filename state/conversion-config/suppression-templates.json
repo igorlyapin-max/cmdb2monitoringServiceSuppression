@@ -1,4 +1,711 @@
 {
   "layer": "suppression",
-  "templates": []
+  "templates": [
+    {
+      "template_id": "supp",
+      "name": "МаршрутизаторыSupp",
+      "layer": "suppression",
+      "enabled": true,
+      "source_class_regex": "(?i)^Маршрутизатор$",
+      "population_dimension": {
+        "enabled": true,
+        "type": "source_field",
+        "source_field": "locationFloorBuildingCity",
+        "values": "",
+        "regex": "",
+        "capture_group": "1",
+        "key_template": "${template.id}:${dimension.key}",
+        "name_template": "${dimension.value}",
+        "condition_field": "",
+        "condition_pattern_template": "",
+        "max_rules": 1000
+      },
+      "filter": {
+        "include": [
+          {
+            "field": "Code",
+            "regex": ".*"
+          }
+        ],
+        "exclude": []
+      },
+      "priority": 90,
+      "target": {
+        "class_code": "C2M_SuppressionNetworkAccessZone",
+        "name_template": "${dimension.name}",
+        "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+        "population_source_key_template": "${template.id}:${dimension.key}",
+        "initial_user_values": {
+          "is_critical": "false"
+        }
+      },
+      "variables": [],
+      "available_for": [
+        "suppression"
+      ],
+      "managed_by": "suppression",
+      "version": 6,
+      "lifecycle": {
+        "change_mode": "modified",
+        "updated_at": "2026-05-11T11:25:26.542Z",
+        "source_regex_fingerprint": "22dc466e:21",
+        "regex_fingerprint": "d9e65b02:414",
+        "population_dimension_fingerprint": "56e68153:280",
+        "variables_fingerprint": "5975e3:2",
+        "relation_fingerprint": "5975e3:2",
+        "full_fingerprint": "f316fda4:902"
+      },
+      "managed_relations": []
+    },
+    {
+      "template_id": "rule",
+      "name": "Рабочие места",
+      "layer": "suppression",
+      "enabled": true,
+      "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+      "population_dimension": {
+        "enabled": true,
+        "type": "source_field",
+        "source_field": "locationFloorBuildingCity",
+        "values": "",
+        "regex": "",
+        "capture_group": "1",
+        "key_template": "${template.id}:${dimension.key}",
+        "name_template": "${dimension.value}",
+        "condition_field": "",
+        "condition_pattern_template": "",
+        "max_rules": 1000
+      },
+      "filter": {
+        "include": [],
+        "exclude": []
+      },
+      "priority": 100,
+      "target": {
+        "class_code": "C2M_SuppressionResource",
+        "name_template": "${dimension.name}",
+        "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+        "population_source_key_template": "${template.id}:${dimension.key}",
+        "initial_user_values": {}
+      },
+      "variables": [
+        {
+          "name": "city",
+          "value": "${source.locationFloorBuildingCity}"
+        }
+      ],
+      "available_for": [
+        "suppression"
+      ],
+      "managed_by": "suppression",
+      "version": 2,
+      "lifecycle": {
+        "change_mode": "modified",
+        "updated_at": "2026-05-11T06:54:24.785Z",
+        "source_regex_fingerprint": "d37ca1a6:35",
+        "regex_fingerprint": "a69f6846:399",
+        "population_dimension_fingerprint": "56e68153:280",
+        "variables_fingerprint": "66abbba7:63",
+        "relation_fingerprint": "9ebd302f:416",
+        "full_fingerprint": "3104fa8:1321"
+      },
+      "managed_relations": [
+        {
+          "kind": "template",
+          "relation_role": "depends_on",
+          "target_template_id": "supp",
+          "target_rule_id": "",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "suppression-template-rule-relation-template-depends-on-supp-54969ab1-124",
+          "artifact_fingerprint": "80988529:287",
+          "attributes": {
+            "match": {
+              "mode": "exact",
+              "source_variable": "dimension_key",
+              "target_variable": "dimension_key",
+              "source_pattern": "",
+              "target_pattern": ""
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "templateVersions": [
+    {
+      "snapshot_id": "rule-v1-6b479343-882",
+      "layer": "suppression",
+      "template_id": "rule",
+      "template_version": 1,
+      "template_name": "Рабочие места",
+      "content_hash": "6b479343:882",
+      "candidate_selection_hash": "a69f6846:399",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "5975e3:2",
+      "change_mode": "created",
+      "created_at": "2026-05-11T06:16:42.049Z",
+      "definition": {
+        "template_id": "rule",
+        "name": "Рабочие места",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_SuppressionResource",
+          "name_template": "${dimension.name}",
+          "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}"
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": []
+      },
+      "managed_relations": []
+    },
+    {
+      "snapshot_id": "supp-v1-4ee71a52-857",
+      "layer": "suppression",
+      "template_id": "supp",
+      "template_version": 1,
+      "template_name": "МаршрутизаторыSupp",
+      "content_hash": "4ee71a52:857",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "5975e3:2",
+      "relation_hash": "5975e3:2",
+      "change_mode": "created",
+      "created_at": "2026-05-11T06:21:24.174Z",
+      "definition": {
+        "template_id": "supp",
+        "name": "МаршрутизаторыSupp",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_SuppressionNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}"
+        },
+        "variables": [],
+        "managed_relations": []
+      },
+      "managed_relations": []
+    },
+    {
+      "snapshot_id": "rule-v2-3104fa8-1321",
+      "layer": "suppression",
+      "template_id": "rule",
+      "template_version": 2,
+      "template_name": "Рабочие места",
+      "content_hash": "3104fa8:1321",
+      "candidate_selection_hash": "a69f6846:399",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "9ebd302f:416",
+      "change_mode": "modified",
+      "created_at": "2026-05-11T06:54:24.786Z",
+      "definition": {
+        "template_id": "rule",
+        "name": "Рабочие места",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_SuppressionResource",
+          "name_template": "${dimension.name}",
+          "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {}
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": [
+          {
+            "kind": "template",
+            "relation_role": "depends_on",
+            "target_template_id": "supp",
+            "target_rule_id": "",
+            "target_class_code": "",
+            "target_card_id": "",
+            "managed_key": "suppression-template-rule-relation-template-depends-on-supp-54969ab1-124",
+            "artifact_fingerprint": "80988529:287",
+            "attributes": {
+              "match": {
+                "mode": "exact",
+                "source_variable": "dimension_key",
+                "target_variable": "dimension_key",
+                "source_pattern": "",
+                "target_pattern": ""
+              }
+            }
+          }
+        ]
+      },
+      "managed_relations": [
+        {
+          "kind": "template",
+          "relation_role": "depends_on",
+          "target_template_id": "supp",
+          "target_rule_id": "",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "suppression-template-rule-relation-template-depends-on-supp-54969ab1-124",
+          "artifact_fingerprint": "80988529:287",
+          "attributes": {
+            "match": {
+              "mode": "exact",
+              "source_variable": "dimension_key",
+              "target_variable": "dimension_key",
+              "source_pattern": "",
+              "target_pattern": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "snapshot_id": "supp-v2-2080f51c-1152",
+      "layer": "suppression",
+      "template_id": "supp",
+      "template_version": 2,
+      "template_name": "МаршрутизаторыSupp",
+      "content_hash": "2080f51c:1152",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "5975e3:2",
+      "relation_hash": "4efb8e6a:272",
+      "change_mode": "modified",
+      "created_at": "2026-05-11T07:57:24.142Z",
+      "definition": {
+        "template_id": "supp",
+        "name": "МаршрутизаторыSupp",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_SuppressionNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {}
+        },
+        "variables": [],
+        "managed_relations": [
+          {
+            "kind": "rule",
+            "relation_role": "suppresses",
+            "target_template_id": "",
+            "target_rule_id": "rule",
+            "target_class_code": "",
+            "target_card_id": "",
+            "managed_key": "suppression-template-supp-relation-rule-suppresses-rule-5971e3-2",
+            "artifact_fingerprint": "f1517296:151",
+            "attributes": {}
+          }
+        ]
+      },
+      "managed_relations": [
+        {
+          "kind": "rule",
+          "relation_role": "suppresses",
+          "target_template_id": "",
+          "target_rule_id": "rule",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "suppression-template-supp-relation-rule-suppresses-rule-5971e3-2",
+          "artifact_fingerprint": "f1517296:151",
+          "attributes": {}
+        }
+      ]
+    },
+    {
+      "snapshot_id": "supp-v3-69a3b64d-1172",
+      "layer": "suppression",
+      "template_id": "supp",
+      "template_version": 3,
+      "template_name": "МаршрутизаторыSupp",
+      "content_hash": "69a3b64d:1172",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "5975e3:2",
+      "relation_hash": "4efb8e6a:272",
+      "change_mode": "modified",
+      "created_at": "2026-05-11T08:53:29.028Z",
+      "definition": {
+        "template_id": "supp",
+        "name": "МаршрутизаторыSupp",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 90,
+        "target": {
+          "class_code": "C2M_SuppressionNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false"
+          }
+        },
+        "variables": [],
+        "managed_relations": [
+          {
+            "kind": "rule",
+            "relation_role": "suppresses",
+            "target_template_id": "",
+            "target_rule_id": "rule",
+            "target_class_code": "",
+            "target_card_id": "",
+            "managed_key": "suppression-template-supp-relation-rule-suppresses-rule-5971e3-2",
+            "artifact_fingerprint": "f1517296:151",
+            "attributes": {}
+          }
+        ]
+      },
+      "managed_relations": [
+        {
+          "kind": "rule",
+          "relation_role": "suppresses",
+          "target_template_id": "",
+          "target_rule_id": "rule",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "suppression-template-supp-relation-rule-suppresses-rule-5971e3-2",
+          "artifact_fingerprint": "f1517296:151",
+          "attributes": {}
+        }
+      ]
+    },
+    {
+      "snapshot_id": "supp-v4-f316fda4-902",
+      "layer": "suppression",
+      "template_id": "supp",
+      "template_version": 4,
+      "template_name": "МаршрутизаторыSupp",
+      "content_hash": "f316fda4:902",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "5975e3:2",
+      "relation_hash": "5975e3:2",
+      "change_mode": "modified",
+      "created_at": "2026-05-11T09:59:26.053Z",
+      "definition": {
+        "template_id": "supp",
+        "name": "МаршрутизаторыSupp",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 90,
+        "target": {
+          "class_code": "C2M_SuppressionNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false"
+          }
+        },
+        "variables": [],
+        "managed_relations": []
+      },
+      "managed_relations": []
+    },
+    {
+      "snapshot_id": "supp-v5-3d70016c-1276",
+      "layer": "suppression",
+      "template_id": "supp",
+      "template_version": 5,
+      "template_name": "МаршрутизаторыSupp",
+      "content_hash": "3d70016c:1276",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "5975e3:2",
+      "relation_hash": "e90fa8eb:376",
+      "change_mode": "modified",
+      "created_at": "2026-05-11T10:58:36.253Z",
+      "definition": {
+        "template_id": "supp",
+        "name": "МаршрутизаторыSupp",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 90,
+        "target": {
+          "class_code": "C2M_SuppressionNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false"
+          }
+        },
+        "variables": [],
+        "managed_relations": [
+          {
+            "kind": "rule",
+            "relation_role": "uses",
+            "target_template_id": "",
+            "target_rule_id": "suppression-routercore-c2m-suppressionnetworkaccesszone-611269",
+            "target_class_code": "",
+            "target_card_id": "",
+            "managed_key": "suppression-template-supp-relation-rule-uses-suppression-routercore-c2m-suppressionnetworkaccesszone-611269-5971e3-2",
+            "artifact_fingerprint": "206c4d8c:203",
+            "attributes": {}
+          }
+        ]
+      },
+      "managed_relations": [
+        {
+          "kind": "rule",
+          "relation_role": "uses",
+          "target_template_id": "",
+          "target_rule_id": "suppression-routercore-c2m-suppressionnetworkaccesszone-611269",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "suppression-template-supp-relation-rule-uses-suppression-routercore-c2m-suppressionnetworkaccesszone-611269-5971e3-2",
+          "artifact_fingerprint": "206c4d8c:203",
+          "attributes": {}
+        }
+      ]
+    },
+    {
+      "snapshot_id": "supp-v6-f316fda4-902",
+      "layer": "suppression",
+      "template_id": "supp",
+      "template_version": 6,
+      "template_name": "МаршрутизаторыSupp",
+      "content_hash": "f316fda4:902",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "5975e3:2",
+      "relation_hash": "5975e3:2",
+      "change_mode": "modified",
+      "created_at": "2026-05-11T11:25:26.543Z",
+      "definition": {
+        "template_id": "supp",
+        "name": "МаршрутизаторыSupp",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 90,
+        "target": {
+          "class_code": "C2M_SuppressionNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false"
+          }
+        },
+        "variables": [],
+        "managed_relations": []
+      },
+      "managed_relations": []
+    }
+  ]
 }

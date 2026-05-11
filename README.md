@@ -17,6 +17,23 @@ Operational documentation:
   log routing, Kafka/ELK/syslog behavior, and secret management.
 - [DEPLOYMENT.md](DEPLOYMENT.md): deployment prerequisites, external
   configuration, Kafka topics, service startup order, and validation checklist.
+- [RULES_AND_MODELS_EDITOR_GUIDE.md](RULES_AND_MODELS_EDITOR_GUIDE.md):
+  operator workflow for schema/model preparation, rule editing, population
+  templates, synchronization, and diagnostics.
+
+Diagnostic autotests are intentionally launched by a separate command:
+
+```bash
+./scripts/test-diagnostics.sh
+```
+
+By default it runs fast offline contracts for schema generation, conversion
+rules, CMDBuild apply payloads, and the router-core population scenario. Add
+`LIVE=1` to include live CMDBuild/Zabbix connectivity checks:
+
+```bash
+LIVE=1 ./scripts/test-diagnostics.sh
+```
 
 ## Runtime pipeline
 
@@ -43,6 +60,19 @@ monitoring application has not finished creating or binding the Zabbix host yet.
 `DELETE` must be idempotent and must remove only previously recorded managed
 memberships; if the object was never applied by this service, `DELETE` is a
 no-op.
+
+The pipeline reduces feedback loops from its own CMDBuild writes without
+requiring extra origin data from CMDBuild webhooks. `cmdbwebhooks2kafka` still
+publishes every accepted raw webhook for auditability. `cmdbconfigbuilder`
+computes a semantic fingerprint per `rule_id + source class + source card` from
+the fields that the matched rule actually uses; repeated CREATE/UPDATE events
+with the same semantic input do not publish another aggregation command within
+the configured deduplication window. `cmdbaggregation2cmdbuild` also reads an
+existing managed target card before updating it and skips the CMDBuild `PUT`
+when all managed values already match. This prevents relation updates,
+idempotent target-card ensures, and neighboring `zabbix_hostid` updates from
+causing repeated self-triggered apply cycles when the effective rule input did
+not change.
 
 Kafka is configured only through external settings: `Kafka`, `KafkaTopics`, and
 optional `KafkaLogging`. The services do not create topics at startup. Service
@@ -276,6 +306,13 @@ Suppression schema is intentionally uniform:
   `n`; `threshold` is used by `aggregation_type=threshold`, and `n` is the N
   parameter for `n_of_m` while M is the current active child count. Suppression
   creation exposes `name`, `description`, and `is_critical`.
+- Population template editing exposes the same user-owned target attributes for
+  generated aggregate cards: service templates can set `is_critical`,
+  `aggregation_type`, `threshold`, and `n`; suppression templates can set
+  `is_critical`. The UI only shows attributes present on the selected target
+  class. Values are rendered during template materialization from `template.*`,
+  `class.*`, `dimension.*`, and `vars.*`; `${source.*}` is rejected because no
+  concrete source card exists at that stage.
 - The source key is derived from the first source-selection condition, or falls
   back to CMDBuild card `_id` when no condition is configured. It is used for
   rule source field metadata and delete/update correlation, not for creating a
@@ -293,11 +330,91 @@ Suppression schema is intentionally uniform:
 - Templates use the same include/exclude regex condition model as manual
   rules. The attribute chooser is built from the source classes matched by the
   template class regex.
-- Template fields can use `${class.code}`, `${class.description}`,
-  `${class.hierarchyPath}`, `${source.<attribute>}`, and `${vars.<name>}`.
-  Variables are stored in the template and are rendered before target
-  `name`, initial `description`, and `population_source_key` are written into
-  generated rules.
+- If the template class regex matches several classes, the selection-condition
+  attribute chooser is built as a union of all matched class fields. The UI
+  takes readable active attributes for each candidate class, expands reference
+  and domain paths into leaf field identifiers, then removes duplicates by the
+  normalized field identifier. Common inherited fields therefore appear once,
+  not once per class.
+- The UI does not currently walk the CMDBuild parent chain to add inherited
+  attributes by itself. Inherited attributes are available only when the
+  CMDBuild `/classes/{class}/attributes` catalog returns them for the concrete
+  class. If expected inherited fields are absent, refresh the CMDBuild catalog
+  and check the class schema endpoint before changing the rule.
+- Selection filters stored in one template are applied to every generated rule
+  for every candidate class. Prefer fields that exist for all classes selected
+  by the regex; split the template into separate regex blocks when notebooks,
+  thin clients, and workstations need different field sets.
+- New templates use a population dimension. The UI materializes
+  `candidate source class x dimension value` into ordinary static rules. For a
+  city template, one regex can select `NTBook`, `ThinClient`, and `ARM`, while
+  the dimension values create one generated rule per class/city pair.
+- Dimension types cover bounded catalogs and generated sets: distinct source
+  field values, lookup values, bool, reference/domain paths, regex capture
+  from a source field, range/list generators such as `00-99`, static lists
+  with `key|name|condition-regex`, and a legacy one-rule-per-class mode.
+- Operators should fill population fields from top to bottom. First choose the
+  template `Source class regex` and refresh the CMDBuild catalog, then choose
+  the dimension type. The UI hides fields that do not participate in the
+  selected type; hidden fields are not stored in the template.
+- `dimension.*` values are generated by the population step. `dimension.key` is
+  the stable technical key for one dimension value: lookup code, bool
+  `true/false`, regex capture, distinct value, range value, or the left side of
+  `key|name|condition-regex`. `dimension.value` is the comparison value,
+  usually the same string as `dimension.key`. `dimension.name` is the rendered
+  display name after the `Dimension name template`; inside that same template
+  it means the base display name before rendering. `dimension.regexKey` is
+  `dimension.key` escaped for embedding into a generated regex condition.
+- The template editor shows a live `dimension.*` preview inside the
+  `What is dimension.*` help block. It renders the first calculated
+  `dimension.key`, `dimension.value`, `dimension.name`, `dimension.regexKey`,
+  and target key. Distinct-field and regex-capture previews depend on the
+  source-card cache; the UI tries to load the needed candidate and reference
+  cards automatically when the preview has enough field information.
+- During template application, CMDB path fields used by population dimensions
+  also load intermediate reference classes and resolve the final leaf value.
+  For example, `locationFloorBuildingCity` is read through a path such as
+  `ARM.Location.Floor.Building.City`, not as a direct source-card property.
+- Population dimension field ownership:
+  - `Type`: operator-selected source of dimension values.
+  - `Source attribute/path`: operator-selected final leaf source field for
+    distinct, lookup, bool, and regex-capture dimensions. Reference/domain
+    paths are offered by their final leaf type: lookup leaves in lookup values,
+    boolean leaves in bool values, scalar leaves in distinct/regex.
+  - `Value extraction regex` and `Group -> dimension.key`: used only by
+    regex-capture dimensions, for example
+    `(?i)^w([0-9]{2})[0-9]{2}-.*$` with group `1`, or a named group such as
+    `city`. The selected capture group becomes `dimension.key`.
+  - `Dimension values/range`: used only by range/list and static-list
+    dimensions. Ranges use `00-99`; static rows use
+    `key|name|condition-regex`, where `key` becomes `dimension.key`, `name`
+    becomes the base display name, and the condition regex is optional.
+  - `Key template`: usually left as `${template.id}:${dimension.key}`. Use
+    `${template.id}:${class.code}:${dimension.key}` only when the target object
+    must be separate for each source class and dimension value.
+  - `Dimension name template`: usually `${dimension.value}` or
+    `${dimension.name}`. It may include `class.*`, `dimension.*`, and `vars.*`,
+    but not `source.*`.
+  - `Source-card selection field` and `selection regex`: used by
+    regex-capture, range/list, and static-list dimensions to build the
+    generated rule condition. If the regex is empty, the UI creates an exact
+    match against the dimension value.
+  - `Rule limit`: an operator safety limit for cardinality explosions; increase
+    it only when the expected number of generated rules is intentional.
+- The unresolved reference/domain type is diagnostic only; templates that stop
+  on an object link instead of a final leaf attribute must not be saved until
+  recursion depth or the selected path is corrected.
+- Materialized template fields can use `${template.id}`, `${template.name}`,
+  `${class.code}`, `${class.description}`, `${class.hierarchyPath}`,
+  `${dimension.key}`, `${dimension.value}`, `${dimension.name}`,
+  `${dimension.regexKey}`, and `${vars.<name>}`. They cannot use
+  `${source.<attribute>}` for target `name`, initial `description`, or
+  idempotency key because no concrete source card is being processed while the
+  static generated rule is created.
+- `population_source_key` is an internal managed target key used for
+  correlation, diagnostics, and reconcile/delete handling. In materialized
+  templates it follows the dimension key template, normally
+  `${template.id}:${dimension.key}`. Operators should not edit it directly.
 - Source placeholders for reference, lookup, and domain attributes use the
   generated field names from the source attribute chooser. Examples:
   `${source.ownerEmail}` for reference path `Owner -> Email`,
@@ -309,33 +426,62 @@ Suppression schema is intentionally uniform:
   `extract(value, regex, group, fallback)`, `replace(value, regex, replacement,
   flags)`, `lower(value)`, `upper(value)`, `trim(value)`, and
   `default(value, fallback)`. These functions run when the UI applies the
-  template and therefore can read `class.*` and previously rendered `vars.*`.
-  `${source.<attribute>}` stays as a runtime placeholder in the generated rule;
-  extracting from source-card values requires runtime conversion logic.
+  template and therefore can read `template.*`, `class.*`, `dimension.*`, and
+  previously rendered `vars.*`. For regex-capture dimensions, source-card
+  values are read before rule generation and the captured group becomes
+  `dimension.key`.
 - Keep this one-line example visible for operators when explaining templates:
   `${class.code}` · `${class.description}` · `${class.hierarchyPath}` ·
-  `${vars.site}` · `${source.id}` ·
-  `${source.ownerEmail}` · `${source.status}` ·
-  `${source.domainNetworkSegmentCode}` · `${source.domainServiceOwnerEmail}` ·
+  `${vars.site}` · `${dimension.key}` · `${dimension.name}` ·
   `${extract(class.code, "^C2M_(.+)$", 1)}` ·
   `${extract(class.description, "^(?<site>[A-Z]{3}) - .*$", "site", "unknown")}` ·
   `${replace(class.code, "^C2M_", "")}` ·
   `${replace(class.code, "^([A-Z]+)-([0-9]+)$", "$1_$2")}` ·
   `${lower(trim(vars.site))}`.
-- Applying templates replaces previously generated rules for the layer and
-  keeps manually maintained rules. Template audit compares expected generated
-  rules with existing generated rules and reports missing or stale items.
-- Generated rules and target objects carry template origin metadata:
-  `generated_from_template`, `template_generation`, and
-  `target.created_by_template`. This makes it possible to detach a single rule
-  from a template while preserving the target object.
+- Applying templates reconciles desired generated rules with the previously
+  applied state. Manual rules and detached generated rules are preserved.
+  Generated artifacts are matched by stable `managed_key`; their actual
+  payload is compared by `artifact_fingerprint`. Unchanged artifacts are kept
+  byte-for-byte, changed artifacts are updated, new artifacts are created, and
+  artifacts no longer produced by the template are removed from the rule set
+  and added to `templateDeletionPlans`.
+- Template saves produce distinguishable immutable version snapshots in
+  `templateVersions`. Template application writes `templateApplications` to the
+  rule document with the applied template version, content hash, matched
+  source classes, generated managed keys, and reconcile counts. The template
+  version is trace metadata; reconcile decisions use stable managed keys and
+  fingerprints, not the version number alone.
+- Generated rules and target objects carry template origin and ownership
+  metadata: `generated_from_template`, `template_generation`,
+  `template_generation.managed_key`, `template_generation.artifact_fingerprint`,
+  and `target.created_by_template`. This makes it possible to detach a single
+  rule from a template while preserving the target object.
 - Deleting a template has two UI modes: detach generated rules and keep target
   objects, or remove generated rules and add their target objects to
   `templateDeletionPlans` for manual deletion handling together with generated
-  relations. Changing a template
-  regex block is treated as delete/create: old generated rules are removed and
-  their targets are added to the same deletion plan. Changing variables is
-  treated as an in-place template modification.
+  relations. Changing a template regex, target, variables, or filters is an
+  in-place version change followed by reconcile: only missing, changed, or
+  obsolete managed artifacts are touched.
+- Relations created between templates, and relations between a template and a
+  static CMDBuild class/card, must use the same ownership contract as generated
+  rules: stable `managed_key` without template version, payload
+  `artifact_fingerprint`, template version/content hash only as trace metadata,
+  and deletion/detach through the same reconcile/deletion-plan flow.
+- Template-managed relations are materialized into generated-rule `relations`.
+  At runtime, `cmdbconfigbuilder` renders those relations into
+  `AggregationCommand.target.relations`, and `cmdbaggregation2cmdbuild` creates
+  the CMDBuild domain relation after ensuring the rule-owned target card. The
+  related target object is resolved by card id first and then by generated
+  lookup/Code; if it does not exist yet, the relation is skipped until the
+  source object is processed again. Service-layer links between two
+  `ServiceNetworkAccessZone` objects use the standard
+  `ServiceNetworkZoneDependsOnNetworkZone` domain.
+- Template-to-template relation editing has two optional generated-rule filter
+  blocks, one for the source template and one for the target template. Include
+  rows are AND, exclude rows subtract matches, and the filtered candidate sets
+  are still paired by source/target template variable matching. Template-to-rule
+  relations use the same filter block only on the template/source side because
+  the target is one concrete rule.
 
 ## Administrator instruction: regex examples
 
@@ -417,40 +563,68 @@ The `Администрирование -> Основные` menu shows the Zabb
 name: `zabbix_hostid`. This is the CMDBuild card attribute that signals that the
 source object already has a corresponding Zabbix host and can enter the service
 or suppression model. The same menu shows the server folder used to store
-conversion rules and templates.
+conversion rules, templates, and managed relations.
 
 The top-level `Синхронизация с источниками данных` menu is split by source:
 
 - `CMDBuild` refreshes local class, attribute, and domain catalogs used by
   schema previews and conversion editors. The CMDBuild cache also includes
   current cards of managed service and suppression classes, grouped by class
-  and stored with attribute values.
+  and stored with attribute values. Source-class cards needed by
+  `Distinct source field` and `Regex capture` template dimensions are loaded
+  on demand before template materialization.
 - `Zabbix` checks the configured Zabbix API through `zabbixconfig2api` and
   shows connection version, endpoint, and error details.
-- `Webhooks` checks the configured `cmdbwebhooks2kafka` health endpoint and
-  shows the CMDBuild webhook target route plus the raw event Kafka topic. The
-  view also shows how many managed webhook definitions are loaded for
+- `Webhooks` checks the configured `cmdbwebhooks2kafka` health endpoint, reads
+  CMDBuild `etl/webhook` inventory, and shows the webhook target route plus the
+  raw event Kafka topic. `Перечитать из CMDBuild` reloads the current managed
+  inventory. `Опубликовать webhooks в CMDBuild` creates or updates managed
+  CMDBuild webhooks for the source classes used by loaded conversion rules.
+  The view also shows how many managed webhook definitions are loaded for
   `CREATE`, `UPDATE`, and `DELETE`. CMDBuild may contain webhooks or Kafka
   topics owned by other integrations, so only definitions with the configured
-  `webhooks.managedIdentifier` are treated as ours. The
-  `Проверить правила онлайн` action calls the live webhooks endpoint and
-  compares managed webhooks with source classes used by current conversion
-  rules; it does not use the local cache. If the live endpoint exposes only
-  health status, the comparison uses the managed webhook inventory from UI
-  configuration after the endpoint is reached online.
-- `Конфигурации конвертации` saves and loads service/suppression rule documents
-  and rule templates through the configured server folder. The current format
-  writes separate JSON files for service rules, suppression rules, service
-  templates, suppression templates, and a manifest; this folder can later be
-  placed under Git control.
+  `webhooks.managedIdentifier`, configured webhook code prefix, and target URL
+  are treated as ours. The `Сверить правила онлайн` action calls the live
+  webhooks endpoint and compares managed webhooks with source classes used by
+  current conversion rules; it does not use the local cache. The check also
+  compares payload fields when a managed webhook definition explicitly lists
+  them. A webhook definition without a field list is treated as full-payload.
+  Webhook coverage is intentionally class/event-based, not per rule: generated
+  service and suppression rules may reference the same customer source class,
+  but CMDBuild needs one managed webhook set for that class. Rule IDs shown in
+  this view are diagnostic labels only.
+- `Конфигурации конвертации` saves and loads service/suppression rule documents,
+  rule templates, and managed relations through `monitoring-ui-api`, which is the
+  only writer for the configured server folder. The current format writes
+  separate JSON files for service rules, suppression rules, service templates,
+  suppression templates, shared templates, and a manifest; relations created by
+  `Создать/обновить правила по шаблонам и связям` are stored as
+  `managed_relations` inside the rule/template documents. This folder can later
+  be placed under Git control. Saves use manifest `version`/`etag` conflict
+  checks and atomic temp-file rename writes, with the manifest written last.
+  For operators, `Сохранить в папку` is the publication step for conversion
+  configuration: applier services reread that shared folder on reload, and the
+  same workflow will later use a Git-backed folder. CMDBuild webhook
+  publication is a separate Webhooks action.
 - Each source separates `Провести синхронизацию` from `Загрузить локальный
   кэш`. Synchronization reads the real source and stores an IndexedDB browser
   cache; loading the cache restores the last stored snapshot without rereading a
   potentially large source. The UI shows the last cache update timestamp for
   each source. For conversion configurations the primary action is
   `Сохранить в папку`, with separate `Загрузить из папки` and
-  `Загрузить локальный кэш` actions; successful folder load/save also turns on
-  the top `Конвертация загружена` indicator.
+  `Загрузить локальный кэш` actions. After
+  `Создать/обновить правила по шаблонам и связям`, folder save persists the
+  generated rules, templates, and their managed links, but it does not execute
+  those rules against existing CMDBuild cards. Service/suppression target cards
+  are created only after matching source-class webhooks are processed, or after
+  `Верификация и применение -> Запросить применение текущих карточек` publishes
+  commands for existing source cards; successful folder
+  load/save also turns on the top `Конвертация загружена` indicator. When
+  service and suppression documents are assembled for runtime reading, runtime
+  `rule_id` values must be globally unique. Generated template rules include
+  the layer in new IDs; if older documents still contain the same `rule_id` in
+  both layers, `monitoring-ui-api` exposes those runtime IDs with a `service-`
+  or `suppression-` prefix instead of failing validation.
 
 Development integration defaults:
 

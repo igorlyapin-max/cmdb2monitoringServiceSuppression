@@ -16,4 +16,9 @@ public sealed class ApplyOptions
             || string.Equals(Mode, "auto", StringComparison.OrdinalIgnoreCase)
             || string.Equals(Mode, "dry-run", StringComparison.OrdinalIgnoreCase);
     }
+
+    public bool EffectiveAutoApplyEnabled()
+    {
+        return AutoApplyEnabled || string.Equals(Mode, "auto", StringComparison.OrdinalIgnoreCase);
+    }
 }

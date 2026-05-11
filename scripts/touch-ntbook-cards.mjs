@@ -9,6 +9,8 @@ const attribute = args.attribute ?? process.env.CMDBUILD_TOUCH_ATTRIBUTE ?? 'Des
 const pageSize = numberArg(args.pageSize ?? process.env.CMDBUILD_PAGE_SIZE, 100);
 const maxCards = optionalNumberArg(args.maxCards ?? args.limit ?? process.env.CMDBUILD_MAX_CARDS);
 const concurrency = numberArg(args.concurrency ?? process.env.CMDBUILD_CONCURRENCY, 8);
+const sort = args.sort ?? process.env.CMDBUILD_SORT ?? 'Code';
+const sortDirection = args.sortDirection ?? args.dir ?? process.env.CMDBUILD_SORT_DIRECTION ?? 'ASC';
 const dryRun = Boolean(args.dryRun);
 const marker = args.marker ?? process.env.CMDBUILD_TOUCH_MARKER ?? `[agg-test ${formatLocalTimestamp()}]`;
 const markerPattern = /\s*\[agg-test [^\]]+\]$/u;
@@ -19,7 +21,7 @@ const cards = await readAllCards();
 let updated = 0;
 let failed = 0;
 
-console.log(`class=${classCode} cards=${cards.length} attribute=${attribute} marker="${marker}" dryRun=${dryRun} pageSize=${pageSize}`);
+console.log(`class=${classCode} cards=${cards.length} attribute=${attribute} marker="${marker}" dryRun=${dryRun} pageSize=${pageSize} sort=${sort}`);
 
 await runLimited(cards, Math.max(1, concurrency), async (card, index) => {
   const nextValue = nextMarkedValue(card[attribute]);
@@ -65,7 +67,16 @@ async function readAllCards() {
       return result;
     }
 
-    const url = `${baseUrl}/classes/${encodeURIComponent(classCode)}/cards?limit=${remaining}&start=${start}`;
+    const query = new URLSearchParams({
+      limit: String(remaining),
+      start: String(start)
+    });
+    if (sort) {
+      query.set('sort', sort);
+      query.set('dir', sortDirection);
+    }
+
+    const url = `${baseUrl}/classes/${encodeURIComponent(classCode)}/cards?${query}`;
     const response = await fetch(url, {
       headers: {
         authorization: auth,
@@ -96,7 +107,7 @@ async function readAllCards() {
     }
 
     if (added === 0) {
-      throw new Error(`CMDBuild pagination did not advance for ${classCode}: start=${start} limit=${remaining}`);
+      throw new Error(`CMDBuild pagination did not advance for ${classCode}: start=${start} limit=${remaining} sort=${sort}`);
     }
 
     start += page.length;

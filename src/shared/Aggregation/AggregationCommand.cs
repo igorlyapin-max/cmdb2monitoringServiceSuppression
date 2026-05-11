@@ -38,6 +38,18 @@ public sealed record AggregationCommand
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
 }
 
+public sealed record AggregationCommandPlan
+{
+    [JsonPropertyName("command")]
+    public required AggregationCommand Command { get; init; }
+
+    [JsonPropertyName("semantic_key")]
+    public required string SemanticKey { get; init; }
+
+    [JsonPropertyName("semantic_fingerprint")]
+    public required string SemanticFingerprint { get; init; }
+}
+
 public sealed record AggregationSourceObject
 {
     [JsonPropertyName("class_code")]
@@ -72,6 +84,25 @@ public sealed record AggregationTargetObject
 
     [JsonPropertyName("attributes")]
     public IReadOnlyDictionary<string, object?> Attributes { get; init; } =
+        new Dictionary<string, object?>(StringComparer.Ordinal);
+
+    [JsonPropertyName("relations")]
+    public IReadOnlyList<AggregationTargetRelation> Relations { get; init; } = [];
+}
+
+public sealed record AggregationTargetRelation
+{
+    [JsonPropertyName("domain_code")]
+    public string DomainCode { get; init; } = "";
+
+    [JsonPropertyName("target_class_code")]
+    public string TargetClassCode { get; init; } = "";
+
+    [JsonPropertyName("target_lookup")]
+    public string TargetLookup { get; init; } = "";
+
+    [JsonPropertyName("attribute_mappings")]
+    public IReadOnlyDictionary<string, object?> AttributeMappings { get; init; } =
         new Dictionary<string, object?>(StringComparer.Ordinal);
 }
 

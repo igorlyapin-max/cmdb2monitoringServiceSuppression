@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Cmdb2MonitoringServiceSuppression.Shared.ConversionRules;
 
@@ -5,7 +8,18 @@ namespace Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 
 public sealed class AggregationRuleEngine
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public IReadOnlyList<AggregationCommand> BuildCommands(
+        CmdbRawEvent rawEvent,
+        ConversionRulesDocument rulesDocument)
+    {
+        return BuildCommandPlans(rawEvent, rulesDocument)
+            .Select(plan => plan.Command)
+            .ToArray();
+    }
+
+    public IReadOnlyList<AggregationCommandPlan> BuildCommandPlans(
         CmdbRawEvent rawEvent,
         ConversionRulesDocument rulesDocument)
     {
@@ -17,7 +31,16 @@ public sealed class AggregationRuleEngine
             .OrderBy(rule => rule.Priority)
             .ThenBy(rule => rule.RuleId, StringComparer.Ordinal)
             .Where(rule => RuleMatches(rawEvent, rule))
-            .Select(rule => BuildCommand(rawEvent, rule))
+            .Select(rule =>
+            {
+                var command = BuildCommand(rawEvent, rule);
+                return new AggregationCommandPlan
+                {
+                    Command = command,
+                    SemanticKey = BuildSemanticKey(rawEvent, rule),
+                    SemanticFingerprint = BuildSemanticFingerprint(rawEvent, rule, command, rulesDocument.Version)
+                };
+            })
             .ToArray();
     }
 
@@ -31,6 +54,21 @@ public sealed class AggregationRuleEngine
             .Concat(RenderMappings(rawEvent, rule.Target.InitialUserValues))
             .GroupBy(item => item.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => CoerceValue(group.Last().Value), StringComparer.Ordinal);
+        var targetRelations = rule.Relations
+            .Select(relation => new AggregationTargetRelation
+            {
+                DomainCode = relation.DomainCode,
+                TargetClassCode = relation.TargetClassCode,
+                TargetLookup = RenderTemplate(rawEvent, relation.TargetLookup),
+                AttributeMappings = RenderMappings(rawEvent, relation.AttributeMappings)
+                    .GroupBy(item => item.Key, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => CoerceValue(group.Last().Value), StringComparer.Ordinal)
+            })
+            .Where(relation =>
+                !string.IsNullOrWhiteSpace(relation.DomainCode)
+                && !string.IsNullOrWhiteSpace(relation.TargetClassCode)
+                && !string.IsNullOrWhiteSpace(relation.TargetLookup))
+            .ToArray();
         var idempotencyKey = RenderTemplate(rawEvent, rule.Target.IdempotencyKey);
         var keyValue = keyAttribute.Equals("_id", StringComparison.OrdinalIgnoreCase)
             ? rawEvent.CardId
@@ -62,7 +100,8 @@ public sealed class AggregationRuleEngine
                 IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
                     ? $"cmdbuild:{rule.Target.ClassCode}:{rule.Target.CardId}"
                     : idempotencyKey,
-                Attributes = targetAttributes
+                Attributes = targetAttributes,
+                Relations = targetRelations
             }
         };
     }
@@ -185,6 +224,128 @@ public sealed class AggregationRuleEngine
         }
 
         return rawEvent.Attributes.TryGetValue(field, out var value) ? value : "";
+    }
+
+    private static string BuildSemanticKey(CmdbRawEvent rawEvent, ConversionRule rule)
+    {
+        var eventKind = rawEvent.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase)
+            ? "DELETE"
+            : "UPSERT";
+        return string.Join('\u001f', rule.RuleId, rawEvent.ClassCode, rawEvent.CardId, eventKind);
+    }
+
+    private static string BuildSemanticFingerprint(
+        CmdbRawEvent rawEvent,
+        ConversionRule rule,
+        AggregationCommand command,
+        string documentVersion)
+    {
+        var fields = SemanticSourceFields(rule)
+            .Select(field => new KeyValuePair<string, string>(field, ReadField(rawEvent, field)))
+            .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var payload = new
+        {
+            documentVersion,
+            ruleFingerprint = Hash(JsonSerializer.Serialize(rule, JsonOptions)),
+            eventKind = rawEvent.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase) ? "DELETE" : "UPSERT",
+            sourceClass = rawEvent.ClassCode,
+            sourceCard = rawEvent.CardId,
+            sourceKey = command.Source.KeyValue,
+            fields,
+            command.CommandType,
+            command.Layer,
+            command.Target.ClassCode,
+            command.Target.CardId,
+            command.Target.IdempotencyKey,
+            targetAttributes = command.Target.Attributes
+                .OrderBy(item => item.Key, StringComparer.Ordinal)
+                .ToArray(),
+            targetRelations = command.Target.Relations
+                .OrderBy(item => item.DomainCode, StringComparer.Ordinal)
+                .ThenBy(item => item.TargetClassCode, StringComparer.Ordinal)
+                .ThenBy(item => item.TargetLookup, StringComparer.Ordinal)
+                .Select(item => new
+                {
+                    item.DomainCode,
+                    item.TargetClassCode,
+                    item.TargetLookup,
+                    attributes = item.AttributeMappings
+                        .OrderBy(attribute => attribute.Key, StringComparer.Ordinal)
+                        .ToArray()
+                })
+                .ToArray()
+        };
+
+        return Hash(JsonSerializer.Serialize(payload, JsonOptions));
+    }
+
+    private static IEnumerable<string> SemanticSourceFields(ConversionRule rule)
+    {
+        var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "className",
+            "_id",
+            "eventType"
+        };
+
+        AddField(fields, rule.Source.KeyAttribute);
+        AddField(fields, rule.When.FieldExists);
+        foreach (var matcher in rule.When.AllRegex.Concat(rule.When.AnyRegex).Concat(rule.When.NoneRegex))
+        {
+            AddField(fields, matcher.Field);
+        }
+
+        foreach (var condition in rule.Source.Conditions.Concat(rule.Source.Filters))
+        {
+            AddField(fields, condition.Attribute);
+        }
+
+        AddSourceTemplateFields(fields, rule.Target.IdempotencyKey);
+        AddSourceTemplateFields(fields, rule.Target.CardId);
+        AddSourceTemplateFields(fields, rule.Target.CardDescription);
+        foreach (var value in rule.Target.AttributeMappings.Values.Concat(rule.Target.InitialUserValues.Values))
+        {
+            AddSourceTemplateFields(fields, value);
+        }
+
+        foreach (var relation in rule.Relations)
+        {
+            AddSourceTemplateFields(fields, relation.TargetLookup);
+            foreach (var value in relation.AttributeMappings.Values)
+            {
+                AddSourceTemplateFields(fields, value);
+            }
+        }
+
+        return fields.Where(field => !string.IsNullOrWhiteSpace(field));
+    }
+
+    private static void AddField(ISet<string> fields, string? field)
+    {
+        if (!string.IsNullOrWhiteSpace(field))
+        {
+            fields.Add(field.Trim());
+        }
+    }
+
+    private static void AddSourceTemplateFields(ISet<string> fields, string? template)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return;
+        }
+
+        foreach (Match match in Regex.Matches(template, "\\$\\{\\s*source\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\}", RegexOptions.IgnoreCase))
+        {
+            fields.Add(match.Groups[1].Value);
+        }
+    }
+
+    private static string Hash(string value)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     private static object? CoerceValue(string value)

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,6 +34,14 @@ if (!config.readiness?.zabbixHostIdAttribute) {
   errors.push('readiness.zabbixHostIdAttribute is required');
 }
 
+for (const key of ['rulesValidateUrl', 'rulesApplyCurrentUrl']) {
+  try {
+    new URL(config.backend?.[key] ?? '');
+  } catch {
+    errors.push(`backend.${key} must be an absolute URL`);
+  }
+}
+
 if (!config.conversionConfig?.storageFolder) {
   errors.push('conversionConfig.storageFolder is required');
 }
@@ -41,6 +49,14 @@ if (!config.conversionConfig?.storageFolder) {
 if (!config.conversionConfig?.runtimeRulesFile) {
   errors.push('conversionConfig.runtimeRulesFile is required');
 }
+
+for (const key of ['serviceRulesFile', 'suppressionRulesFile', 'serviceTemplatesFile', 'suppressionTemplatesFile', 'sharedTemplatesFile', 'manifestFile']) {
+  if (!config.conversionConfig?.[key]) {
+    errors.push(`conversionConfig.${key} is required`);
+  }
+}
+
+await validateConversionDocuments();
 
 const reloadableHealthChecks = (config.healthChecks ?? []).filter((item) => item.reloadUrl);
 if (reloadableHealthChecks.length > 0) {
@@ -89,6 +105,132 @@ async function readJsonConfig(name, filePath) {
       config: {}
     };
   }
+}
+
+async function validateConversionDocuments() {
+  if (!config.conversionConfig?.storageFolder) {
+    return;
+  }
+
+  const folder = await resolveConversionStorageFolder(config.conversionConfig.storageFolder);
+  for (const item of [
+    {
+      layer: 'service',
+      rulesFile: config.conversionConfig.serviceRulesFile,
+      templatesFile: config.conversionConfig.serviceTemplatesFile
+    },
+    {
+      layer: 'suppression',
+      rulesFile: config.conversionConfig.suppressionRulesFile,
+      templatesFile: config.conversionConfig.suppressionTemplatesFile
+    }
+  ]) {
+    const rulesDocument = await readJsonConfig(`${item.layer} conversion rules`, path.join(folder, item.rulesFile));
+    const templatesDocument = await readJsonConfig(`${item.layer} conversion templates`, path.join(folder, item.templatesFile));
+    const rules = Array.isArray(rulesDocument.config.rules) ? rulesDocument.config.rules : [];
+    const ruleIds = new Map();
+    for (const [index, rule] of rules.entries()) {
+      const ruleId = stringValue(rule?.rule_id);
+      if (!ruleId) {
+        errors.push(`${item.layer} rule at index ${index} must have rule_id`);
+        continue;
+      }
+
+      const entries = ruleIds.get(ruleId) ?? [];
+      entries.push(index);
+      ruleIds.set(ruleId, entries);
+    }
+
+    for (const [ruleId, indexes] of ruleIds.entries()) {
+      if (indexes.length > 1) {
+        errors.push(`${item.layer} conversion rule_id '${ruleId}' is duplicated at indexes ${indexes.join(', ')}`);
+      }
+    }
+
+    const currentRuleIds = new Set(ruleIds.keys());
+    const templates = Array.isArray(templatesDocument.config.templates) ? templatesDocument.config.templates : [];
+    const currentTemplateIds = new Set(templates
+      .map((template) => stringValue(template?.template_id))
+      .filter(Boolean));
+    for (const [ruleIndex, rule] of rules.entries()) {
+      for (const relation of rule?.managed_relations ?? []) {
+        const targetRuleId = stringValue(relation?.target_rule_id);
+        if (relation?.kind === 'rule' && targetRuleId && !currentRuleIds.has(targetRuleId)) {
+          errors.push(`${item.layer}: ${describeRule(rule, ruleIndex)} has invalid relation ${describeRelation(relation)}: target rule '${targetRuleId}' does not exist.${genericRuleHint(targetRuleId)}`);
+        }
+        const targetTemplateId = stringValue(relation?.target_template_id);
+        if (relation?.kind === 'template' && targetTemplateId && !currentTemplateIds.has(targetTemplateId)) {
+          errors.push(`${item.layer}: ${describeRule(rule, ruleIndex)} has invalid relation ${describeRelation(relation)}: target template '${targetTemplateId}' does not exist`);
+        }
+      }
+    }
+
+    for (const template of templates) {
+      for (const relation of template?.managed_relations ?? []) {
+        const targetTemplateId = stringValue(relation?.target_template_id);
+        if (relation?.kind === 'template' && targetTemplateId && !currentTemplateIds.has(targetTemplateId)) {
+          errors.push(`${item.layer}: ${describeTemplate(template)} has invalid relation ${describeRelation(relation)}: target template '${targetTemplateId}' does not exist`);
+        }
+        const targetRuleId = stringValue(relation?.target_rule_id);
+        if (relation?.kind === 'rule' && targetRuleId && !currentRuleIds.has(targetRuleId)) {
+          errors.push(`${item.layer}: ${describeTemplate(template)} has invalid relation ${describeRelation(relation)}: target rule '${targetRuleId}' does not exist.${genericRuleHint(targetRuleId)}`);
+        }
+      }
+    }
+  }
+}
+
+function describeTemplate(template) {
+  const id = stringValue(template?.template_id);
+  const name = stringValue(template?.name) || id || '-';
+  return `template '${name}'${id && id !== name ? ` [${id}]` : ''}`;
+}
+
+function describeRule(rule, index = 0) {
+  const id = stringValue(rule?.rule_id) || String(index);
+  const name = stringValue(rule?.name) || id;
+  return `rule '${name}'${id && id !== name ? ` [${id}]` : ''}`;
+}
+
+function describeRelation(relation) {
+  const role = stringValue(relation?.relation_role || relation?.role || 'uses');
+  const target = relation?.kind === 'template'
+    ? `template '${stringValue(relation?.target_template_id)}'`
+    : relation?.kind === 'rule'
+      ? `rule '${stringValue(relation?.target_rule_id)}'`
+      : `kind '${stringValue(relation?.kind)}'`;
+  return `${role} -> ${target}`;
+}
+
+function genericRuleHint(ruleId) {
+  return stringValue(ruleId).toLowerCase() === 'rule'
+    ? ' This is a placeholder value; delete this template-rule link and recreate it by selecting a real manual rule.'
+    : '';
+}
+
+async function resolveConversionStorageFolder(storageFolder) {
+  const configured = stringValue(storageFolder);
+  if (!configured) {
+    return '';
+  }
+
+  const candidates = path.isAbsolute(configured)
+    ? [configured]
+    : [
+        path.resolve(process.cwd(), configured),
+        path.resolve(root, '..', '..', configured),
+        path.resolve(root, configured)
+      ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next reasonable base directory.
+    }
+  }
+
+  return candidates[0];
 }
 
 function validateApplierReloadTokenSources() {

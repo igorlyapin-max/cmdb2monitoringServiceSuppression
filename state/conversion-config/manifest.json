@@ -1,12 +1,16 @@
 {
   "schemaVersion": 1,
-  "savedAt": "2026-05-08T16:47:08.350Z",
+  "version": 33,
+  "etag": "b0fd2747e24c4ee4d757601978aa8c43edf5c1182f14cf9d458307091f3307be",
+  "savedAt": "2026-05-11T11:25:46.049Z",
   "prefix": "C2M_",
+  "writer": "monitoring-ui-api",
   "files": {
     "serviceRules": "service-rules.json",
     "suppressionRules": "suppression-rules.json",
     "serviceTemplates": "service-templates.json",
     "suppressionTemplates": "suppression-templates.json",
+    "sharedTemplates": "shared-templates.json",
     "manifest": "manifest.json"
   }
 }

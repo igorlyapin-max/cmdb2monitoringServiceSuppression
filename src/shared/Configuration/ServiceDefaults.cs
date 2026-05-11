@@ -154,6 +154,7 @@ public static class ServiceDefaults
         Reset<CmdbuildOptions>(services);
         Reset<ZabbixOptions>(services);
         Reset<ConversionRulesOptions>(services);
+        Reset<SemanticDeduplicationOptions>(services);
     }
 
     private static void Reset<TOptions>(IServiceProvider services)

@@ -91,6 +91,45 @@ same CMDBuild webhooks and creates or modifies the real Zabbix host. The service
 must not add a source object into the service model or suppression dependencies
 until the CMDBuild card contains `zabbix_hostid`.
 
+## CMDBuild Webhook Feedback Control
+
+CMDBuild webhooks do not provide reliable origin metadata for distinguishing a
+customer edit from a write made by this service. The pipeline therefore keeps
+the raw webhook intake complete and suppresses repeated work later, where the
+service can compare semantic state.
+
+The active algorithm has two layers:
+
+| Layer | Behavior |
+| --- | --- |
+| `cmdbwebhooks2kafka` | Publishes every accepted webhook to the raw Kafka topic. It does not drop events by class, user, timestamp, or guessed origin. |
+| `cmdbconfigbuilder` | For each matched rule, computes a semantic fingerprint keyed by `rule_id`, source class, source card, and event kind. The fingerprint includes the conversion rule, source fields used by conditions/templates, rendered target idempotency key, and rendered managed attributes. If the same semantic fingerprint is seen again within `SemanticDeduplication:WindowSeconds`, no duplicate aggregation command is published. |
+| `cmdbaggregation2cmdbuild` | Before updating an existing managed target card, reads the current card and compares only values it intends to manage. If values already match, it reports `targetAction=unchanged` and skips the CMDBuild `PUT`. Relation creation remains idempotent and duplicate relation responses are treated as skipped. |
+
+Operational consequences:
+
+- A burst such as source card update, relation webhook, and a neighboring
+  `zabbix_hostid` update can still appear in the raw topic, but repeated
+  semantic duplicates stop before the aggregation-command topic.
+- Do not suppress raw webhooks by time window alone; a real user edit can occur
+  immediately after an automated write.
+- Keep target-object fields deterministic. Updating a timestamp on every
+  no-op, for example `last_populated_at`, defeats diff-before-write and creates
+  avoidable CMDBuild `UPDATE` webhooks.
+- The in-memory deduplication cache is per `cmdbconfigbuilder` process. After a
+  restart the first event for a source card is evaluated again, but downstream
+  appliers remain idempotent.
+
+Configure deduplication in `cmdbconfigbuilder`:
+
+```json
+"SemanticDeduplication": {
+  "Enabled": true,
+  "WindowSeconds": 3600,
+  "MaxEntries": 50000
+}
+```
+
 ## Conversion Configuration Storage
 
 The Monitoring UI persists conversion rules and rule templates through
@@ -104,6 +143,7 @@ The Monitoring UI persists conversion rules and rule templates through
   "suppressionRulesFile": "suppression-rules.json",
   "serviceTemplatesFile": "service-templates.json",
   "suppressionTemplatesFile": "suppression-templates.json",
+  "sharedTemplatesFile": "shared-templates.json",
   "manifestFile": "manifest.json"
 }
 ```
@@ -113,13 +153,145 @@ three explicit actions:
 
 | Action | Result |
 | --- | --- |
-| `Сохранить в папку` | Validates current service/suppression rule documents, writes JSON files to the configured server folder, and refreshes the browser cache. |
-| `Загрузить из папки` | Reads the configured server folder, applies the rule/template documents to the editors and previews, and refreshes the browser cache. |
+| `Сохранить в папку` | Validates current service/suppression rule documents, writes service/suppression/shared JSON files with templates and managed relations to the configured server folder, and refreshes the browser cache. |
+| `Загрузить из папки` | Reads the configured server folder, applies the rule/template documents and managed relations to the editors and previews, and refreshes the browser cache. |
 | `Загрузить локальный кэш` | Restores the last browser IndexedDB snapshot without touching the server folder. |
+
+After `Создать/обновить правила по шаблонам и связям`, use
+`Сохранить в папку` before reloading appliers: generated rules, templates, and
+their `managed_relations` are persisted as one conversion configuration set.
+That action does not execute the rules against existing CMDBuild cards and does
+not create service/suppression target cards. Target cards appear only after a
+matching source-class webhook is processed by the rule engine, or after an
+explicit current-card apply is run from `Верификация и применение ->
+Запросить применение текущих карточек`.
 
 The folder is intentionally server-side configuration, not a free browser input.
 This keeps write scope controlled and allows the same folder to be mounted from
 a volume now or moved under Git control later.
+
+`monitoring-ui-api` is the only writer for this folder. A save request carries
+the `baseVersion`/`baseEtag` loaded by the UI; if the manifest changed, the API
+returns `409 conversion_config_conflict` and the operator must reload the
+folder before saving. Files are written through temporary files and atomic
+rename; `manifest.json` is written last and contains `version`, `etag`,
+`savedAt`, `writer`, and the file map. Applier services and runtime converters
+only read published configuration and must not edit these files directly.
+
+## Rule and Model Editor Operations
+
+The rule/model editor workflow is documented in
+[RULES_AND_MODELS_EDITOR_GUIDE.md](RULES_AND_MODELS_EDITOR_GUIDE.md). Keep that
+guide available to operators who prepare CMDBuild schemas, create conversion
+rules, and materialize auto-population templates.
+
+Administrative constraints for that workflow:
+
+- The Monitoring UI is the control point for schema preview, conversion rule
+  editing, template editing, and conversion-config storage.
+- The CMDBuild catalog must be synchronized before editing rules or templates;
+  the source-class attribute chooser is built from the latest loaded
+  `/cmdbuild/classes/schema` catalog.
+- When `Source class regex` in a template matches several classes, the UI builds
+  one union of available source fields. Duplicate field identifiers are shown
+  once. Common inherited attributes appear once if the CMDBuild class schema
+  endpoint returns them for the concrete classes.
+- The UI does not synthesize inherited source attributes by walking the
+  CMDBuild parent chain. If an inherited field is missing from the chooser,
+  check the live CMDBuild class schema response and refresh the CMDBuild cache.
+- One template produces generated rules for all candidate classes. Selection
+  filters from the template are copied to every generated rule, so operators
+  should use fields common to all matched classes or split the template into
+  narrower regex blocks.
+- New materialized templates also require a population dimension. The UI
+  expands `candidate source class x dimension value` into static generated
+  rules. Dimension values can come from lookup/bool catalogs, source-card
+  distinct values, reference/domain paths, regex capture, range/list
+  generators, or static lists.
+- Population dimension fields are intentionally conditional. Operators first
+  select the dimension type; then the UI shows only the fields that affect that
+  type. `Source attribute/path` is edited for distinct, lookup, bool, and
+  regex-capture dimensions. `Value extraction regex` and capture group are
+  edited only for regex capture. `Dimension values/range` is edited only for
+  range/list or static-list dimensions. `Selection field` is required for
+  range/list and static-list dimensions and is usually the same as the source
+  field for regex capture.
+- The UI generates `dimension.*` during template materialization.
+  `dimension.key` is the stable technical identifier of one generated value,
+  `dimension.value` is the value used for comparison, `dimension.name` is the
+  rendered display name, and `dimension.regexKey` is an escaped key for regex
+  conditions. Inside the dimension name template, `dimension.name` means the
+  base display name before rendering. Operators should use `dimension.key` for
+  managed/idempotency keys and `dimension.name` for human-readable target
+  names.
+- The Monitoring UI help block for `dimension.*` includes a live preview of the
+  first calculated dimension values and target keys. For distinct-field and
+  regex-capture dimensions the UI tries to load the needed candidate and
+  reference cards automatically when the preview has enough field information.
+- When a population field is a CMDB path, for example
+  `locationFloorBuildingCity`, template application loads the intermediate
+  reference classes and resolves the final leaf attribute before creating
+  generated rules.
+- The population `Key template` and `Dimension name template` are advanced
+  fields with safe defaults. Keep `${template.id}:${dimension.key}` when all
+  matched source classes should share one target object per dimension value.
+  Use `${template.id}:${class.code}:${dimension.key}` only when targets must be
+  separated per source class. Name templates may use `class.*`, `dimension.*`,
+  and `vars.*`, but not `source.*`.
+- The unresolved reference/domain population type is diagnostic. It means the
+  CMDBuild path traversal stopped on an object link instead of a final leaf
+  attribute. Do not publish such a template; refresh the catalog, increase
+  recursion depth, or choose a final leaf field.
+- Target `name`, initial `description`, and idempotency key in materialized
+  templates must use `template.*`, `class.*`, `dimension.*`, and `vars.*`
+  values only. They must not use `${source.*}` because no concrete source card
+  exists during template application.
+- Target attributes in materialized templates follow the same rule. Service
+  templates may set `is_critical`, `aggregation_type`, `threshold`, and `n` when
+  those attributes exist on the selected target class; suppression templates may
+  set `is_critical`. `aggregation_type=threshold` requires `threshold` 0..100
+  and empty `n`; `aggregation_type=n_of_m` requires integer `n >= 1` and empty
+  `threshold`.
+- Template saves create immutable `templateVersions` snapshots. Applying
+  templates writes `templateApplications` snapshots and reconciles generated
+  artifacts by stable `managed_key` plus `artifact_fingerprint`; unchanged
+  rules are preserved without rewriting, changed rules are updated, and
+  obsolete rules are moved to `templateDeletionPlans`.
+- Template `population_source_key` is an internal source-origin key. The normal
+  UI shows it read-only. In materialized templates it follows the dimension
+  key template, normally `${template.id}:${dimension.key}`.
+- The same ownership rule applies to generated relations between templates and
+  relations from a template to a static CMDBuild class/card: version is audit
+  metadata only, while create/update/delete decisions are based on managed key
+  and payload fingerprint.
+- Template-managed links are materialized into ordinary generated-rule
+  `relations` before publication. Runtime appliers do not read templates
+  directly: `cmdbconfigbuilder` emits target relation instructions in
+  `AggregationCommand.target.relations`, and `cmdbaggregation2cmdbuild` creates
+  the CMDBuild domain relation after the rule-owned target card is ensured. If
+  the related target card is not found by card id or lookup/Code, the relation
+  is skipped and will be retried when the source object is processed again.
+  For service-layer links between two `ServiceNetworkAccessZone` objects, use
+  the standard `ServiceNetworkZoneDependsOnNetworkZone` domain.
+- For template-to-template links, operators can filter generated rules on both
+  sides before variable matching. The left and right filter blocks use the same
+  include/exclude regex semantics as template selection filters: include rows
+  are AND, exclude rows subtract matches. These filters only limit candidate
+  generated rules; the actual relation pair is still chosen by matching the
+  selected source and target template variables, optionally after regex
+  extraction. For template-to-rule links, source and target selectors can each
+  contain templates and rules, but the UI requires exactly one template and one
+  rule. Direction is significant: `template -> rule` materializes relations
+  from generated rules to the concrete rule, while `rule -> template`
+  materializes relations from the concrete rule to matching generated rules of
+  the template. The generated-rule filter is shown on whichever side contains
+  the template.
+- Use stable attribute `Code` values for source fields. Localized Russian names
+  belong in description/help text; the rule engine and UI field identifiers
+  rely on stable attribute codes.
+- After changing rules or templates, save the conversion configuration through
+  the UI, reload appliers with the shared Bearer token, and verify managed
+  webhooks online before testing CMDBuild card changes.
 
 ## Debug Mode
 
@@ -345,19 +517,45 @@ topic names.
 
 The UI/BFF configuration uses an explicit `webhooks.managedIdentifier`. The
 Webhooks sync view counts only definitions whose `identifier` matches that
-value, and reports separate `CREATE`, `UPDATE`, and `DELETE` counts. Definitions
-with another identifier are treated as foreign and ignored by this inventory.
+value, whose CMDBuild webhook code matches the configured prefix, and whose URL
+matches `webhooks.targetUrl`. Definitions with another owner or target URL are
+treated as foreign and ignored by this inventory.
 
-The same Webhooks sync view has an online action
-`Проверить правила онлайн`. It calls the live webhooks check endpoint and
-compares managed webhook definitions with source classes used by the currently
-loaded conversion rules. The check does not use the browser cache. For each
-source class the expected event coverage is `CREATE`, `UPDATE`, and `DELETE`.
+The same Webhooks sync view separates three actions:
+`Перечитать из CMDBuild` reloads the live `etl/webhook` inventory,
+`Опубликовать webhooks в CMDBuild` creates or updates managed CMDBuild
+webhooks for source classes used by the loaded conversion rules, and
+`Сверить правила онлайн` compares managed webhook definitions with source
+classes used by the currently loaded conversion rules. The check does not use
+the browser cache. For each source class the expected event coverage is
+`CREATE`, `UPDATE`, and `DELETE`.
 If a managed webhook definition has no class code, the UI treats it as a global
-webhook covering all classes for that event type. If the live endpoint does not
-return class-specific definitions, keep the managed webhook list in UI
-configuration up to date; otherwise the UI can verify endpoint availability
-online but cannot prove per-class CMDBuild webhook creation.
+webhook covering all classes for that event type. If a managed webhook
+definition explicitly lists payload fields, the UI also checks that the fields
+required by rule conditions, population dimensions, `${source.*}` mappings, and
+idempotency keys are present. A webhook definition without a field list is
+treated as full-payload. If the live endpoint does not return class-specific
+definitions, keep the managed webhook list in UI configuration up to date;
+otherwise the UI can verify endpoint availability online but cannot prove
+per-class CMDBuild webhook creation.
+
+This check is not tied to individual conversion rules. The UI groups the
+current rules by source class and verifies the managed CMDBuild webhook set for
+that class/event combination. Rule IDs in the details are diagnostic only, so
+the same source class used by both service and suppression rules still requires
+one class-level webhook set, not one webhook per generated rule. Publishing
+conversion configuration for operators is `Конфигурации конвертации` ->
+`Сохранить в папку`; applier services reread that shared folder on reload, and
+the target scheme uses the same model with a Git-backed folder. This save does
+not create or update CMDBuild webhook definitions.
+
+When service and suppression rule documents are assembled for runtime reading,
+`rule_id` values must be unique in that combined view. Newly generated template
+rules include their layer in the ID. For older generated rules that have the
+same ID in service and suppression documents, the BFF exposes layer-scoped
+runtime IDs such as `service-rule-arm-city04` and
+`suppression-rule-arm-city04`; same-layer duplicates are still rejected because
+they are ambiguous.
 
 Example:
 

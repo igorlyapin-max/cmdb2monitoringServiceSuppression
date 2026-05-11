@@ -877,6 +877,11 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        if (command.CommandType.Equals(AggregationCommandTypes.RemoveMembership, StringComparison.OrdinalIgnoreCase))
+        {
+            return await RemoveAggregationMembershipAsync(command, cancellationToken);
+        }
+
         if (!command.CommandType.Equals(AggregationCommandTypes.EnsureMembership, StringComparison.OrdinalIgnoreCase))
         {
             return new CmdbuildAggregationApplyResult
@@ -914,10 +919,24 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         }
         else
         {
-            await UpdateClassCardAsync(endpoint, command.Target.ClassCode, targetCardId, values, timeout.Token);
+            var currentValues = await ReadClassCardValuesAsync(endpoint, command.Target.ClassCode, targetCardId, timeout.Token);
+            if (currentValues is not null && DesiredValuesEqual(currentValues, values))
+            {
+                targetAction = "unchanged";
+            }
+            else
+            {
+                await UpdateClassCardAsync(endpoint, command.Target.ClassCode, targetCardId, values, timeout.Token);
+            }
         }
 
         var relationResult = await EnsureSourceLinkRelationAsync(endpoint, command, targetCardId, timeout.Token);
+        var targetRelations = new List<CmdbuildRelationApplyResult>();
+        foreach (var relation in command.Target.Relations)
+        {
+            targetRelations.Add(await EnsureManagedTargetRelationAsync(endpoint, command, targetCardId, relation, timeout.Token));
+        }
+
         return new CmdbuildAggregationApplyResult
         {
             Success = true,
@@ -927,6 +946,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             RelationDomain = relationResult.DomainCode,
             RelationId = relationResult.RelationId,
             RelationAction = relationResult.Action,
+            TargetRelations = targetRelations,
             Message = relationResult.Message
         };
     }
@@ -980,6 +1000,43 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         return response.IsSuccessStatusCode;
     }
 
+    private async Task<IReadOnlyDictionary<string, JsonElement>?> ReadClassCardValuesAsync(
+        string endpoint,
+        string classCode,
+        string cardId,
+        CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedGet($"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards/{Uri.EscapeDataString(cardId)}");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        using var document = JsonDocument.Parse(text);
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var values = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in data.EnumerateObject())
+        {
+            values[property.Name] = property.Value.Clone();
+        }
+
+        return values;
+    }
+
     private async Task<string?> FindClassCardIdByCodeAsync(
         string endpoint,
         string classCode,
@@ -1023,6 +1080,52 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
                 return null;
             }
         }
+    }
+
+    private async Task<CmdbuildAggregationApplyResult> RemoveAggregationMembershipAsync(
+        AggregationCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(command.Target.ClassCode))
+        {
+            throw new InvalidOperationException("Aggregation command target.class_code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(command.Source.ClassCode) || string.IsNullOrWhiteSpace(command.Source.CardId))
+        {
+            throw new InvalidOperationException("Aggregation command source class/card id are required.");
+        }
+
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+
+        var values = ManagedTargetValues(command);
+        var targetCardId = await ResolveTargetCardIdAsync(endpoint, command, values, timeout.Token);
+        if (string.IsNullOrWhiteSpace(targetCardId))
+        {
+            return new CmdbuildAggregationApplyResult
+            {
+                Success = true,
+                CommandId = command.CommandId,
+                TargetAction = "skipped",
+                RelationAction = "skipped",
+                Message = "target card was not found"
+            };
+        }
+
+        var relationResult = await RemoveSourceLinkRelationAsync(endpoint, command, targetCardId, timeout.Token);
+        return new CmdbuildAggregationApplyResult
+        {
+            Success = true,
+            CommandId = command.CommandId,
+            TargetCardId = targetCardId,
+            TargetAction = "unchanged",
+            RelationDomain = relationResult.DomainCode,
+            RelationId = relationResult.RelationId,
+            RelationAction = relationResult.Action,
+            Message = relationResult.Message
+        };
     }
 
     private async Task<CmdbuildCreatedCardResult> CreateClassCardAsync(
@@ -1072,6 +1175,112 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         {
             throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
         }
+    }
+
+    private static bool DesiredValuesEqual(
+        IReadOnlyDictionary<string, JsonElement> currentValues,
+        IReadOnlyDictionary<string, object?> desiredValues)
+    {
+        foreach (var (key, desiredValue) in desiredValues)
+        {
+            if (!currentValues.TryGetValue(key, out var currentValue))
+            {
+                return false;
+            }
+
+            using var desiredDocument = JsonDocument.Parse(JsonSerializer.Serialize(desiredValue, JsonOptions));
+            if (!JsonValuesEqual(currentValue, desiredDocument.RootElement))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool JsonValuesEqual(JsonElement left, JsonElement right)
+    {
+        if (IsJsonNull(left) && IsJsonNull(right))
+        {
+            return true;
+        }
+
+        if (TryReadBool(left, out var leftBool) && TryReadBool(right, out var rightBool))
+        {
+            return leftBool == rightBool;
+        }
+
+        if (TryReadDecimal(left, out var leftDecimal) && TryReadDecimal(right, out var rightDecimal))
+        {
+            return leftDecimal == rightDecimal;
+        }
+
+        return string.Equals(ComparableJsonString(left), ComparableJsonString(right), StringComparison.Ordinal);
+    }
+
+    private static bool IsJsonNull(JsonElement value)
+    {
+        return value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            || (value.ValueKind == JsonValueKind.String && string.IsNullOrWhiteSpace(value.GetString()));
+    }
+
+    private static bool TryReadBool(JsonElement value, out bool result)
+    {
+        if (value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            result = value.GetBoolean();
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out result))
+        {
+            return true;
+        }
+
+        result = false;
+        return false;
+    }
+
+    private static bool TryReadDecimal(JsonElement value, out decimal result)
+    {
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out result))
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.String
+            && decimal.TryParse((value.GetString() ?? "").Replace(',', '.'), out result))
+        {
+            return true;
+        }
+
+        result = 0;
+        return false;
+    }
+
+    private static string ComparableJsonString(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var propertyName in new[] { "code", "Code", "_id", "id", "value", "name", "description" })
+            {
+                if (value.TryGetProperty(propertyName, out var property)
+                    && property.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+                {
+                    return property.ValueKind == JsonValueKind.String
+                        ? property.GetString() ?? ""
+                        : property.GetRawText();
+                }
+            }
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? "",
+            JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => value.GetRawText(),
+            JsonValueKind.Null or JsonValueKind.Undefined => "",
+            _ => value.GetRawText()
+        };
     }
 
     private async Task<CmdbuildRelationApplyResult> EnsureSourceLinkRelationAsync(
@@ -1147,6 +1356,252 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             ReadRaw(data, "_id") ?? "",
             "created",
             "");
+    }
+
+    private async Task<CmdbuildRelationApplyResult> EnsureManagedTargetRelationAsync(
+        string endpoint,
+        AggregationCommand command,
+        string targetCardId,
+        AggregationTargetRelation relation,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(relation.DomainCode)
+            || string.IsNullOrWhiteSpace(relation.TargetClassCode)
+            || string.IsNullOrWhiteSpace(relation.TargetLookup))
+        {
+            return new CmdbuildRelationApplyResult("", "", "skipped", "managed target relation is incomplete");
+        }
+
+        var domain = await ReadDomainAsync(endpoint, relation.DomainCode, cancellationToken);
+        if (domain is null)
+        {
+            return new CmdbuildRelationApplyResult(relation.DomainCode, "", "skipped", "managed target relation domain is not configured");
+        }
+
+        var relatedCardId = await ResolveRelationTargetCardIdAsync(endpoint, relation, cancellationToken);
+        if (string.IsNullOrWhiteSpace(relatedCardId))
+        {
+            return new CmdbuildRelationApplyResult(domain.Code, "", "skipped", $"target lookup '{relation.TargetLookup}' was not found");
+        }
+
+        var orientation = ResolveManagedRelationOrientation(domain, command, relation, targetCardId, relatedCardId);
+        if (orientation is null)
+        {
+            return new CmdbuildRelationApplyResult(domain.Code, "", "skipped", "managed target relation classes do not match domain orientation");
+        }
+
+        var payload = new Dictionary<string, object?>(relation.AttributeMappings, StringComparer.Ordinal)
+        {
+            ["_type"] = domain.Code,
+            ["_sourceType"] = orientation.SourceType,
+            ["_sourceId"] = orientation.SourceId,
+            ["_destinationType"] = orientation.DestinationType,
+            ["_destinationId"] = orientation.DestinationId
+        };
+        payload.TryAdd("is_active", true);
+
+        return await CreateDomainRelationAsync(endpoint, domain.Code, payload, cancellationToken);
+    }
+
+    private async Task<string> ResolveRelationTargetCardIdAsync(
+        string endpoint,
+        AggregationTargetRelation relation,
+        CancellationToken cancellationToken)
+    {
+        if (await ClassCardExistsAsync(endpoint, relation.TargetClassCode, relation.TargetLookup, cancellationToken))
+        {
+            return relation.TargetLookup;
+        }
+
+        return await FindClassCardIdByCodeAsync(endpoint, relation.TargetClassCode, relation.TargetLookup, cancellationToken) ?? "";
+    }
+
+    private static ManagedRelationOrientation? ResolveManagedRelationOrientation(
+        CmdbuildDomainCatalogItem domain,
+        AggregationCommand command,
+        AggregationTargetRelation relation,
+        string targetCardId,
+        string relatedCardId)
+    {
+        if (domain.SourceClassCode.Equals(command.Target.ClassCode, StringComparison.Ordinal)
+            && domain.TargetClassCode.Equals(relation.TargetClassCode, StringComparison.Ordinal))
+        {
+            return new ManagedRelationOrientation(
+                command.Target.ClassCode,
+                targetCardId,
+                relation.TargetClassCode,
+                relatedCardId);
+        }
+
+        if (domain.TargetClassCode.Equals(command.Target.ClassCode, StringComparison.Ordinal)
+            && domain.SourceClassCode.Equals(relation.TargetClassCode, StringComparison.Ordinal))
+        {
+            return new ManagedRelationOrientation(
+                relation.TargetClassCode,
+                relatedCardId,
+                command.Target.ClassCode,
+                targetCardId);
+        }
+
+        return null;
+    }
+
+    private async Task<CmdbuildRelationApplyResult> CreateDomainRelationAsync(
+        string endpoint,
+        string domainCode,
+        IReadOnlyDictionary<string, object?> payload,
+        CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedRequest(HttpMethod.Post, $"{endpoint}/domains/{Uri.EscapeDataString(domainCode)}/relations");
+        request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            if (IsDuplicateResponse(text))
+            {
+                return new CmdbuildRelationApplyResult(domainCode, "", "skipped", "relation already exists");
+            }
+
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        if (IsDuplicateResponse(text))
+        {
+            return new CmdbuildRelationApplyResult(domainCode, "", "skipped", "relation already exists");
+        }
+
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("success", out var success)
+            && success.ValueKind == JsonValueKind.False)
+        {
+            var duplicate = text.Contains("duplicate value", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("\"code\":\"201\"", StringComparison.OrdinalIgnoreCase);
+            if (duplicate)
+            {
+                return new CmdbuildRelationApplyResult(domainCode, "", "skipped", "relation already exists");
+            }
+
+            throw new InvalidOperationException(Trim(text));
+        }
+
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+        return new CmdbuildRelationApplyResult(
+            domainCode,
+            ReadRaw(data, "_id") ?? "",
+            "created",
+            "");
+    }
+
+    private async Task<CmdbuildRelationApplyResult> RemoveSourceLinkRelationAsync(
+        string endpoint,
+        AggregationCommand command,
+        string targetCardId,
+        CancellationToken cancellationToken)
+    {
+        var domain = await ResolveSourceLinkDomainAsync(endpoint, command, cancellationToken);
+        if (domain is null)
+        {
+            return new CmdbuildRelationApplyResult("", "", "skipped", "source-link domain is not configured");
+        }
+
+        var relationId = await FindSourceLinkRelationIdAsync(endpoint, domain.Code, command, targetCardId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(relationId))
+        {
+            return new CmdbuildRelationApplyResult(domain.Code, "", "skipped", "relation was not found");
+        }
+
+        using var request = AuthorizedRequest(
+            HttpMethod.Delete,
+            $"{endpoint}/domains/{Uri.EscapeDataString(domain.Code)}/relations/{Uri.EscapeDataString(relationId)}");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        return new CmdbuildRelationApplyResult(
+            domain.Code,
+            relationId,
+            response.StatusCode == System.Net.HttpStatusCode.NotFound ? "skipped" : "deleted",
+            response.StatusCode == System.Net.HttpStatusCode.NotFound ? "relation was not found" : "");
+    }
+
+    private async Task<CmdbuildDomainCatalogItem?> ResolveSourceLinkDomainAsync(
+        string endpoint,
+        AggregationCommand command,
+        CancellationToken cancellationToken)
+    {
+        var expectedDomainCode = $"{command.Target.ClassCode}PopulatedFrom{command.Source.ClassCode}";
+        var domain = await ReadDomainAsync(endpoint, expectedDomainCode, cancellationToken);
+        if (domain is not null && IsSourceLinkDomain(domain, command))
+        {
+            return domain;
+        }
+
+        var domains = await ListDomainsAsync(null, cancellationToken);
+        return domains.FirstOrDefault(item => IsSourceLinkDomain(item, command));
+    }
+
+    private async Task<string> FindSourceLinkRelationIdAsync(
+        string endpoint,
+        string domainCode,
+        AggregationCommand command,
+        string targetCardId,
+        CancellationToken cancellationToken)
+    {
+        const int pageSize = 1000;
+        var offset = 0;
+        int? total = null;
+
+        while (true)
+        {
+            using var request = AuthorizedGet($"{endpoint}/domains/{Uri.EscapeDataString(domainCode)}/relations?limit={pageSize}&offset={offset}");
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+            }
+
+            using var document = JsonDocument.Parse(text);
+            total ??= ReadTotalInt(document.RootElement);
+            if (!TryReadDataArray(document.RootElement, out var data))
+            {
+                return "";
+            }
+
+            var pageCount = 0;
+            foreach (var relation in data.EnumerateArray())
+            {
+                pageCount++;
+                if (RelationMatchesSourceLink(relation, command, targetCardId))
+                {
+                    return ReadRaw(relation, "_id") ?? ReadRaw(relation, "id") ?? "";
+                }
+            }
+
+            offset += pageCount;
+            if (pageCount == 0 || (total is not null && offset >= total.Value))
+            {
+                return "";
+            }
+        }
+    }
+
+    private static bool RelationMatchesSourceLink(
+        JsonElement relation,
+        AggregationCommand command,
+        string targetCardId)
+    {
+        return string.Equals(ReadRaw(relation, "_sourceType") ?? "", command.Target.ClassCode, StringComparison.Ordinal)
+            && string.Equals(ReadRaw(relation, "_destinationType") ?? "", command.Source.ClassCode, StringComparison.Ordinal)
+            && string.Equals(ReadRaw(relation, "_sourceId") ?? "", targetCardId, StringComparison.Ordinal)
+            && string.Equals(ReadRaw(relation, "_destinationId") ?? "", command.Source.CardId, StringComparison.Ordinal);
     }
 
     private static bool IsSourceLinkDomain(CmdbuildDomainCatalogItem domain, AggregationCommand command)
@@ -1272,6 +1727,74 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             .ToArray();
     }
 
+    public async Task<CmdbuildDomainRelationCatalogResult> ListDomainRelationsAsync(
+        string? prefix,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+
+        var domains = await ListDomainsAsync(prefix, timeout.Token);
+        var relations = new List<CmdbuildDomainRelationCatalogItem>();
+        foreach (var domain in domains)
+        {
+            relations.AddRange(await ListDomainRelationsAsync(endpoint, domain, timeout.Token));
+        }
+
+        return new CmdbuildDomainRelationCatalogResult
+        {
+            Relations = relations
+                .OrderBy(item => item.DomainCode, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.RelationId, StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+        };
+    }
+
+    private async Task<IReadOnlyList<CmdbuildDomainRelationCatalogItem>> ListDomainRelationsAsync(
+        string endpoint,
+        CmdbuildDomainCatalogItem domain,
+        CancellationToken cancellationToken)
+    {
+        const int pageSize = 1000;
+        var relations = new List<CmdbuildDomainRelationCatalogItem>();
+        var offset = 0;
+        int? total = null;
+
+        while (true)
+        {
+            using var request = AuthorizedGet($"{endpoint}/domains/{Uri.EscapeDataString(domain.Code)}/relations?limit={pageSize}&offset={offset}");
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+            }
+
+            using var document = JsonDocument.Parse(text);
+            total ??= ReadTotalInt(document.RootElement);
+            if (!TryReadDataArray(document.RootElement, out var data))
+            {
+                break;
+            }
+
+            var pageCount = 0;
+            foreach (var relation in data.EnumerateArray())
+            {
+                relations.Add(ReadDomainRelationCatalogItem(domain.Code, relation));
+                pageCount++;
+            }
+
+            offset += pageCount;
+            if (pageCount == 0 || pageCount < pageSize || (total is not null && offset >= total.Value))
+            {
+                break;
+            }
+        }
+
+        return relations;
+    }
+
     public async Task<CmdbuildManagedInstanceCatalogResult> ListManagedClassInstancesAsync(
         string? prefix,
         string? serviceRootPath,
@@ -1293,6 +1816,148 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
                 .ThenBy(item => item.ClassCode, StringComparer.OrdinalIgnoreCase)
                 .ToArray()
         };
+    }
+
+    public async Task<CmdbuildClassInstanceCatalogItem> ListClassCardsCatalogAsync(
+        string classCode,
+        string? layer,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+
+        var allClasses = await ListAllClassesAsync(endpoint, timeout.Token);
+        var classItem = allClasses.FirstOrDefault(item =>
+            string.Equals(item.Code, classCode, StringComparison.Ordinal));
+        if (classItem is null)
+        {
+            throw new InvalidOperationException($"CMDBuild class {classCode} was not found.");
+        }
+
+        var attributes = await ListClassAttributeCatalogAsync(endpoint, classItem.Code, timeout.Token);
+        var normalizedLayer = string.IsNullOrWhiteSpace(layer) ? "Source" : layer.Trim();
+        var cards = await ListClassCardsAsync(endpoint, normalizedLayer, classItem, attributes, timeout.Token);
+        return new CmdbuildClassInstanceCatalogItem
+        {
+            Layer = normalizedLayer,
+            ClassCode = classItem.Code,
+            ClassName = classItem.Name,
+            ClassDescription = classItem.Description,
+            Attributes = attributes,
+            Cards = cards
+        };
+    }
+
+    public async Task<string> ResolveCardPathValueAsync(
+        string classCode,
+        string cardId,
+        string cmdbPath,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(classCode)
+            || string.IsNullOrWhiteSpace(cardId)
+            || string.IsNullOrWhiteSpace(cmdbPath))
+        {
+            return "";
+        }
+
+        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+
+        var segments = cmdbPath
+            .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        if (segments.Count == 0)
+        {
+            return "";
+        }
+
+        var currentClassCode = classCode.Trim();
+        var currentCardId = cardId.Trim();
+        var currentAttributes = await ListClassAttributeCatalogAsync(endpoint, currentClassCode, timeout.Token);
+        if (segments.Count > 1 && currentAttributes.All(attribute =>
+                !attribute.Code.Equals(segments[0], StringComparison.OrdinalIgnoreCase)))
+        {
+            segments.RemoveAt(0);
+        }
+
+        for (var index = 0; index < segments.Count; index++)
+        {
+            var segment = segments[index];
+            var values = await ReadClassCardValuesAsync(endpoint, currentClassCode, currentCardId, timeout.Token);
+            if (values is null || !values.TryGetValue(segment, out var value))
+            {
+                return "";
+            }
+
+            if (index == segments.Count - 1)
+            {
+                var finalText = ReadStringValue(value) ?? "";
+                return finalText.Trim();
+            }
+
+            var text = ReadReferenceIdValue(value) ?? "";
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return "";
+            }
+
+            var attribute = currentAttributes.FirstOrDefault(item =>
+                item.Code.Equals(segment, StringComparison.OrdinalIgnoreCase));
+            if (attribute is null)
+            {
+                return "";
+            }
+
+            var targetClassCode = await ResolveReferenceTargetClassCodeAsync(endpoint, currentClassCode, attribute, timeout.Token);
+            if (string.IsNullOrWhiteSpace(targetClassCode))
+            {
+                return "";
+            }
+
+            currentClassCode = targetClassCode;
+            currentCardId = text;
+            currentAttributes = await ListClassAttributeCatalogAsync(endpoint, currentClassCode, timeout.Token);
+        }
+
+        return "";
+    }
+
+    private async Task<string> ResolveReferenceTargetClassCodeAsync(
+        string endpoint,
+        string currentClassCode,
+        CmdbuildAttributeCatalogItem attribute,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(attribute.TargetClassCode))
+        {
+            return attribute.TargetClassCode;
+        }
+
+        if (string.IsNullOrWhiteSpace(attribute.DomainCode))
+        {
+            return "";
+        }
+
+        var domain = await ReadDomainAsync(endpoint, attribute.DomainCode, cancellationToken);
+        if (domain is null)
+        {
+            return "";
+        }
+
+        if (domain.SourceClassCode.Equals(currentClassCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return domain.TargetClassCode;
+        }
+
+        if (domain.TargetClassCode.Equals(currentClassCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return domain.SourceClassCode;
+        }
+
+        return "";
     }
 
     private async Task AddManagedLayerInstancesAsync(
@@ -2110,6 +2775,35 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         };
     }
 
+    private static CmdbuildDomainRelationCatalogItem ReadDomainRelationCatalogItem(string domainCode, JsonElement item)
+    {
+        return new CmdbuildDomainRelationCatalogItem
+        {
+            DomainCode = domainCode,
+            RelationId = ReadRaw(item, "_id") ?? ReadRaw(item, "id") ?? "",
+            SourceType = ReadRaw(item, "_sourceType") ?? ReadRaw(item, "sourceType") ?? "",
+            SourceId = ReadRaw(item, "_sourceId") ?? ReadRaw(item, "sourceId") ?? "",
+            DestinationType = ReadRaw(item, "_destinationType") ?? ReadRaw(item, "destinationType") ?? "",
+            DestinationId = ReadRaw(item, "_destinationId") ?? ReadRaw(item, "destinationId") ?? "",
+            Attributes = ReadRelationAttributes(item)
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string> ReadRelationAttributes(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        return item.EnumerateObject()
+            .Where(property => !property.Name.StartsWith('_'))
+            .ToDictionary(
+                property => property.Name,
+                property => ReadStringValue(property.Value) ?? property.Value.GetRawText(),
+                StringComparer.Ordinal);
+    }
+
     private static CmdbuildClassCardCatalogItem ReadCardCatalogItem(
         string layer,
         CmdbuildClassCatalogItem classItem,
@@ -2261,6 +2955,45 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             foreach (var nested in value.EnumerateArray())
             {
                 var text = ReadStringValue(nested);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadReferenceIdValue(JsonElement value)
+    {
+        if (value.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+        {
+            return value.ToString();
+        }
+
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var propertyName in new[] { "_id", "id", "Id", "code", "Code" })
+            {
+                if (value.TryGetProperty(propertyName, out var nested))
+                {
+                    var text = ReadReferenceIdValue(nested);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text;
+                    }
+                }
+            }
+
+            return ReadStringValue(value);
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var nested in value.EnumerateArray())
+            {
+                var text = ReadReferenceIdValue(nested);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     return text;
@@ -2456,6 +3189,29 @@ public sealed record CmdbuildManagedInstanceCatalogResult
     public required IReadOnlyList<CmdbuildClassInstanceCatalogItem> Classes { get; init; }
 }
 
+public sealed record CmdbuildDomainRelationCatalogResult
+{
+    public required IReadOnlyList<CmdbuildDomainRelationCatalogItem> Relations { get; init; }
+}
+
+public sealed record CmdbuildDomainRelationCatalogItem
+{
+    public required string DomainCode { get; init; }
+
+    public required string RelationId { get; init; }
+
+    public required string SourceType { get; init; }
+
+    public required string SourceId { get; init; }
+
+    public required string DestinationType { get; init; }
+
+    public required string DestinationId { get; init; }
+
+    public IReadOnlyDictionary<string, string> Attributes { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+}
+
 public sealed record CmdbuildClassInstanceCatalogItem
 {
     public required string Layer { get; init; }
@@ -2518,6 +3274,8 @@ public sealed record CmdbuildAggregationApplyResult
 
     public string RelationAction { get; init; } = "";
 
+    public IReadOnlyList<CmdbuildRelationApplyResult> TargetRelations { get; init; } = [];
+
     public string Message { get; init; } = "";
 }
 
@@ -2526,6 +3284,12 @@ public sealed record CmdbuildRelationApplyResult(
     string RelationId,
     string Action,
     string Message);
+
+public sealed record ManagedRelationOrientation(
+    string SourceType,
+    string SourceId,
+    string DestinationType,
+    string DestinationId);
 
 public sealed record CmdbuildCardAttributeValue
 {

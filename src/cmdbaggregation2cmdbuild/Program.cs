@@ -25,11 +25,36 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveAggregationCommands()), "Aggregation command topic is required.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<CmdbuildClient>();
-builder.Services.AddHostedService<CmdbuildAggregationCommandWorker>();
+var initialApplyOptions = builder.Configuration
+    .GetSection(ApplyOptions.SectionName)
+    .Get<ApplyOptions>() ?? new ApplyOptions();
+if (initialApplyOptions.EffectiveAutoApplyEnabled())
+{
+    builder.Services.AddHostedService<CmdbuildAggregationCommandWorker>();
+}
 
 var app = builder.Build();
+if (!initialApplyOptions.EffectiveAutoApplyEnabled())
+{
+    app.Logger.LogInformation(
+        "CMDBuild aggregation Kafka consumer is not started because Apply:AutoApplyEnabled is false and Apply:Mode is {Mode}.",
+        initialApplyOptions.Mode);
+}
 app.MapServiceHealth();
 app.MapConfigurationReload(builder.Configuration);
+
+app.MapGet("/apply/status", (IOptionsMonitor<ApplyOptions> options) =>
+{
+    var current = options.CurrentValue;
+    return Results.Ok(new
+    {
+        mode = current.Mode,
+        autoApplyEnabled = current.AutoApplyEnabled,
+        effectiveAutoApplyEnabled = current.EffectiveAutoApplyEnabled(),
+        safeApply = current.SafeApply,
+        kafkaConsumerStarted = initialApplyOptions.EffectiveAutoApplyEnabled()
+    });
+});
 
 app.MapGet("/schema/preview", (
     string? prefix,
@@ -158,6 +183,23 @@ app.MapGet("/cmdbuild/classes/instances", async (
     }
 });
 
+app.MapGet("/cmdbuild/classes/{classCode}/cards", async (
+    string classCode,
+    string? layer,
+    CmdbuildClient client,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var catalog = await client.ListClassCardsCatalogAsync(classCode, layer, cancellationToken);
+        return Results.Ok(catalog);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.MapPost("/cmdbuild/classes/{classCode}/cards", async (
     string classCode,
     CmdbuildCreateCardRequest request,
@@ -219,6 +261,22 @@ app.MapGet("/cmdbuild/domains", async (
     }
 });
 
+app.MapGet("/cmdbuild/domains/relations", async (
+    string? prefix,
+    CmdbuildClient client,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var catalog = await client.ListDomainRelationsAsync(prefix, cancellationToken);
+        return Results.Ok(catalog);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.Run();
 
 static SchemaLanguage ParseLanguage(string? language)
@@ -264,9 +322,9 @@ public sealed class CmdbuildAggregationCommandWorker(
             message.CommandType,
             message.RuleId);
 
-        if (!applyOptions.CurrentValue.AutoApplyEnabled)
+        if (!applyOptions.CurrentValue.EffectiveAutoApplyEnabled())
         {
-            return;
+            throw new InvalidOperationException("CMDBuild aggregation Kafka auto-apply is disabled.");
         }
 
         var result = await client.ApplyAggregationCommandAsync(message, cancellationToken);

@@ -278,6 +278,8 @@ public sealed class CmdbuildSchemaFactory
             Domain(prefix, language, BuilderLayer.Service, "ServicePlatformDependsOnDatabase", "service_depends_on", classes["ServicePlatformService"], classes["ServiceDatabaseService"]),
             Domain(prefix, language, BuilderLayer.Service, "ServicePlatformDependsOnStoragePool", "service_depends_on", classes["ServicePlatformService"], classes["ServiceStoragePool"]),
             Domain(prefix, language, BuilderLayer.Service, "ServicePlatformDependsOnNetworkZone", "service_depends_on", classes["ServicePlatformService"], classes["ServiceNetworkAccessZone"]),
+            Domain(prefix, language, BuilderLayer.Service, "ServiceFleetDependsOnNetworkZone", "service_depends_on", classes["ServiceUserEndpointFleet"], classes["ServiceNetworkAccessZone"]),
+            Domain(prefix, language, BuilderLayer.Service, "ServiceNetworkZoneDependsOnNetworkZone", "service_depends_on", classes["ServiceNetworkAccessZone"], classes["ServiceNetworkAccessZone"]),
             Domain(prefix, language, BuilderLayer.Service, "ServiceDatabaseDependsOnComputeCluster", "service_depends_on", classes["ServiceDatabaseService"], classes["ServiceComputeCluster"]),
 
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionResourceDependsOnNetwork", "depends_on_network", classes["SuppressionResource"], classes["SuppressionNetworkAccessZone"]),

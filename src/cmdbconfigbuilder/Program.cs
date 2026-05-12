@@ -39,6 +39,10 @@ builder.Services.AddOptions<SemanticDeduplicationOptions>()
     .Validate(options => options.HasValidWindow(), "SemanticDeduplication:WindowSeconds must be greater than zero.")
     .Validate(options => options.HasValidMaxEntries(), "SemanticDeduplication:MaxEntries must be greater than zero.")
     .ValidateOnStart();
+builder.Services.AddOptions<ReadinessOptions>()
+    .Bind(builder.Configuration.GetSection(ReadinessOptions.SectionName))
+    .Validate(options => options.HasValidZabbixHostIdAttribute(), "Readiness:ZabbixHostIdAttribute is required.")
+    .ValidateOnStart();
 builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbWebhookEvents), "CMDB raw event topic is required.")
@@ -47,7 +51,11 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
 
 builder.Services.AddSingleton<ConversionRulesValidator>();
 builder.Services.AddSingleton<ConversionRulesFileLoader>();
-builder.Services.AddSingleton<AggregationRuleEngine>();
+builder.Services.AddSingleton(provider =>
+{
+    var options = provider.GetRequiredService<IOptions<ReadinessOptions>>().Value;
+    return new AggregationRuleEngine(options.ZabbixHostIdAttribute);
+});
 builder.Services.AddSingleton<SemanticCommandDeduplicator>();
 builder.Services.AddSingleton<SourceEventEnricher>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
@@ -199,6 +207,9 @@ app.MapPost("/rules/apply-current", async (
                                 Layer = plan.Command.Layer,
                                 SourceClass = plan.Command.Source.ClassCode,
                                 SourceCardId = plan.Command.Source.CardId,
+                                SourceKeyAttribute = plan.Command.Source.KeyAttribute,
+                                SourceKeyValue = plan.Command.Source.KeyValue,
+                                SourceZabbixHostId = plan.Command.Source.ZabbixHostId,
                                 TargetClass = plan.Command.Target.ClassCode,
                                 TargetKey = plan.Command.Target.IdempotencyKey
                             });
@@ -465,6 +476,12 @@ static async Task<IReadOnlyList<string>> PublishAggregationPlanAsync(
     CancellationToken cancellationToken)
 {
     var topics = PublishTopicsForCommand(options, plan.Command, targets);
+    if (topics.Count > 0 && !producer.Enabled)
+    {
+        throw new InvalidOperationException(
+            $"Kafka producer is disabled; command for {plan.Command.Target.ClassCode}:{plan.Command.Target.IdempotencyKey} was not published. Enable Kafka__Enabled=true for apply-current publishing.");
+    }
+
     var key = CommandKafkaKey(plan.Command);
     foreach (var topic in topics)
     {
@@ -519,6 +536,9 @@ static string OperationDeduplicationKey(AggregationCommandPlan plan)
         command.Layer,
         command.CommandType,
         command.RuleId,
+        command.Source.ClassCode,
+        command.Source.CardId,
+        command.Source.KeyValue,
         command.Target.ClassCode,
         targetKey,
         relationKey);
@@ -622,6 +642,12 @@ public sealed class ApplyCurrentRulesCommandSample
     public string SourceClass { get; init; } = "";
 
     public string SourceCardId { get; init; } = "";
+
+    public string SourceKeyAttribute { get; init; } = "";
+
+    public string SourceKeyValue { get; init; } = "";
+
+    public string SourceZabbixHostId { get; init; } = "";
 
     public string TargetClass { get; init; } = "";
 
@@ -1091,9 +1117,21 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
         plannedObject.CommandCount++;
         plannedObject.RelationCount += command.Target.Relations.Count;
+        plannedObject.SourceCount++;
+        if (string.IsNullOrWhiteSpace(command.Source.ZabbixHostId))
+        {
+            plannedObject.MissingHostBindingCount++;
+        }
+        else
+        {
+            plannedObject.HostBindingCount++;
+            plannedObject.ProblemTagCount += 1;
+        }
+
         AddLimited(plannedObject.RuleIds, command.RuleId, MaxValuesPerObject);
         AddLimited(plannedObject.RuleNames, command.RuleName, MaxValuesPerObject);
         AddLimited(plannedObject.SourceObjects, SourceObjectLabel(command.Source), MaxValuesPerObject);
+        AddSourceBinding(plannedObject, command.Source);
         foreach (var relation in command.Target.Relations)
         {
             if (plannedObject.Relations.Count >= MaxValuesPerObject)
@@ -1179,9 +1217,49 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
     private static string SourceObjectLabel(AggregationSourceObject source)
     {
-        return string.IsNullOrWhiteSpace(source.CardId)
+        var identity = string.IsNullOrWhiteSpace(source.CardId)
             ? source.ClassCode
             : $"{source.ClassCode}/{source.CardId}";
+        if (string.IsNullOrWhiteSpace(source.KeyValue)
+            || source.KeyValue.Equals(source.CardId, StringComparison.OrdinalIgnoreCase))
+        {
+            return identity;
+        }
+
+        var keyAttribute = string.IsNullOrWhiteSpace(source.KeyAttribute)
+            ? "key"
+            : source.KeyAttribute;
+        return $"{identity} {keyAttribute}={source.KeyValue}";
+    }
+
+    private static void AddSourceBinding(
+        ApplyCurrentRulesZabbixObjectPlan plannedObject,
+        AggregationSourceObject source)
+    {
+        if (plannedObject.SourceBindings.Count >= MaxValuesPerObject)
+        {
+            return;
+        }
+
+        var label = SourceObjectLabel(source);
+        if (plannedObject.SourceBindings.Any(item => item.Label.Equals(label, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        plannedObject.SourceBindings.Add(new ApplyCurrentRulesZabbixSourceBindingPlan
+        {
+            Label = label,
+            SourceClass = source.ClassCode,
+            SourceCardId = source.CardId,
+            SourceKeyAttribute = source.KeyAttribute,
+            SourceKeyValue = source.KeyValue,
+            ZabbixHostId = source.ZabbixHostId,
+            SourceLeafManagedKey = ZabbixManagedServiceMapper.SourceLeafManagedKey(plannedObject.Layer, source),
+            ProblemTags = ZabbixManagedServiceMapper.ProblemTagsForSource(source)
+                .Select(tag => $"{tag.Tag}={tag.Value}")
+                .ToArray()
+        });
     }
 
     private static void AddLimited(List<string> values, string value, int limit)
@@ -1232,6 +1310,14 @@ public sealed class ApplyCurrentRulesZabbixObjectPlan
 
     public int RelationCount { get; set; }
 
+    public int SourceCount { get; set; }
+
+    public int HostBindingCount { get; set; }
+
+    public int MissingHostBindingCount { get; set; }
+
+    public int ProblemTagCount { get; set; }
+
     public Dictionary<string, string> Attributes { get; init; } = new(StringComparer.Ordinal);
 
     public List<string> RuleIds { get; } = [];
@@ -1240,7 +1326,28 @@ public sealed class ApplyCurrentRulesZabbixObjectPlan
 
     public List<string> SourceObjects { get; } = [];
 
+    public List<ApplyCurrentRulesZabbixSourceBindingPlan> SourceBindings { get; } = [];
+
     public List<ApplyCurrentRulesZabbixRelationPlan> Relations { get; } = [];
+}
+
+public sealed class ApplyCurrentRulesZabbixSourceBindingPlan
+{
+    public string Label { get; init; } = "";
+
+    public string SourceClass { get; init; } = "";
+
+    public string SourceCardId { get; init; } = "";
+
+    public string SourceKeyAttribute { get; init; } = "";
+
+    public string SourceKeyValue { get; init; } = "";
+
+    public string ZabbixHostId { get; init; } = "";
+
+    public string SourceLeafManagedKey { get; init; } = "";
+
+    public IReadOnlyList<string> ProblemTags { get; init; } = [];
 }
 
 public sealed class ApplyCurrentRulesZabbixRelationPlan

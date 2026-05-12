@@ -153,6 +153,39 @@ const server = http.createServer(async (request, response) => {
       return proxyJson(response, targetUrl);
     }
 
+    if (url.pathname === '/api/zabbix/trigger-dependencies/status' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixTriggerDependenciesStatusUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixTriggerDependenciesStatusUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/zabbix/trigger-dependencies/dry-run' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixTriggerDependenciesDryRunUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixTriggerDependenciesDryRunUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/trigger-dependencies/apply' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixTriggerDependenciesApplyUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixTriggerDependenciesApplyUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    }
+
     if (url.pathname === '/api/cmdbuild/classes' && request.method === 'GET') {
       const backendUrl = new URL(config.backend.cmdbuildClassesUrl);
       if (url.searchParams.has('rootPath')) {

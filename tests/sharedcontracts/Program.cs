@@ -95,8 +95,8 @@ AssertAttributes(
 AssertAttributes(
     schema,
     "C2M_SuppressionManagedObject",
-    present: CommonAttributeCodes(),
-    absent: RemovedSourceAttributeCodes().Concat(["aggregation_type", "threshold", "n", "fallback_supported", "priority", "is_dynamic"]).ToArray());
+    present: CommonAttributeCodes().Concat(ServiceAggregationAttributeCodes()).ToArray(),
+    absent: RemovedSourceAttributeCodes().Concat(["fallback_supported", "priority", "is_dynamic"]).ToArray());
 AssertAttributes(
     schema,
     "C2M_ServiceNetworkAccessZone",
@@ -298,12 +298,18 @@ var validation = new ConversionRulesValidator().Validate(new ConversionRulesDocu
 });
 
 Assert(validation.IsValid, "sample conversion rule must be valid");
+AssertConversionRulesValidatorRejectsDuplicateRuleIds();
+AssertZabbixHostIdReadinessContract();
 AssertApplyModeContract();
 AssertRouterCoreAggregationContract();
 AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
 await AssertZabbixManagedServiceClientCreatesTaggedServiceAsync();
 await AssertZabbixManagedServiceClientClearsChildrenAsync();
+await AssertZabbixSourceLeafServiceCreatesProblemTagsAsync();
+await AssertZabbixClientEnsuresHostTagsAsync();
+await AssertZabbixClientAppliesTriggerDependenciesAsync();
+await AssertZabbixClientAppliesSuppressionAggregateAsync();
 await AssertCmdbuildApplyCreatesSourceLinkAsync();
 
 Console.WriteLine("Shared contract checks passed.");
@@ -318,6 +324,54 @@ static void AssertApplyModeContract()
         "AutoApplyEnabled flag must enable Kafka auto-apply.");
 }
 
+static void AssertConversionRulesValidatorRejectsDuplicateRuleIds()
+{
+    var validation = new ConversionRulesValidator().Validate(new ConversionRulesDocument
+    {
+        Version = "test",
+        Rules =
+        [
+            MinimalRule("rule"),
+            MinimalRule("rule")
+        ]
+    });
+
+    Assert(!validation.IsValid, "conversion rule validator must reject duplicated rule_id values.");
+    Assert(validation.Errors.Any(error => error.Contains("rule_id 'rule' is duplicated", StringComparison.Ordinal)),
+        "conversion rule validator must report the duplicated rule_id explicitly.");
+}
+
+static void AssertZabbixHostIdReadinessContract()
+{
+    var preferred = BuildHostReadinessCommand(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Code"] = "host-001",
+        ["zabbix_main_hostid"] = "main-30011",
+        ["zabbix_hostid"] = "legacy-30011"
+    });
+    Assert(preferred.Source.ZabbixHostId == "main-30011",
+        "AggregationRuleEngine must prefer zabbix_main_hostid over legacy zabbix_hostid.");
+
+    var legacyFallback = BuildHostReadinessCommand(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Code"] = "host-001",
+        ["zabbix_hostid"] = "legacy-30011"
+    });
+    Assert(legacyFallback.Source.ZabbixHostId == "legacy-30011",
+        "AggregationRuleEngine must keep zabbix_hostid as a compatibility fallback.");
+
+    var configured = BuildHostReadinessCommand(
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Code"] = "host-001",
+            ["zabbix_main_hostid"] = "main-30011",
+            ["customer_hostid"] = "custom-30011"
+        },
+        new AggregationRuleEngine("customer_hostid"));
+    Assert(configured.Source.ZabbixHostId == "custom-30011",
+        "AggregationRuleEngine must honor configured Readiness:ZabbixHostIdAttribute before defaults.");
+}
+
 static void AssertRouterCoreAggregationContract()
 {
     var commands = BuildRouterCorePlans("City04").Select(plan => plan.Command).ToArray();
@@ -329,6 +383,7 @@ static void AssertRouterCoreAggregationContract()
     Assert(coreCommand.Source.CardId == "447411", "core-router source card id is invalid.");
     Assert(coreCommand.Source.KeyAttribute == "Code", "core-router source key attribute is invalid.");
     Assert(coreCommand.Source.KeyValue == "ctest2-routerCore-002", "core-router source key value is invalid.");
+    Assert(coreCommand.Source.ZabbixHostId == "30011", "core-router source zabbix_main_hostid is invalid.");
     Assert(coreCommand.Target.ClassCode == "C2M_ServiceNetworkAccessZone", "core-router target class is invalid.");
     Assert(coreCommand.Target.CardId == "576100", "core-router target card id is invalid.");
     Assert(!coreCommand.Target.CreateInstance, "core-router command must attach to the existing target card.");
@@ -421,6 +476,12 @@ static async Task AssertZabbixManagedServiceClientCreatesTaggedServiceAsync()
     Assert(tags[ZabbixManagedServiceTags.Key] == "cmdbuild:C2M_ServiceNetworkAccessZone:576100",
         "Zabbix service.create managed key tag is invalid.");
     Assert(tags[ZabbixManagedServiceTags.CardId] == "576100", "Zabbix service.create card id tag is invalid.");
+    Assert(tags[ZabbixManagedServiceTags.SourceKeyAttribute] == "Code",
+        "Zabbix service.create source key attribute tag is invalid.");
+    Assert(tags[ZabbixManagedServiceTags.SourceKeyValue] == "ctest2-routerCore-002",
+        "Zabbix service.create source key value tag is invalid.");
+    Assert(tags[ZabbixManagedServiceTags.SourceZabbixHostId] == "30011",
+        "Zabbix service.create source hostid tag is invalid.");
 }
 
 static async Task AssertZabbixManagedServiceClientClearsChildrenAsync()
@@ -461,6 +522,200 @@ static async Task AssertZabbixManagedServiceClientClearsChildrenAsync()
         && children.ValueKind == JsonValueKind.Array
         && !children.EnumerateArray().Any(),
         "Zabbix service.update must send an empty children array when desired relations are empty.");
+}
+
+static async Task AssertZabbixSourceLeafServiceCreatesProblemTagsAsync()
+{
+    var command = BuildRouterCorePlans("City04")
+        .Select(plan => plan.Command)
+        .Single(command => command.RuleId == "core-router");
+    var leaf = ZabbixManagedServiceMapper.FromSourceBinding(command, "service");
+    Assert(leaf.ManagedKey == "source:service:routerCore:447411", "source leaf managed key is invalid.");
+    Assert(leaf.ProblemTags.Count == 1, "source leaf must expose a problem tag for host binding.");
+    Assert(leaf.ProblemTags[0].Tag == ZabbixManagedServiceTags.SourceZabbixHostId,
+        "source leaf problem tag must use the managed source hostid tag.");
+    Assert(leaf.ProblemTags[0].Value == "30011", "source leaf problem tag value is invalid.");
+
+    var handler = new DiagnosticZabbixHandler();
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyManagedServiceAsync(leaf, CancellationToken.None);
+    Assert(result.Success, "Zabbix source leaf service apply result must be successful.");
+    Assert(result.ProblemTagsApplied == 1, "Zabbix source leaf service must report applied problem tags.");
+
+    var payloadText = handler.CreatePayload
+        ?? throw new InvalidOperationException("Zabbix source leaf service.create payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var parameters = document.RootElement.GetProperty("params");
+    var problemTags = parameters.GetProperty("problem_tags")
+        .EnumerateArray()
+        .ToArray();
+    Assert(problemTags.Length == 1, "Zabbix service.create must include one problem tag for source leaf.");
+    Assert(JsonString(problemTags[0], "tag") == ZabbixManagedServiceTags.SourceZabbixHostId,
+        "Zabbix source leaf problem tag key is invalid.");
+    Assert(JsonString(problemTags[0], "value") == "30011",
+        "Zabbix source leaf problem tag value is invalid.");
+}
+
+static async Task AssertZabbixClientEnsuresHostTagsAsync()
+{
+    var handler = new DiagnosticZabbixHandler();
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var tagsApplied = await client.EnsureHostTagsAsync(
+        "30011",
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [ZabbixManagedServiceTags.SourceZabbixHostId] = "30011",
+            [ZabbixManagedServiceTags.SourceCardId] = "447411"
+        },
+        CancellationToken.None);
+
+    Assert(tagsApplied == 2, "Zabbix host tag apply counter is invalid.");
+    var payloadText = handler.HostUpdatePayload
+        ?? throw new InvalidOperationException("Zabbix host.update payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var parameters = document.RootElement.GetProperty("params");
+    Assert(JsonString(parameters, "hostid") == "30011", "Zabbix host.update hostid is invalid.");
+    var tags = parameters.GetProperty("tags")
+        .EnumerateArray()
+        .ToDictionary(tag => JsonString(tag, "tag"), tag => JsonString(tag, "value"), StringComparer.Ordinal);
+    Assert(tags["customer:tag"] == "keep", "Zabbix host.update must preserve existing customer host tags.");
+    Assert(tags[ZabbixManagedServiceTags.SourceZabbixHostId] == "30011",
+        "Zabbix host.update managed source hostid tag is invalid.");
+    Assert(tags[ZabbixManagedServiceTags.SourceCardId] == "447411",
+        "Zabbix host.update managed source card id tag is invalid.");
+}
+
+static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
+{
+    var handler = new DiagnosticZabbixHandler();
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var triggers = await client.GetTriggersByHostIdsAsync(["30011", "30012"], includeDisabled: false, CancellationToken.None);
+    Assert(triggers.Count == 2, "Zabbix trigger.get must return diagnostic triggers.");
+    Assert(triggers.Any(trigger => trigger.TriggerId == "60001" && trigger.Hosts.Any(host => host.HostId == "30011")),
+        "Zabbix trigger.get must read trigger host binding.");
+    Assert(triggers.Single(trigger => trigger.TriggerId == "60002").Dependencies.Single().TriggerId == "77777",
+        "Zabbix trigger.get must read existing dependencies.");
+
+    var triggerGetPayload = handler.TriggerGetPayload
+        ?? throw new InvalidOperationException("Zabbix trigger.get payload was not captured.");
+    using var getDocument = JsonDocument.Parse(triggerGetPayload);
+    var getParameters = getDocument.RootElement.GetProperty("params");
+    Assert(getParameters.TryGetProperty("filter", out var filter)
+        && JsonString(filter, "status") == "0",
+        "Zabbix trigger.get must filter enabled triggers by default.");
+    Assert(getParameters.GetProperty("selectDependencies").EnumerateArray().Any(),
+        "Zabbix trigger.get must request existing dependencies.");
+
+    var applied = await client.UpdateTriggerDependenciesAsync(
+        "60002",
+        ["60001", "77777"],
+        CancellationToken.None);
+    Assert(applied == 2, "Zabbix trigger dependency apply counter is invalid.");
+    var triggerUpdatePayload = handler.TriggerUpdatePayload
+        ?? throw new InvalidOperationException("Zabbix trigger.update payload was not captured.");
+    using var updateDocument = JsonDocument.Parse(triggerUpdatePayload);
+    var updateParameters = updateDocument.RootElement.GetProperty("params");
+    Assert(JsonString(updateParameters, "triggerid") == "60002", "Zabbix trigger.update triggerid is invalid.");
+    var dependencyIds = updateParameters.GetProperty("dependencies")
+        .EnumerateArray()
+        .Select(item => JsonString(item, "triggerid"))
+        .ToArray();
+    Assert(dependencyIds.SequenceEqual(["60001", "77777"]), "Zabbix trigger.update dependencies are invalid.");
+}
+
+static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
+{
+    var handler = new DiagnosticZabbixHandler();
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplySuppressionAggregateAsync(
+        new ZabbixSuppressionAggregateDefinition
+        {
+            TargetManagedKey = "suppression:vpn-hubs:city04",
+            TargetClass = "C2M_SuppressionNetworkAccessZone",
+            TargetCardId = "611269",
+            TargetName = "ВПН Хабы / City04",
+            AggregationType = "any",
+            HostGroupName = "CMDB2Monitoring",
+            HostName = "cmdb2monitoring-suppression-aggregates",
+            HostVisibleName = "CMDB2Monitoring suppression aggregates",
+            ItemKey = "cmdb2monitoring.suppression.aggregate[abc]",
+            ItemName = "CMDB2M suppression state: ВПН Хабы / City04",
+            TriggerName = "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
+            TriggerPriority = 3,
+            StateValue = 1
+        },
+        CancellationToken.None);
+
+    Assert(result.HostId == "43001", "Zabbix aggregate host id is invalid.");
+    Assert(result.ItemId == "44001", "Zabbix aggregate item id is invalid.");
+    Assert(result.TriggerId == "45001", "Zabbix aggregate trigger id is invalid.");
+    Assert(result.StatePushed, "Zabbix aggregate state must be pushed through history.push.");
+
+    using var itemDocument = JsonDocument.Parse(handler.ItemCreatePayload
+        ?? throw new InvalidOperationException("Zabbix item.create payload was not captured."));
+    var itemParameters = itemDocument.RootElement.GetProperty("params");
+    Assert(JsonString(itemParameters, "key_") == "cmdb2monitoring.suppression.aggregate[abc]",
+        "Zabbix aggregate item key is invalid.");
+    Assert(itemParameters.GetProperty("type").GetInt32() == 2, "Zabbix aggregate item must be a trapper item.");
+    Assert(itemParameters.GetProperty("value_type").GetInt32() == 3, "Zabbix aggregate item must be numeric unsigned.");
+
+    using var triggerDocument = JsonDocument.Parse(handler.TriggerCreatePayload
+        ?? throw new InvalidOperationException("Zabbix trigger.create payload was not captured."));
+    var triggerParameters = triggerDocument.RootElement.GetProperty("params");
+    Assert(JsonString(triggerParameters, "expression") == "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])=1",
+        "Zabbix aggregate trigger expression is invalid.");
+    var tags = triggerParameters.GetProperty("tags")
+        .EnumerateArray()
+        .ToDictionary(tag => JsonString(tag, "tag"), tag => JsonString(tag, "value"), StringComparer.Ordinal);
+    Assert(tags[ZabbixManagedServiceTags.Aggregate] == "true", "Zabbix aggregate trigger tag is missing.");
+    Assert(tags[ZabbixManagedServiceTags.Key] == "suppression:vpn-hubs:city04",
+        "Zabbix aggregate trigger target key tag is invalid.");
+
+    using var historyDocument = JsonDocument.Parse(handler.HistoryPushPayload
+        ?? throw new InvalidOperationException("Zabbix history.push payload was not captured."));
+    var historyItem = historyDocument.RootElement.GetProperty("params").EnumerateArray().Single();
+    Assert(JsonString(historyItem, "itemid") == "44001", "Zabbix history.push itemid is invalid.");
+    Assert(JsonString(historyItem, "value") == "1", "Zabbix history.push value is invalid.");
 }
 
 static void AssertSemanticFingerprintIncludesDimensionField()
@@ -511,6 +766,43 @@ static async Task AssertCmdbuildApplyCreatesSourceLinkAsync()
     Assert(JsonString(payload, "population_rule_id") == "core-router", "source-link population_rule_id is invalid.");
 }
 
+static ConversionRule MinimalRule(string ruleId)
+{
+    return new ConversionRule
+    {
+        RuleId = ruleId,
+        Name = $"Rule {ruleId}",
+        Layer = "service",
+        Source = new SourceSelector { ClassCode = "Host", KeyAttribute = "Code" },
+        Target = new TargetObject
+        {
+            ClassCode = "C2M_ServiceResource",
+            IdempotencyKey = "${source.Code}"
+        }
+    };
+}
+
+static AggregationCommand BuildHostReadinessCommand(
+    IReadOnlyDictionary<string, string> attributes,
+    AggregationRuleEngine? engine = null)
+{
+    var rawEvent = new CmdbRawEvent
+    {
+        EventId = "readiness-test",
+        Source = "CMDBuild",
+        EventType = "UPDATE",
+        ClassCode = "Host",
+        CardId = "1001",
+        Attributes = attributes
+    };
+
+    return (engine ?? new AggregationRuleEngine()).BuildCommands(rawEvent, new ConversionRulesDocument
+    {
+        Version = "test",
+        Rules = [MinimalRule("host-readiness")]
+    }).Single();
+}
+
 static IReadOnlyList<AggregationCommandPlan> BuildRouterCorePlans(string city)
 {
     var rawEvent = new CmdbRawEvent
@@ -524,6 +816,7 @@ static IReadOnlyList<AggregationCommandPlan> BuildRouterCorePlans(string city)
         {
             ["className"] = "routerCore",
             ["Code"] = "ctest2-routerCore-002",
+            ["zabbix_main_hostid"] = "30011",
             ["locationFloorBuildingCity"] = city
         }
     };
@@ -804,6 +1097,15 @@ static void AssertServiceAggregationLookup(CmdbuildSchemaDefinition schema)
         && threshold.Help.Contains("80,5", StringComparison.Ordinal)
         && threshold.Help.Contains("Zabbix", StringComparison.Ordinal),
         "threshold help must explain the percentage scale.");
+
+    var suppressionSuperclass = schema.Classes.Single(c => c.Code == "C2M_SuppressionManagedObject");
+    var suppressionAggregationType = suppressionSuperclass.Attributes.Single(attribute => attribute.Code == "aggregation_type");
+    Assert(suppressionAggregationType.LookupTypeCode == "ServiceAggregationType",
+        "suppression aggregation_type must reuse ServiceAggregationType lookup.");
+    Assert(suppressionAggregationType.Help.Contains("trigger dependencies", StringComparison.Ordinal)
+        && suppressionAggregationType.Help.Contains("all", StringComparison.Ordinal)
+        && suppressionAggregationType.Help.Contains("any", StringComparison.Ordinal),
+        "suppression aggregation_type help must explain trigger dependency constraints.");
 }
 
 static void AssertServiceTypeLookup(CmdbuildSchemaDefinition schema)
@@ -860,6 +1162,11 @@ static void AssertAttributeValidationRules(CmdbuildSchemaDefinition schema)
         && aggregationType.ValidationRules.Contains("n_of_m", StringComparison.Ordinal)
         && aggregationType.ValidationRules.Contains("nValue >= 1", StringComparison.Ordinal),
         "aggregation_type validationRules script is incomplete.");
+
+    var suppressionSuperclass = schema.Classes.Single(c => c.Code == "C2M_SuppressionManagedObject");
+    var suppressionAggregationType = suppressionSuperclass.Attributes.Single(attribute => attribute.Code == "aggregation_type");
+    Assert(!string.IsNullOrWhiteSpace(suppressionAggregationType.ValidationRules),
+        "suppression aggregation_type must carry the CMDBuild attribute validationRules script.");
 
     var platformService = schema.Classes.Single(c => c.Code == "C2M_ServicePlatformService");
     var serviceType = platformService.Attributes.Single(attribute => attribute.Code == "service_type");
@@ -1089,6 +1396,20 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     public string? UpdatePayload { get; private set; }
 
+    public string? HostUpdatePayload { get; private set; }
+
+    public string? HostCreatePayload { get; private set; }
+
+    public string? ItemCreatePayload { get; private set; }
+
+    public string? TriggerGetPayload { get; private set; }
+
+    public string? TriggerCreatePayload { get; private set; }
+
+    public string? TriggerUpdatePayload { get; private set; }
+
+    public string? HistoryPushPayload { get; private set; }
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
@@ -1117,6 +1438,27 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             """),
             "service.create" => CaptureCreate(body),
             "service.update" => CaptureUpdate(body),
+            "hostgroup.get" => EmptyArrayResponse(),
+            "hostgroup.create" => Json(HttpStatusCode.OK, """
+            {
+              "jsonrpc": "2.0",
+              "result": {
+                "groupids": [
+                  "42001"
+                ]
+              },
+              "id": 20
+            }
+            """),
+            "host.get" => CaptureHostGet(body),
+            "host.create" => CaptureHostCreate(body),
+            "host.update" => CaptureHostUpdate(body),
+            "item.get" => EmptyArrayResponse(),
+            "item.create" => CaptureItemCreate(body),
+            "trigger.get" => CaptureTriggerGet(body),
+            "trigger.create" => CaptureTriggerCreate(body),
+            "trigger.update" => CaptureTriggerUpdate(body),
+            "history.push" => CaptureHistoryPush(body),
             _ => Json(
                 HttpStatusCode.OK,
                 $$"""
@@ -1161,6 +1503,196 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             ]
           },
           "id": 4
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureHostUpdate(string body)
+    {
+        HostUpdatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "hostids": [
+              "30011"
+            ]
+          },
+          "id": 5
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureHostGet(string body)
+    {
+        return body.Contains("cmdb2monitoring-suppression-aggregates", StringComparison.Ordinal)
+            ? EmptyArrayResponse()
+            : HostGetResponse();
+    }
+
+    private HttpResponseMessage CaptureHostCreate(string body)
+    {
+        HostCreatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "hostids": [
+              "43001"
+            ]
+          },
+          "id": 21
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureItemCreate(string body)
+    {
+        ItemCreatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "itemids": [
+              "44001"
+            ]
+          },
+          "id": 22
+        }
+        """);
+    }
+
+    private static HttpResponseMessage HostGetResponse()
+    {
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "hostid": "30011",
+              "host": "ctest2-routerCore-002",
+              "name": "ctest2-routerCore-002",
+              "tags": [
+                {
+                  "tag": "customer:tag",
+                  "value": "keep"
+                }
+              ]
+            }
+          ],
+          "id": 6
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureTriggerGet(string body)
+    {
+        TriggerGetPayload = body;
+        if (body.Contains("cmdb2monitoring:aggregate", StringComparison.Ordinal))
+        {
+            return EmptyArrayResponse();
+        }
+
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "triggerid": "60001",
+              "description": "Core router unavailable",
+              "status": "0",
+              "priority": "4",
+              "value": "1",
+              "hosts": [
+                {
+                  "hostid": "30011",
+                  "host": "ctest2-routerCore-002",
+                  "name": "ctest2-routerCore-002"
+                }
+              ],
+              "dependencies": []
+            },
+            {
+              "triggerid": "60002",
+              "description": "VPN HUB unavailable",
+              "status": "0",
+              "priority": "4",
+              "value": "0",
+              "hosts": [
+                {
+                  "hostid": "30012",
+                  "host": "ctest2-vpnhub-001",
+                  "name": "ctest2-vpnhub-001"
+                }
+              ],
+              "dependencies": [
+                {
+                  "triggerid": "77777",
+                  "description": "manual dependency"
+                }
+              ]
+            }
+          ],
+          "id": 7
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureTriggerCreate(string body)
+    {
+        TriggerCreatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "triggerids": [
+              "45001"
+            ]
+          },
+          "id": 23
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureTriggerUpdate(string body)
+    {
+        TriggerUpdatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "triggerids": [
+              "60002"
+            ]
+          },
+          "id": 8
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureHistoryPush(string body)
+    {
+        HistoryPushPayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "itemids": [
+              "44001"
+            ]
+          },
+          "id": 24
+        }
+        """);
+    }
+
+    private static HttpResponseMessage EmptyArrayResponse()
+    {
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": [],
+          "id": 25
         }
         """);
     }

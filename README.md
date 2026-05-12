@@ -55,11 +55,14 @@ The .NET services now use a single pipeline contract:
 - `cmdbaggregation2cmdbuild` reads the same canonical command topic and owns
   only CMDBuild aggregation objects and relation reconciliation.
 
-The readiness attribute for Zabbix-managed source objects is `zabbix_hostid`.
+The readiness attribute for Zabbix-managed source objects is `zabbix_main_hostid`.
 `CREATE` and `UPDATE` events must be treated as eligible for Zabbix service or
 suppression reconciliation only after the CMDBuild card contains this value.
-`CREATE` without `zabbix_hostid` is a normal intermediate state: the neighboring
+`CREATE` without `zabbix_main_hostid` is a normal intermediate state: the neighboring
 monitoring application has not finished creating or binding the Zabbix host yet.
+When the value is present, Zabbix application can create a managed source leaf
+service and add a matching host tag to the Zabbix host so service `problem_tags`
+can bind real host problems into the managed service tree.
 `DELETE` must be idempotent and must remove only previously recorded managed
 memberships; if the object was never applied by this service, `DELETE` is a
 no-op.
@@ -73,7 +76,7 @@ with the same semantic input do not publish another aggregation command within
 the configured deduplication window. `cmdbaggregation2cmdbuild` also reads an
 existing managed target card before updating it and skips the CMDBuild `PUT`
 when all managed values already match. This prevents relation updates,
-idempotent target-card ensures, and neighboring `zabbix_hostid` updates from
+idempotent target-card ensures, and neighboring `zabbix_main_hostid` updates from
 causing repeated self-triggered apply cycles when the effective rule input did
 not change.
 
@@ -144,15 +147,17 @@ expects, apply fails that class explicitly instead of silently treating it as
 ready; the existing CMDBuild class must be manually moved or recreated in the
 correct branch.
 
-## Service schema rules
+## Service and suppression aggregation rules
 
-Service schema keeps aggregation settings on objects, not on links:
+Service and suppression schemas keep aggregation settings on objects, not on
+links:
 
-- Every service class inherits from `ServiceManagedObject`.
-- `ServiceManagedObject` owns the common object attributes plus service
-  aggregation attributes: `aggregation_type`, `threshold`, and `n`. The common
-  object attributes include `population_source_key`, which stores the source
-  key copied from the customer CMDBuild card during automated population.
+- Every service class inherits from `ServiceManagedObject`; every suppression
+  class inherits from `SuppressionManagedObject`.
+- Both managed superclasses own the common object attributes plus aggregation
+  attributes: `aggregation_type`, `threshold`, and `n`. The common object
+  attributes include `population_source_key`, which stores the source key
+  copied from the customer CMDBuild card during automated population.
 - `ServiceUserEndpointFleet` is the service-model aggregation class for
   populations of similar user endpoints. It should contain managed cards such
   as "all NTbook laptops", "Moscow office notebooks", "call-center thin
@@ -182,8 +187,14 @@ Service schema keeps aggregation settings on objects, not on links:
 - `is_critical=true` does not activate an object and does not create topology by
   itself. It marks stronger impact for generated Zabbix metadata and for
   builder decisions that rank root cause or suppression impact.
-- Service domains describe structure only. They do not duplicate
+- Service and suppression domains describe structure only. They do not duplicate
   `aggregation_type`, `threshold`, or `n`.
+- For suppression `trigger dependencies`, every managed suppression object uses
+  the same approach: `zabbixconfig2api` creates one managed aggregate trigger
+  for the object and writes the calculated group state to a trapper item.
+  Downstream triggers depend on that aggregate trigger, never directly on
+  individual source-host triggers. `aggregation_type=all|any|threshold|n_of_m`
+  controls only how that aggregate state is calculated.
 - `ServicePlatformService.service_type` is a `ServiceType` lookup, not a free
   string. Planned values are `business`, `application`, `platform`,
   `integration`, and `infrastructure`; the field is used for grouping and
@@ -256,16 +267,9 @@ Suppression schema is intentionally uniform:
   `Целевой класс\экземпляр класса`, each managed class is followed immediately
   by its existing target cards as `Класс -> экземпляр`, so search/filter keeps
   the instance attached to its class.
-- In `Просмотр автонаполнения`, clicking a source class attribute, conversion
-  rule, target class, or target instance keeps only the related chain visible
-  until the operator presses `Снять выделение`; parent target classes may remain
-  as minimal context to keep the tree path readable. Each preview column has an
-  independent search field, and search is applied inside the current chain when
-  a selection is active. The target schema column shows managed classes and
-  known instances; instances come from the CMDBuild cache and from rule
-  `target.card_id` fallback metadata. Source classes referenced by rules are
-  shown even when they are missing from the loaded source catalog, using the
-  fields referenced by the rule as a fallback schema.
+- `Статические правила` is the manual rule editor for service and suppression
+  layers. It is the place where an operator may select either a target class or
+  a concrete existing target card; templates select only target classes.
 - CMDBuild cache key `cmdbuild.catalogs.v3` stores prototype/superclass nodes
   for sorting, while rule source selection still exposes only non-prototype
   customer classes.
@@ -304,16 +308,18 @@ Suppression schema is intentionally uniform:
   `extract(...)`, `replace(...)`, `lower(...)`, `upper(...)`, `trim(...)`, and
   `default(...)`. They cannot use `${source.<attribute>}` because no concrete
   source card is being processed while the target card is created.
-- Target object attributes are restricted by layer. Service creation exposes
+- Target object attributes are restricted by the selected target class. Service
+  and suppression creation expose
   `name`, `description`, `is_critical`, `aggregation_type`, `threshold`, and
-  `n`; `threshold` is used by `aggregation_type=threshold`, and `n` is the N
-  parameter for `n_of_m` while M is the current active child count. Suppression
-  creation exposes `name`, `description`, and `is_critical`.
+  `n` when these attributes exist; `threshold` is used by
+  `aggregation_type=threshold`, and `n` is the N parameter for `n_of_m` while M
+  is the current active child count.
 - Population template editing exposes the same user-owned target attributes for
-  generated aggregate cards: service templates can set `is_critical`,
-  `aggregation_type`, `threshold`, and `n`; suppression templates can set
-  `is_critical`. The UI only shows attributes present on the selected target
-  class. Values are rendered during template materialization from `template.*`,
+  generated aggregate cards: service and suppression templates can set
+  `is_critical`, `aggregation_type`, `threshold`, and `n` when these attributes
+  exist on the selected target class. The UI only shows attributes present on
+  the selected target class. Values are rendered during template
+  materialization from `template.*`,
   `class.*`, `dimension.*`, and `vars.*`; `${source.*}` is rejected because no
   concrete source card exists at that stage.
 - The source key is derived from the first source-selection condition, or falls
@@ -571,7 +577,7 @@ five events of the selected topic by default. Kafka topics are identified by
 topic settings; foreign customer topics are not shown.
 
 The `Администрирование -> Основные` menu shows the Zabbix readiness attribute
-name: `zabbix_hostid`. This is the CMDBuild card attribute that signals that the
+name: `zabbix_main_hostid`. This is the CMDBuild card attribute that signals that the
 source object already has a corresponding Zabbix host and can enter the service
 or suppression model. The same menu shows the server folder used to store
 conversion rules, templates, and managed relations.
@@ -605,8 +611,25 @@ The top-level `Синхронизация с источниками данных
   `cmdb2monitoring:card_id`. If a relation points to a service that has not been
   created yet, the object is applied with a `partial` warning and the publish
   action can be rerun after the missing object appears. Zabbix-only
-  current-card publishing collapses duplicate target commands within one run,
-  but does not suppress the same desired object in a later run.
+  current-card publishing keeps source-card identity in duplicate keys so several
+  source cards that map to the same target service do not hide membership.
+- Source membership is persisted by `zabbixconfig2api`
+  (`ZabbixApplyState:FilePath`). A source card with `zabbix_main_hostid` produces a
+  source leaf service under the managed target service. The leaf service has
+  `problem_tags` for `cmdb2monitoring:source_hostid=<zabbix_main_hostid>`, and the
+  applier adds the same tag to the Zabbix host while preserving existing host
+  tags. This is how Zabbix Services can associate real host problems with
+  managed objects such as `ВПН филиалов`.
+- The service tree and problem-tag binding do not by themselves close or hide
+  dependent problem events. Active event suppression from our side is not used:
+  the suppression model must be reflected in Zabbix through service topology
+  and trigger dependencies. In `Каскадное подавление -> Применить в Zabbix`,
+  the `Зависимости триггеров` block first ensures managed aggregate triggers
+  for suppression objects, then builds dependencies from persisted membership:
+  triggers of child/dependent source hosts and the child's own aggregate trigger
+  depend on the aggregate trigger of the parent/cause object. Reconcile
+  preserves manual Zabbix dependencies and removes only edges that were
+  previously managed by this service.
 - `Webhooks` checks the configured `cmdbwebhooks2kafka` health endpoint, reads
   CMDBuild `etl/webhook` inventory, and shows the webhook target route plus the
   raw event Kafka topic. `Перечитать из CMDBuild` reloads the current managed
@@ -638,6 +661,12 @@ The top-level `Синхронизация с источниками данных
   configuration: applier services reread that shared folder on reload, and the
   same workflow will later use a Git-backed folder. CMDBuild webhook
   publication is a separate Webhooks action.
+- `Управление правилами -> Создать/обновить правила по шаблонам и связям`
+  contains the `Проверить шаблоны` preflight step before materializing
+  templates. It loads the needed source cards, calculates `dimension.*`, shows
+  generated-rule and managed-relation create/update/remove counts, target
+  attributes, and blocking errors such as empty dimensions, missing
+  domains/targets, or duplicate generated rule IDs.
 - Each source separates `Провести синхронизацию` from `Загрузить локальный
   кэш`. Synchronization reads the real source and stores an IndexedDB browser
   cache; loading the cache restores the last stored snapshot without rereading a

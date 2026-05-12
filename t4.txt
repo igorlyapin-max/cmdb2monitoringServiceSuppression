@@ -374,7 +374,7 @@ Builder должен:
 Ввести уровни проверки:
 
 ERROR (блокирует):
-- нет zabbix_hostid для CI, участвующего в dependency
+- нет zabbix_main_hostid для CI, участвующего в dependency
 - невозможно разрешить trigger
 
 WARNING (не блокирует):

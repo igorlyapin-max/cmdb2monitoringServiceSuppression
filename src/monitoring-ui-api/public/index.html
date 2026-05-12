@@ -17,8 +17,7 @@
             <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Сервисный слой</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="serviceSchema">Схема</button>
-              <button class="nav-item" data-view="serviceRulesViewOnly">Просмотр автонаполнения</button>
-              <button class="nav-item" data-view="serviceRulesEdit">Модификация автонаполнения</button>
+              <button class="nav-item" data-view="serviceRulesEdit">Статические правила</button>
               <button class="nav-item" data-view="serviceTemplates">Шаблоны</button>
               <div class="nav-subgroup">
                 <button class="nav-subsection-button" type="button" data-nav-toggle aria-expanded="false">Управление связями</button>
@@ -28,7 +27,6 @@
                   <button class="nav-item" data-view="serviceRuleRuleRelations">Правило-правило</button>
                 </div>
               </div>
-              <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
               <button class="nav-item" data-view="serviceZabbixApply">Применить в Zabbix</button>
             </div>
           </div>
@@ -36,8 +34,7 @@
             <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Каскадное подавление</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="suppressionSchema">Схема</button>
-              <button class="nav-item" data-view="suppressionRulesViewOnly">Просмотр автонаполнения</button>
-              <button class="nav-item" data-view="suppressionRulesEdit">Модификация автонаполнения</button>
+              <button class="nav-item" data-view="suppressionRulesEdit">Статические правила</button>
               <button class="nav-item" data-view="suppressionTemplates">Шаблоны</button>
               <div class="nav-subgroup">
                 <button class="nav-subsection-button" type="button" data-nav-toggle aria-expanded="false">Управление связями</button>
@@ -47,7 +44,6 @@
                   <button class="nav-item" data-view="suppressionRuleRuleRelations">Правило-правило</button>
                 </div>
               </div>
-              <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
               <button class="nav-item" data-view="suppressionZabbixApply">Применить в Zabbix</button>
             </div>
           </div>
@@ -280,7 +276,7 @@
 
         <section id="serviceRulesEditView" class="view hidden">
           <section class="panel rule-editor-panel" data-rule-editor-layer="service">
-            <h2>Сервис модификация</h2>
+            <h2>Статические правила сервиса</h2>
             <div class="rule-editor-grid">
               <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает в списке выбора правила, созданные из шаблонов. Снимите галочку, чтобы выбрать такое правило.">
                 <input id="serviceRuleFilterTemplateRules" data-rule-filter-template-rules type="checkbox" checked>
@@ -370,7 +366,7 @@
 
         <section id="suppressionRulesEditView" class="view hidden">
           <section class="panel rule-editor-panel" data-rule-editor-layer="suppression">
-            <h2>Подавление модификация</h2>
+            <h2>Статические правила подавления</h2>
             <div class="rule-editor-grid">
               <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает в списке выбора правила, созданные из шаблонов. Снимите галочку, чтобы выбрать такое правило.">
                 <input id="suppressionRuleFilterTemplateRules" data-rule-filter-template-rules type="checkbox" checked>
@@ -449,7 +445,7 @@
                 <input id="serviceTemplatePriority" type="number" min="1" step="1" placeholder="100">
               </label>
               <label class="select-field">
-                <span>Целевой класс/экземпляр класса</span>
+                <span>Целевой класс</span>
                 <select id="serviceTemplateTargetClass" data-template-target-class></select>
               </label>
               <div class="rule-attribute-editor template-editor-wide">
@@ -607,12 +603,12 @@
                 <input id="suppressionTemplatePriority" type="number" min="1" step="1" placeholder="100">
               </label>
               <label class="select-field">
-                <span>Целевой класс/экземпляр класса</span>
+                <span>Целевой класс</span>
                 <select id="suppressionTemplateTargetClass" data-template-target-class></select>
               </label>
               <div class="rule-attribute-editor template-editor-wide">
                 <span class="field-label">Атрибуты создаваемого целевого объекта</span>
-                <p class="template-expression-examples">Значения применяются к объектам, которые создаст шаблон: для каскадного подавления доступен <code>is_critical</code>, если он есть в выбранном классе. Можно использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${dimension.key}</code>, <code>${dimension.name}</code>, <code>${vars.name}</code>; <code>${source.*}</code> здесь запрещен.</p>
+                <p class="template-expression-examples">Значения применяются к объектам, которые создаст шаблон: для каскадного подавления доступны <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном классе. Можно использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${dimension.key}</code>, <code>${dimension.name}</code>, <code>${vars.name}</code>; <code>${source.*}</code> здесь запрещен.</p>
                 <div id="suppressionTemplateAttributeList" class="rule-attribute-list"></div>
               </div>
               <div class="template-source-field-helper template-editor-wide">
@@ -846,7 +842,7 @@
         <section id="serviceZabbixApplyView" class="view hidden" data-zabbix-apply-layer="service">
           <div class="section-heading">
             <h2>Применить сервисную модель в Zabbix</h2>
-            <p>Проверка и публикация команд сервисного слоя в отдельный Zabbix-топик. Контур сервиса имеет собственный dry-run, статус, счетчики, ошибки и reconcile-сводку.</p>
+            <p>Проверка и публикация команд сервисного слоя в отдельный Zabbix-топик. Контур сервиса имеет собственный dry-run, статус, счетчики, ошибки, source membership, problem tags и reconcile-сводку.</p>
           </div>
           <section class="panel">
             <div class="sync-grid" data-zabbix-apply-summary></div>
@@ -863,7 +859,7 @@
         <section id="suppressionZabbixApplyView" class="view hidden" data-zabbix-apply-layer="suppression">
           <div class="section-heading">
             <h2>Применить модель подавления в Zabbix</h2>
-            <p>Проверка и публикация команд каскадного подавления в отдельный Zabbix-топик. Контур подавления имеет собственный dry-run, статус, счетчики, ошибки и reconcile-сводку.</p>
+            <p>Проверка и публикация команд каскадного подавления в отдельный Zabbix-топик. Контур подавления имеет собственный dry-run, статус, счетчики, ошибки, source membership, problem tags и reconcile-сводку.</p>
           </div>
           <section class="panel">
             <div class="sync-grid" data-zabbix-apply-summary></div>
@@ -874,6 +870,20 @@
             </div>
             <p class="status-line" data-zabbix-apply-status></p>
             <div class="preview-list" data-zabbix-apply-list></div>
+          </section>
+          <section class="panel">
+            <div class="section-heading">
+              <h2>Зависимости триггеров</h2>
+              <p>Штатное каскадное подавление в Zabbix: зависимые триггеры source-хостов получают dependencies на триггеры причины по suppression-графу. Ручные dependencies в Zabbix сохраняются.</p>
+            </div>
+            <div id="zabbixTriggerDependenciesSummary" class="sync-grid"></div>
+            <div class="sync-actions">
+              <button id="zabbixTriggerDependenciesRefreshButton" class="secondary-button" type="button">Обновить статус зависимостей</button>
+              <button id="zabbixTriggerDependenciesDryRunButton" class="secondary-button" type="button">Dry-run зависимостей</button>
+              <button id="zabbixTriggerDependenciesApplyButton" class="primary-button" type="button">Опубликовать зависимости триггеров в Zabbix</button>
+            </div>
+            <p id="zabbixTriggerDependenciesStatus" class="status-line"></p>
+            <div id="zabbixTriggerDependenciesList" class="preview-list"></div>
           </section>
         </section>
 
@@ -906,6 +916,7 @@
               </div>
             </div>
             <div class="sync-actions">
+              <button id="runTemplateAuditButton" class="secondary-button" type="button">Проверить шаблоны</button>
               <button id="applyTemplatesButton" class="primary-button" type="button">Создать/обновить правила по шаблонам и связям</button>
             </div>
             <p id="templateApplyStatus" class="status-line"></p>
@@ -1096,16 +1107,6 @@
           </section>
         </section>
 
-        <section id="templateAuditView" class="view hidden">
-          <div class="section-heading">
-            <h2>Аудит шаблонов</h2>
-              <p>Сравнение шаблонов, классов-кандидатов и уже сгенерированных правил.</p>
-          </div>
-          <section class="panel">
-            <div id="templateAuditList" class="preview-list"></div>
-          </section>
-        </section>
-
         <section id="helpView" class="view hidden">
           <div class="section-heading">
             <h2>Помощь</h2>
@@ -1161,10 +1162,22 @@
                 <li>Домены создаются с удалением связи при удалении связанной карточки.</li>
                 <li>Если объект выходит из агрегата, builder-сервис удаляет устаревшую связь при сверке желаемого состояния.</li>
                 <li>Если меняются IP, DNS, hostname, tags или status карточки, это обычное обновление объекта.</li>
-                <li><code>zabbix_hostid</code> является признаком готовности карточки к Zabbix-цепочке; CREATE и UPDATE без него не должны создавать членство в агрегате.</li>
+                <li><code>zabbix_main_hostid</code> является признаком готовности карточки к Zabbix-цепочке; CREATE и UPDATE без него не должны создавать членство в агрегате.</li>
                 <li>В правиле автонаполнения целевой класс означает создание или обеспечение экземпляра; атрибуты зоны ответственности пользователя автоматика не заполняет.</li>
-                <li>В модификации автонаполнения атрибуты создаваемого целевого объекта могут использовать только значения выбранного класса: <code>${class.code}</code>, <code>${class.description}</code>, <code>${class.hierarchyPath}</code> и функции над ними. <code>${source.*}</code> используется только в маппингах времени обработки правил.</li>
+                <li>В статических правилах атрибуты создаваемого целевого объекта могут использовать только значения выбранного класса: <code>${class.code}</code>, <code>${class.description}</code>, <code>${class.hierarchyPath}</code> и функции над ними. <code>${source.*}</code> используется только в маппингах времени обработки правил.</li>
                 <li>Агрегатор удаляет заказчик; после DELETE builder-сервис убирает соответствующие структуры из Zabbix.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Как Zabbix привязывает проблемы к модели</h2>
+              <ul class="help-list">
+                <li>Managed service в Zabbix показывает объект нашей модели, например <code>ВПН филиалов</code>. Сам по себе service tag не говорит Zabbix, какие события хостов входят в этот объект.</li>
+                <li>Для source-карточки с <code>zabbix_main_hostid</code> applier создает source leaf service и добавляет его child-узлом к целевому managed service.</li>
+                <li>На source leaf service выставляется <code>problem_tags</code> по <code>cmdb2monitoring:source_hostid=&lt;zabbix_main_hostid&gt;</code>, а такой же tag добавляется на Zabbix host с сохранением уже существующих host tags.</li>
+                <li>После этого реальные проблемы Zabbix host наследуют tag и могут попадать в source leaf, а статус поднимается вверх по дереву service/suppression.</li>
+                <li>Если <code>zabbix_main_hostid</code> пустой, карточка считается неготовой: dry-run покажет отсутствующую привязку, а publish не создаст source leaf и уберет прежнее membership этой карточки.</li>
+                <li>Это строит модель влияния в Zabbix Services. Реальное штатное каскадное подавление должно строиться отдельной публикацией <code>trigger dependencies</code>; разовое подавление активных событий в UI не используется.</li>
               </ul>
             </section>
 
@@ -1194,6 +1207,7 @@
               <h2>Шаблоны автонаполнения</h2>
               <ul class="help-list">
                 <li>Шаблон не исполняется микросервисом напрямую: он материализуется в обычные правила с меткой <code>generated_from_template</code>.</li>
+                <li><strong>Управление правилами -> Создать/обновить правила по шаблонам и связям -> Проверить шаблоны</strong> выполняется перед материализацией: проверяет выбранные source-классы, значения <code>dimension.*</code>, целевые атрибуты, будущие create/update/remove и управляемые связи. Кнопка создания правил активна только после проверки без блокирующих ошибок.</li>
                 <li><strong>ID шаблона</strong> является стабильным ключом управляемых правил. После первого сохранения он блокируется в редакторе; новый шаблон с уже существующим ID не сохраняется поверх старого.</li>
                 <li>Классы-источники выбираются регулярным выражением по коду, описанию или пути наследования класса.</li>
                 <li><strong>Измерение заполнения</strong> задает, по каким значениям шаблон развернется в статические правила. Новая модель генерирует правила по схеме <code>класс-источник x значение измерения</code>: например один шаблон для <code>NTBook|ThinClient|ARM</code> и измерение "город" создают отдельные сгенерированные правила на каждый город.</li>
@@ -1314,7 +1328,7 @@
               </label>
               <label class="text-field settings-field">
                 <span class="normal-case-label">Атрибут готовности Zabbix-хоста</span>
-                <input id="zabbixHostIdAttributeInput" value="zabbix_hostid" readonly>
+                <input id="zabbixHostIdAttributeInput" value="zabbix_main_hostid" readonly>
               </label>
               <p class="settings-help">CREATE и UPDATE должны попадать в Zabbix-цепочку только после появления значения в этом атрибуте карточки CMDBuild.</p>
               <label class="text-field settings-field wide-settings-field">

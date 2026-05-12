@@ -79,7 +79,7 @@ CI — нормализованный объект инфраструктуры 
 - ci_type
 - subtype
 - monitoring_profile
-- zabbix_hostid
+- zabbix_main_hostid
 - attributes
 
 Примеры ci_type:
@@ -286,7 +286,7 @@ Webhook не должен напрямую менять Zabbix.
 
 Нормализация должна:
 - приводить разные классы CMDB к единому ci_type;
-- извлекать zabbix_hostid;
+- извлекать zabbix_main_hostid;
 - определять monitoring_profile;
 - определять связи между CI.
 
@@ -671,7 +671,7 @@ function resolve_trigger(ci_id, signal, model, zabbix_cache):
     trigger_name = profile.trigger_aliases[signal]
 
     trigger = zabbix_cache.find_trigger(
-        hostid = ci.zabbix_hostid,
+        hostid = ci.zabbix_main_hostid,
         description = trigger_name
     )
 

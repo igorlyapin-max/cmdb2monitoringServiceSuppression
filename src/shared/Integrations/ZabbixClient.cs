@@ -87,6 +87,24 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             childIds.Add(child.ServiceId);
         }
 
+        foreach (var managedKey in definition.ChildManagedKeys)
+        {
+            var child = await FindManagedServiceByKeyAsync(definition.Layer, managedKey, cancellationToken);
+            if (child is null)
+            {
+                warnings.Add($"Source leaf managed service не найден: {managedKey}.");
+                continue;
+            }
+
+            if (existing is not null && string.Equals(existing.ServiceId, child.ServiceId, StringComparison.Ordinal))
+            {
+                warnings.Add($"Source leaf managed service {managedKey}: пропущена самоссылка на serviceid {child.ServiceId}.");
+                continue;
+            }
+
+            childIds.Add(child.ServiceId);
+        }
+
         childIds = childIds
             .Distinct(StringComparer.Ordinal)
             .ToList();
@@ -102,7 +120,136 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             ServiceId = serviceId,
             RelationsApplied = replaceChildren ? childIds.Count : 0,
             RelationsDeferred = replaceChildren ? 0 : warnings.Count,
+            ProblemTagsApplied = definition.ProblemTags.Count,
             Warnings = warnings
+        };
+    }
+
+    public async Task<int> EnsureHostTagsAsync(
+        string hostId,
+        IReadOnlyDictionary<string, string> tags,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(hostId) || tags.Count == 0)
+        {
+            return 0;
+        }
+
+        var host = await GetHostByIdAsync(hostId, cancellationToken)
+            ?? throw new InvalidOperationException($"Zabbix hostid '{hostId}' was not found.");
+        var managedTagKeys = new HashSet<string>(tags.Keys, StringComparer.Ordinal);
+        var mergedTags = host.Tags
+            .Where(tag => !managedTagKeys.Contains(tag.Tag))
+            .Concat(tags
+                .Where(tag => !string.IsNullOrWhiteSpace(tag.Value))
+                .Select(tag => new ZabbixServiceTag(tag.Key, tag.Value)))
+            .ToArray();
+
+        var payload = new JsonObject
+        {
+            ["hostid"] = host.HostId,
+            ["tags"] = ServiceTags(mergedTags)
+        };
+        await SendZabbixMethodAsync("host.update", payload, cancellationToken);
+        return tags.Count;
+    }
+
+    public async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByHostIdsAsync(
+        IReadOnlyList<string> hostIds,
+        bool includeDisabled,
+        CancellationToken cancellationToken)
+    {
+        var ids = hostIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var parameters = TriggerGetBaseParameters(includeDisabled);
+        parameters["hostids"] = StringArray(ids);
+        return await GetTriggersAsync(parameters, "hostids", cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByIdsAsync(
+        IReadOnlyList<string> triggerIds,
+        bool includeDisabled,
+        CancellationToken cancellationToken)
+    {
+        var ids = triggerIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var parameters = TriggerGetBaseParameters(includeDisabled);
+        parameters["triggerids"] = StringArray(ids);
+        return await GetTriggersAsync(parameters, "triggerids", cancellationToken);
+    }
+
+    public async Task<int> UpdateTriggerDependenciesAsync(
+        string triggerId,
+        IReadOnlyList<string> dependencyTriggerIds,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(triggerId))
+        {
+            throw new InvalidOperationException("Zabbix triggerid is empty.");
+        }
+
+        var dependencies = dependencyTriggerIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var payload = new JsonObject
+        {
+            ["triggerid"] = triggerId,
+            ["dependencies"] = TriggerReferences(dependencies)
+        };
+
+        await SendZabbixMethodAsync("trigger.update", payload, cancellationToken);
+        return dependencies.Length;
+    }
+
+    public async Task<ZabbixSuppressionAggregateApplyResult> ApplySuppressionAggregateAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(definition.TargetManagedKey))
+        {
+            throw new InvalidOperationException("Zabbix suppression aggregate target key is empty.");
+        }
+
+        if (string.IsNullOrWhiteSpace(definition.HostGroupName)
+            || string.IsNullOrWhiteSpace(definition.HostName)
+            || string.IsNullOrWhiteSpace(definition.ItemKey)
+            || string.IsNullOrWhiteSpace(definition.TriggerName))
+        {
+            throw new InvalidOperationException(
+                $"Zabbix suppression aggregate definition is incomplete for '{definition.TargetManagedKey}'.");
+        }
+
+        var tags = AggregateTags(definition);
+        var group = await EnsureHostGroupAsync(definition.HostGroupName, cancellationToken);
+        var host = await EnsureAggregateHostAsync(definition, group.Id, cancellationToken);
+        var item = await EnsureAggregateItemAsync(definition, host.Id, tags, cancellationToken);
+        var trigger = await EnsureAggregateTriggerAsync(definition, host.Id, tags, cancellationToken);
+        await PushHistoryValueAsync(item.Id, definition.StateValue, cancellationToken);
+
+        return new ZabbixSuppressionAggregateApplyResult
+        {
+            HostId = host.Id,
+            ItemId = item.Id,
+            TriggerId = trigger.Id,
+            HostAction = host.Action,
+            ItemAction = item.Action,
+            TriggerAction = trigger.Action,
+            StatePushed = true
         };
     }
 
@@ -159,6 +306,217 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             cancellationToken);
 
         return SingleManagedServiceOrDefault(services, $"{classCode}/{lookup}");
+    }
+
+    private sealed record ZabbixObjectAction(string Id, string Action);
+
+    private async Task<ZabbixObjectAction> EnsureHostGroupAsync(
+        string name,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("groupid", "name"),
+            ["filter"] = new JsonObject
+            {
+                ["name"] = new JsonArray(name)
+            },
+            ["limit"] = 2
+        };
+        var response = await SendZabbixMethodAsync("hostgroup.get", parameters, cancellationToken);
+        var existing = ReadResultArray(response, "hostgroup.get");
+        if (existing.Count > 1)
+        {
+            throw new InvalidOperationException($"Zabbix contains duplicated host groups named '{name}'.");
+        }
+
+        if (existing.Count == 1 && existing[0] is JsonObject group)
+        {
+            return new ZabbixObjectAction(JsonString(group["groupid"]), "existing");
+        }
+
+        var create = await SendZabbixMethodAsync(
+            "hostgroup.create",
+            new JsonObject { ["name"] = name },
+            cancellationToken);
+        return new ZabbixObjectAction(ReadFirstId(create, "groupids", "hostgroup.create"), "created");
+    }
+
+    private async Task<ZabbixObjectAction> EnsureAggregateHostAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("hostid", "host", "name"),
+            ["filter"] = new JsonObject
+            {
+                ["host"] = new JsonArray(definition.HostName)
+            },
+            ["limit"] = 2
+        };
+        var response = await SendZabbixMethodAsync("host.get", parameters, cancellationToken);
+        var existing = ReadResultArray(response, "host.get");
+        var payload = new JsonObject
+        {
+            ["host"] = definition.HostName,
+            ["name"] = string.IsNullOrWhiteSpace(definition.HostVisibleName)
+                ? definition.HostName
+                : definition.HostVisibleName,
+            ["groups"] = new JsonArray(new JsonObject { ["groupid"] = groupId }),
+            ["status"] = 0,
+            ["tags"] = ServiceTags(new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ZabbixManagedServiceTags.Managed] = "true",
+                [ZabbixManagedServiceTags.Layer] = definition.Layer,
+                [ZabbixManagedServiceTags.Aggregate] = "true",
+                [ZabbixManagedServiceTags.AggregateKind] = "suppression_host"
+            })
+        };
+
+        if (existing.Count > 1)
+        {
+            throw new InvalidOperationException($"Zabbix contains duplicated aggregate hosts named '{definition.HostName}'.");
+        }
+
+        if (existing.Count == 1 && existing[0] is JsonObject host)
+        {
+            var hostId = JsonString(host["hostid"]);
+            payload["hostid"] = hostId;
+            await SendZabbixMethodAsync("host.update", payload, cancellationToken);
+            return new ZabbixObjectAction(hostId, "updated");
+        }
+
+        var create = await SendZabbixMethodAsync("host.create", payload, cancellationToken);
+        return new ZabbixObjectAction(ReadFirstId(create, "hostids", "host.create"), "created");
+    }
+
+    private async Task<ZabbixObjectAction> EnsureAggregateItemAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        string hostId,
+        IReadOnlyDictionary<string, string> tags,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("itemid", "name", "key_", "type", "value_type", "status"),
+            ["hostids"] = new JsonArray(hostId),
+            ["filter"] = new JsonObject
+            {
+                ["key_"] = new JsonArray(definition.ItemKey)
+            },
+            ["limit"] = 2
+        };
+        var response = await SendZabbixMethodAsync("item.get", parameters, cancellationToken);
+        var existing = ReadResultArray(response, "item.get");
+        var payload = new JsonObject
+        {
+            ["name"] = definition.ItemName,
+            ["key_"] = definition.ItemKey,
+            ["hostid"] = hostId,
+            ["type"] = 2,
+            ["value_type"] = 3,
+            ["delay"] = "0",
+            ["status"] = 0,
+            ["tags"] = ServiceTags(tags)
+        };
+
+        if (existing.Count > 1)
+        {
+            throw new InvalidOperationException(
+                $"Zabbix contains duplicated aggregate items '{definition.ItemKey}' on hostid {hostId}.");
+        }
+
+        if (existing.Count == 1 && existing[0] is JsonObject item)
+        {
+            var itemId = JsonString(item["itemid"]);
+            payload["itemid"] = itemId;
+            await SendZabbixMethodAsync("item.update", payload, cancellationToken);
+            return new ZabbixObjectAction(itemId, "updated");
+        }
+
+        var create = await SendZabbixMethodAsync("item.create", payload, cancellationToken);
+        return new ZabbixObjectAction(ReadFirstId(create, "itemids", "item.create"), "created");
+    }
+
+    private async Task<ZabbixObjectAction> EnsureAggregateTriggerAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        string hostId,
+        IReadOnlyDictionary<string, string> tags,
+        CancellationToken cancellationToken)
+    {
+        var expression = $"last(/{definition.HostName}/{definition.ItemKey})=1";
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("triggerid", "description", "expression", "priority"),
+            ["hostids"] = new JsonArray(hostId),
+            ["tags"] = TagFilters(tags),
+            ["evaltype"] = 0,
+            ["limit"] = 2
+        };
+        var response = await SendZabbixMethodAsync("trigger.get", parameters, cancellationToken);
+        var existing = ReadResultArray(response, "trigger.get");
+        var payload = new JsonObject
+        {
+            ["description"] = definition.TriggerName,
+            ["expression"] = expression,
+            ["priority"] = definition.TriggerPriority,
+            ["tags"] = ServiceTags(tags)
+        };
+
+        if (existing.Count > 1)
+        {
+            throw new InvalidOperationException(
+                $"Zabbix contains duplicated aggregate triggers for target '{definition.TargetManagedKey}'.");
+        }
+
+        if (existing.Count == 1 && existing[0] is JsonObject trigger)
+        {
+            var triggerId = JsonString(trigger["triggerid"]);
+            payload["triggerid"] = triggerId;
+            await SendZabbixMethodAsync("trigger.update", payload, cancellationToken);
+            return new ZabbixObjectAction(triggerId, "updated");
+        }
+
+        var create = await SendZabbixMethodAsync("trigger.create", payload, cancellationToken);
+        return new ZabbixObjectAction(ReadFirstId(create, "triggerids", "trigger.create"), "created");
+    }
+
+    private async Task PushHistoryValueAsync(
+        string itemId,
+        int value,
+        CancellationToken cancellationToken)
+    {
+        await SendZabbixMethodAsync(
+            "history.push",
+            new JsonArray
+            {
+                new JsonObject
+                {
+                    ["itemid"] = itemId,
+                    ["value"] = value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["clock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                }
+            },
+            cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersAsync(
+        JsonObject parameters,
+        string lookupDescription,
+        CancellationToken cancellationToken)
+    {
+        var response = await SendZabbixMethodAsync("trigger.get", parameters, cancellationToken);
+        var result = response.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonArray array
+            ? array
+            : throw new InvalidOperationException($"Zabbix trigger.get by {lookupDescription} did not return an array.");
+
+        return result
+            .OfType<JsonObject>()
+            .Select(ReadTrigger)
+            .Where(trigger => !string.IsNullOrWhiteSpace(trigger.TriggerId))
+            .ToArray();
     }
 
     private async Task<string> CreateManagedServiceAsync(
@@ -219,6 +577,44 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             .OfType<JsonObject>()
             .Select(ReadService)
             .ToArray();
+    }
+
+    private async Task<ZabbixHostInfo?> GetHostByIdAsync(
+        string hostId,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("hostid", "host", "name"),
+            ["hostids"] = new JsonArray(hostId),
+            ["selectTags"] = new JsonArray("tag", "value"),
+            ["limit"] = 2
+        };
+
+        var response = await SendZabbixMethodAsync("host.get", parameters, cancellationToken);
+        var result = response.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonArray array
+            ? array
+            : throw new InvalidOperationException("Zabbix host.get did not return an array.");
+
+        if (result.Count == 0)
+        {
+            return null;
+        }
+
+        if (result.Count > 1)
+        {
+            throw new InvalidOperationException($"Zabbix host.get returned duplicated hostid '{hostId}'.");
+        }
+
+        var host = result[0] as JsonObject
+            ?? throw new InvalidOperationException("Zabbix host.get returned an invalid host object.");
+        return new ZabbixHostInfo
+        {
+            HostId = JsonString(host["hostid"]),
+            Host = JsonString(host["host"]),
+            Name = JsonString(host["name"]),
+            Tags = ReadTagList(host["tags"] as JsonArray)
+        };
     }
 
     private async Task<string> GetApiVersionAsync(CancellationToken cancellationToken)
@@ -302,7 +698,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
     private async Task<JsonObject> SendZabbixMethodAsync(
         string method,
-        JsonObject parameters,
+        JsonNode parameters,
         CancellationToken cancellationToken)
     {
         var authenticated = !string.Equals(options.CurrentValue.AuthMode, "None", StringComparison.OrdinalIgnoreCase);
@@ -403,7 +799,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
     private static JsonObject BuildServicePayload(ZabbixManagedServiceDefinition definition)
     {
-        return new JsonObject
+        var service = new JsonObject
         {
             ["name"] = definition.Name,
             ["algorithm"] = definition.Algorithm,
@@ -412,6 +808,12 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             ["description"] = definition.Description,
             ["tags"] = ServiceTags(definition.Tags)
         };
+        if (definition.ProblemTags.Count > 0)
+        {
+            service["problem_tags"] = ProblemTags(definition.ProblemTags);
+        }
+
+        return service;
     }
 
     private static JsonArray ServiceTags(IReadOnlyDictionary<string, string> tags)
@@ -423,6 +825,65 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             {
                 ["tag"] = tag.Key,
                 ["value"] = tag.Value
+            });
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyDictionary<string, string> AggregateTags(ZabbixSuppressionAggregateDefinition definition)
+    {
+        var tags = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [ZabbixManagedServiceTags.Managed] = "true",
+            [ZabbixManagedServiceTags.Layer] = definition.Layer,
+            [ZabbixManagedServiceTags.Key] = definition.TargetManagedKey,
+            [ZabbixManagedServiceTags.Aggregate] = "true",
+            [ZabbixManagedServiceTags.AggregateKind] = "suppression_state"
+        };
+        if (!string.IsNullOrWhiteSpace(definition.TargetClass))
+        {
+            tags[ZabbixManagedServiceTags.Class] = definition.TargetClass;
+        }
+
+        if (!string.IsNullOrWhiteSpace(definition.TargetCardId))
+        {
+            tags[ZabbixManagedServiceTags.CardId] = definition.TargetCardId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(definition.AggregationType))
+        {
+            tags["cmdb2monitoring:aggregation_type"] = definition.AggregationType;
+        }
+
+        return tags;
+    }
+
+    private static JsonArray ServiceTags(IReadOnlyList<ZabbixServiceTag> tags)
+    {
+        var result = new JsonArray();
+        foreach (var tag in tags.OrderBy(pair => pair.Tag, StringComparer.Ordinal).ThenBy(pair => pair.Value, StringComparer.Ordinal))
+        {
+            result.Add(new JsonObject
+            {
+                ["tag"] = tag.Tag,
+                ["value"] = tag.Value
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray ProblemTags(IReadOnlyList<ZabbixProblemTag> tags)
+    {
+        var result = new JsonArray();
+        foreach (var tag in tags.OrderBy(pair => pair.Tag, StringComparer.Ordinal).ThenBy(pair => pair.Value, StringComparer.Ordinal))
+        {
+            result.Add(new JsonObject
+            {
+                ["tag"] = tag.Tag,
+                ["value"] = tag.Value,
+                ["operator"] = tag.Operator
             });
         }
 
@@ -459,6 +920,51 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         return result;
     }
 
+    private static JsonObject TriggerGetBaseParameters(bool includeDisabled)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("triggerid", "description", "status", "priority", "value"),
+            ["selectHosts"] = new JsonArray("hostid", "host", "name"),
+            ["selectDependencies"] = new JsonArray("triggerid", "description"),
+            ["expandDescription"] = true
+        };
+        if (!includeDisabled)
+        {
+            parameters["filter"] = new JsonObject
+            {
+                ["status"] = "0"
+            };
+        }
+
+        return parameters;
+    }
+
+    private static JsonArray TriggerReferences(IReadOnlyList<string> triggerIds)
+    {
+        var result = new JsonArray();
+        foreach (var triggerId in triggerIds)
+        {
+            result.Add(new JsonObject
+            {
+                ["triggerid"] = triggerId
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray StringArray(IReadOnlyList<string> values)
+    {
+        var result = new JsonArray();
+        foreach (var value in values)
+        {
+            result.Add(value);
+        }
+
+        return result;
+    }
+
     private static ZabbixServiceInfo ReadService(JsonObject service)
     {
         return new ZabbixServiceInfo
@@ -468,6 +974,20 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             Tags = ReadTags(service["tags"] as JsonArray),
             Children = ReadServiceReferences(service["children"] as JsonArray),
             Parents = ReadServiceReferences(service["parents"] as JsonArray)
+        };
+    }
+
+    private static ZabbixTriggerInfo ReadTrigger(JsonObject trigger)
+    {
+        return new ZabbixTriggerInfo
+        {
+            TriggerId = JsonString(trigger["triggerid"]),
+            Description = JsonString(trigger["description"]),
+            Status = JsonString(trigger["status"]),
+            Priority = JsonString(trigger["priority"]),
+            Value = JsonString(trigger["value"]),
+            Hosts = ReadTriggerHosts(trigger["hosts"] as JsonArray),
+            Dependencies = ReadTriggerDependencies(trigger["dependencies"] as JsonArray)
         };
     }
 
@@ -491,6 +1011,20 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         return result;
     }
 
+    private static IReadOnlyList<ZabbixServiceTag> ReadTagList(JsonArray? tags)
+    {
+        if (tags is null)
+        {
+            return [];
+        }
+
+        return tags
+            .OfType<JsonObject>()
+            .Select(item => new ZabbixServiceTag(JsonString(item["tag"]), JsonString(item["value"])))
+            .Where(tag => !string.IsNullOrWhiteSpace(tag.Tag))
+            .ToArray();
+    }
+
     private static IReadOnlyList<ZabbixServiceInfo> ReadServiceReferences(JsonArray? services)
     {
         if (services is null)
@@ -508,6 +1042,43 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             .ToArray();
     }
 
+    private static IReadOnlyList<ZabbixHostInfo> ReadTriggerHosts(JsonArray? hosts)
+    {
+        if (hosts is null)
+        {
+            return [];
+        }
+
+        return hosts
+            .OfType<JsonObject>()
+            .Select(host => new ZabbixHostInfo
+            {
+                HostId = JsonString(host["hostid"]),
+                Host = JsonString(host["host"]),
+                Name = JsonString(host["name"])
+            })
+            .Where(host => !string.IsNullOrWhiteSpace(host.HostId))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ZabbixTriggerDependencyInfo> ReadTriggerDependencies(JsonArray? dependencies)
+    {
+        if (dependencies is null)
+        {
+            return [];
+        }
+
+        return dependencies
+            .OfType<JsonObject>()
+            .Select(trigger => new ZabbixTriggerDependencyInfo
+            {
+                TriggerId = JsonString(trigger["triggerid"]),
+                Description = JsonString(trigger["description"])
+            })
+            .Where(trigger => !string.IsNullOrWhiteSpace(trigger.TriggerId))
+            .ToArray();
+    }
+
     private static string ReadServiceId(JsonObject response, string method)
     {
         var ids = response["result"]?["serviceids"] as JsonArray;
@@ -518,6 +1089,25 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         }
 
         return serviceId;
+    }
+
+    private static JsonArray ReadResultArray(JsonObject response, string method)
+    {
+        return response.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonArray array
+            ? array
+            : throw new InvalidOperationException($"Zabbix {method} did not return an array.");
+    }
+
+    private static string ReadFirstId(JsonObject response, string propertyName, string method)
+    {
+        var ids = response["result"]?[propertyName] as JsonArray;
+        var id = ids is { Count: > 0 } ? JsonString(ids[0]) : "";
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new InvalidOperationException($"Zabbix {method} did not return {propertyName}.");
+        }
+
+        return id;
     }
 
     private static string JsonString(JsonNode? node)

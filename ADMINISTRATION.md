@@ -72,12 +72,12 @@ applier and the UI must keep the old running configuration version displayed.
 ## Zabbix Readiness Attribute
 
 The CMDBuild attribute that marks a source object as ready for Zabbix processing
-is `zabbix_hostid`. The Monitoring UI shows this value in
+is `zabbix_main_hostid`. The Monitoring UI shows this value in
 `Администрирование -> Основные`.
 
 Operational rule:
 
-| Event | `zabbix_hostid` | Expected behavior |
+| Event | `zabbix_main_hostid` | Expected behavior |
 | --- | --- | --- |
 | `CREATE` | empty | Do not create service/suppression membership yet. Keep the object pending/unready. |
 | `CREATE` | present | Treat as ready and produce normal ensure/upsert commands. |
@@ -89,7 +89,7 @@ Operational rule:
 This prevents a race with a neighboring monitoring application that receives the
 same CMDBuild webhooks and creates or modifies the real Zabbix host. The service
 must not add a source object into the service model or suppression dependencies
-until the CMDBuild card contains `zabbix_hostid`.
+until the CMDBuild card contains `zabbix_main_hostid`.
 
 ## Zabbix Apply Contours
 
@@ -120,7 +120,8 @@ and relations under expandable details so large plans remain readable.
 `zabbixconfig2api` exposes `/apply/status` with separate service and suppression
 status blocks. Each block reports the topic, last command,
 dry-run/applied/partial/skipped/manual pending/error counters, recent errors and
-warnings, and reconcile counters for objects and relations.
+warnings, reconcile counters for objects, relations, source leaf services, host
+tags, and problem tags, plus a limited membership snapshot.
 
 When `zabbixconfig2api` has `Apply:Mode=auto` or `Apply:AutoApplyEnabled=true`,
 published layer commands are applied to Zabbix through the Service API. The
@@ -136,9 +137,62 @@ managed tags:
 Expected place in Zabbix UI: `Monitoring -> Services` / the service tree pages.
 Use the tags above or the generated service name to identify objects created by
 this system. Service-model and suppression-model contours are both materialized
-as separate managed Zabbix service graphs at this stage; trigger dependency
-writing needs a later trigger/profile mapping because the current aggregation
-command contains CMDBuild model objects and relations, not concrete trigger IDs.
+as separate managed Zabbix service graphs.
+
+For source objects with `zabbix_main_hostid`, the applier also creates a managed
+source leaf service. The parent managed service keeps these source leaf services
+as children in addition to model relation children. The source leaf service gets
+`problem_tags` matching `cmdb2monitoring:source_hostid=<zabbix_main_hostid>`, and
+the applier preserves existing Zabbix host tags while adding the same managed
+host tag to the Zabbix host. This is the binding that lets Zabbix Services know
+which real host problems belong under a managed service object such as
+`ВПН филиалов`.
+
+The membership set is stored by `zabbixconfig2api` in
+`ZabbixApplyState:FilePath` so that multiple source cards mapped into the same
+target service do not overwrite each other during repeated applies or service
+restarts. If a source object has no `zabbix_main_hostid`, it is treated as unready:
+dry-run reports the missing binding, and publish removes any previous source
+membership for that card instead of adding a source leaf.
+
+This binding builds the Zabbix service impact model. Automatic hiding,
+acknowledging, or closing of dependent problem events is not performed by a
+separate cmdb2monitoring problem applier. The production suppression mechanism
+must be expressed in Zabbix itself through service topology and trigger
+dependencies derived from the same suppression model.
+
+The `Зависимости триггеров` block in `Каскадное подавление -> Применить в
+Zabbix` performs that reconciliation. It uses the persisted suppression
+membership and relation graph after the suppression model has been published:
+
+- command target is treated as the cause/parent object;
+- each related target is treated as the dependent/child object;
+- suppression relations form a directed acyclic graph, not one mandatory tree.
+  There may be several independent suppression chains, several top-level causes,
+  branches that split or converge, and chains that do not share any common root.
+  The required invariant is causal direction plus no cycles;
+- every suppression object gets one managed aggregate trigger on the technical
+  Zabbix host `cmdb2monitoring-suppression-aggregates`;
+- `aggregation_type` controls the state written to that aggregate trigger:
+  `all` fails when any source host is in problem, `any` fails only when all
+  source hosts are in problem, `threshold` fails when the maximum possible
+  healthy percentage is below `threshold`, and `n_of_m` fails when the maximum
+  possible healthy count is below `n`;
+- active triggers of dependent source hosts, and the dependent object's own
+  aggregate trigger, get dependencies on the aggregate trigger of the
+  cause object;
+- direct dependencies from downstream triggers to individual source-host
+  triggers are not created. This keeps VPN/failover groups and non-`all`
+  aggregations correct;
+- existing manual Zabbix dependencies are preserved;
+- stale dependencies are removed only if they were recorded as managed by
+  `zabbixconfig2api` in `ZabbixApplyState:FilePath`.
+
+Operators should run dry-run first. Blocking errors include dependency cycles,
+missing membership for related targets, or a dependency count above
+`ZabbixTriggerDependencies:MaxDependenciesPerRun`. The same screen reports
+aggregate host/item/trigger creation and the last state pushed through
+`history.push`.
 
 For managed relations the command target is treated as the parent service and
 the related target as a child service. If a referenced child service is not
@@ -168,7 +222,7 @@ The active algorithm has two layers:
 Operational consequences:
 
 - A burst such as source card update, relation webhook, and a neighboring
-  `zabbix_hostid` update can still appear in the raw topic, but repeated
+  `zabbix_main_hostid` update can still appear in the raw topic, but repeated
   semantic duplicates stop before the aggregation-command topic.
 - Do not suppress raw webhooks by time window alone; a real user edit can occur
   immediately after an automated write.
@@ -216,7 +270,11 @@ three explicit actions:
 | `Загрузить из папки` | Reads the configured server folder, applies the rule/template documents and managed relations to the editors and previews, and refreshes the browser cache. |
 | `Загрузить локальный кэш` | Restores the last browser IndexedDB snapshot without touching the server folder. |
 
-After `Создать/обновить правила по шаблонам и связям`, use
+Before materialization, open `Управление правилами -> Создать/обновить правила
+по шаблонам и связям` and run `Проверить шаблоны`. The check loads the needed
+source cards, computes `dimension.*`, shows create/update/remove counts for
+generated rules and managed relations, and blocks materialization while
+template/domain/target errors remain. After materialization, use
 `Сохранить в папку` before reloading appliers: generated rules, templates, and
 their `managed_relations` are persisted as one conversion configuration set.
 That action does not execute the rules against existing CMDBuild cards and does
@@ -303,12 +361,11 @@ Administrative constraints for that workflow:
   templates must use `template.*`, `class.*`, `dimension.*`, and `vars.*`
   values only. They must not use `${source.*}` because no concrete source card
   exists during template application.
-- Target attributes in materialized templates follow the same rule. Service
-  templates may set `is_critical`, `aggregation_type`, `threshold`, and `n` when
-  those attributes exist on the selected target class; suppression templates may
-  set `is_critical`. `aggregation_type=threshold` requires `threshold` 0..100
-  and empty `n`; `aggregation_type=n_of_m` requires integer `n >= 1` and empty
-  `threshold`.
+- Target attributes in materialized templates follow the same rule. Service and
+  suppression templates may set `is_critical`, `aggregation_type`, `threshold`,
+  and `n` when those attributes exist on the selected target class.
+  `aggregation_type=threshold` requires `threshold` 0..100 and empty `n`;
+  `aggregation_type=n_of_m` requires integer `n >= 1` and empty `threshold`.
 - Template saves create immutable `templateVersions` snapshots. Applying
   templates writes `templateApplications` snapshots and reconciles generated
   artifacts by stable `managed_key` plus `artifact_fingerprint`; unchanged

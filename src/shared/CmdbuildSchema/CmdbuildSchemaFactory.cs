@@ -651,7 +651,7 @@ public sealed class CmdbuildSchemaFactory
         yield return Attribute("last_populated_at", Text.AttrName("last_populated_at", language), "datetime", false, Text.AttrHelp("last_populated_at", language));
         yield return Attribute("builder_version", Text.AttrName("builder_version", language), "string", false, Text.AttrHelp("builder_version", language));
 
-        if (layer == BuilderLayer.Service)
+        if (layer is BuilderLayer.Service or BuilderLayer.Suppression)
         {
             yield return Attribute(
                 "aggregation_type",

@@ -23,7 +23,10 @@ const SERVICE_USER_RESPONSIBILITY_ATTRIBUTES = [
 ];
 const SUPPRESSION_USER_RESPONSIBILITY_ATTRIBUTES = [
   'description',
-  'is_critical'
+  'is_critical',
+  'aggregation_type',
+  'threshold',
+  'n'
 ];
 const TEMPLATE_DELETE_MODES = {
   detachRulesKeepObjects: 'detach_rules_keep_objects',
@@ -164,6 +167,14 @@ const state = {
   templateApplyMessage: '',
   templateApplyError: '',
   templateApplyLastResult: null,
+  templateAudit: {
+    checking: false,
+    checkedAt: '',
+    message: '',
+    error: '',
+    fingerprint: '',
+    result: null
+  },
   linkRelationContext: { layer: 'service', kind: 'template_template' },
   linkRelationStatus: { message: '', type: '' },
   linkRelationHideTemplateLinks: true,
@@ -207,6 +218,14 @@ const state = {
       planPage: 1
     }
   },
+  zabbixTriggerDependencies: {
+    applying: false,
+    loadingStatus: false,
+    message: '',
+    error: '',
+    result: null,
+    status: null
+  },
   ruleEditorTargetValues: {
     service: {},
     suppression: {}
@@ -248,7 +267,7 @@ const state = {
   webhookRuleCoverage: null,
   webhookRuleCoverageError: '',
   webhooksCacheUpdatedAt: '',
-  zabbixHostIdAttribute: 'zabbix_hostid',
+  zabbixHostIdAttribute: 'zabbix_main_hostid',
   checkingHealth: false,
   healthServices: [],
   healthCheckedAt: '',
@@ -667,6 +686,10 @@ document.querySelector('#applyTemplatesButton')?.addEventListener('click', () =>
   void applyTemplatesToRuleDocuments();
 });
 
+document.querySelector('#runTemplateAuditButton')?.addEventListener('click', () => {
+  void runTemplateAudit();
+});
+
 document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
   const layerKey = panel.dataset.zabbixApplyLayer;
   panel.querySelector('[data-zabbix-apply-refresh]')?.addEventListener('click', () => {
@@ -692,6 +715,18 @@ document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
     zabbixApplyState(layerKey).planPage = page;
     renderZabbixApplyView(layerKey);
   });
+});
+
+document.querySelector('#zabbixTriggerDependenciesRefreshButton')?.addEventListener('click', () => {
+  void loadZabbixTriggerDependenciesStatus();
+});
+
+document.querySelector('#zabbixTriggerDependenciesDryRunButton')?.addEventListener('click', () => {
+  void runZabbixTriggerDependencies({ dryRun: true });
+});
+
+document.querySelector('#zabbixTriggerDependenciesApplyButton')?.addEventListener('click', () => {
+  void runZabbixTriggerDependencies({ dryRun: false });
 });
 
 document.querySelector('#relationAddButton')?.addEventListener('click', () => {
@@ -839,8 +874,6 @@ async function activateView(view, activeButton = null) {
     renderTemplateEditor('suppression');
   } else if (view === 'templateApply') {
     renderTemplateApplyView();
-  } else if (view === 'templateAudit') {
-    renderTemplateAuditView();
   } else if (view === 'relationsGraph') {
     renderRelationsGraphView();
   } else if (view === 'zabbixPreflight') {
@@ -854,6 +887,10 @@ async function activateView(view, activeButton = null) {
     renderZabbixApplyView('suppression');
     if (!state.zabbixApply.suppression.status && !state.zabbixApply.suppression.loadingStatus) {
       void loadZabbixApplyStatus('suppression');
+    }
+    renderZabbixTriggerDependenciesView();
+    if (!state.zabbixTriggerDependencies.status && !state.zabbixTriggerDependencies.loadingStatus) {
+      void loadZabbixTriggerDependenciesStatus();
     }
   } else if (view === 'dashboard' && state.healthServices.length === 0 && !state.checkingHealth) {
     void checkHealthServices({ silent: true });
@@ -6052,7 +6089,7 @@ function defaultRuleTargetObjectValue(layerKey, code) {
     return 'false';
   }
 
-  if (String(layerKey).toLowerCase() === 'service' && token === 'aggregationtype') {
+  if (['service', 'suppression'].includes(String(layerKey).toLowerCase()) && token === 'aggregationtype') {
     return 'all';
   }
 
@@ -6267,15 +6304,11 @@ function validateRuleTargetObjectValues(layerKey, values, attributes = [], class
     throw new Error('Для создаваемого целевого объекта заполните name.');
   }
 
-  if (String(layerKey).toLowerCase() !== 'service') {
-    return;
-  }
-
   validateLayerAggregationTargetValues(layerKey, values, attributes, classCode);
 }
 
 function validateLayerAggregationTargetValues(layerKey, values, attributes = [], classCode = '', options = {}) {
-  if (String(layerKey).toLowerCase() !== 'service') {
+  if (!['service', 'suppression'].includes(String(layerKey).toLowerCase())) {
     return;
   }
 
@@ -6649,7 +6682,7 @@ function renderTemplateEditor(layerKey) {
   state.templateDocuments[layerKey] = document;
   const selectedId = state.templateEditorSelected[layerKey];
   setSelectOptions(config.select, templateSelectOptions(document.templates), selectedId);
-  setSelectOptions(config.targetClass, targetClassOptions(layerKey), config.targetClass.value);
+  setSelectOptions(config.targetClass, templateTargetClassOptions(layerKey), config.targetClass.value);
   if (selectedId && !document.templates.some((template) => template.template_id === selectedId)) {
     state.templateEditorSelected[layerKey] = '';
   }
@@ -6692,7 +6725,7 @@ function loadSelectedTemplateIntoEditor(layerKey) {
   config.sourceRegex.value = template.source_class_regex || '';
   state.templateEditorSelectionFilters[layerKey] = selectionFiltersFromTemplate(template);
   config.priority.value = String(template.priority ?? 100);
-  setSelectOptions(config.targetClass, targetClassOptions(layerKey), template.target?.class_code || '');
+  setSelectOptions(config.targetClass, templateTargetClassOptions(layerKey), template.target?.class_code || '');
   config.targetName.value = template.target?.name_template || '';
   config.targetDescription.value = template.target?.description_template || '';
   state.templateEditorTargetValues[layerKey] = templateTargetValuesForEditor(layerKey, template.target?.initial_user_values ?? {});
@@ -6723,7 +6756,7 @@ function resetTemplateEditorForCreate(layerKey) {
   config.sourceRegex.value = '';
   state.templateEditorSelectionFilters[layerKey] = [];
   config.priority.value = '';
-  setSelectOptions(config.targetClass, targetClassOptions(layerKey), '');
+  setSelectOptions(config.targetClass, templateTargetClassOptions(layerKey), '');
   config.targetName.value = '${dimension.name}';
   config.targetDescription.value = '';
   state.templateEditorTargetValues[layerKey] = {};
@@ -6789,7 +6822,7 @@ function readTemplateEditorValues(layerKey) {
   }
 
   if (!config.targetClass.value) {
-    throw new Error('Целевой класс\\экземпляр класса обязателен.');
+    throw new Error('Целевой класс обязателен.');
   }
 
   if (!Number.isFinite(priority) || priority < 1) {
@@ -6801,6 +6834,9 @@ function readTemplateEditorValues(layerKey) {
   }
 
   const targetSelection = parseTargetSelection(config.targetClass.value);
+  if (targetSelection.kind !== 'class') {
+    throw new Error('В шаблоне можно выбрать только целевой класс. Конкретный экземпляр выбирается в статических правилах.');
+  }
   const targetInitialValues = readTemplateTargetObjectValues(layerKey);
   const populationDimension = readTemplatePopulationDimension(layerKey);
   const selectionFilters = readSelectionFilterRows(config.selectionFilterList, {
@@ -7236,6 +7272,66 @@ async function loadZabbixApplyStatus(layerKey) {
   }
 }
 
+async function loadZabbixTriggerDependenciesStatus() {
+  const stateItem = state.zabbixTriggerDependencies;
+  try {
+    stateItem.loadingStatus = true;
+    stateItem.error = '';
+    renderZabbixTriggerDependenciesView();
+
+    const response = await fetch('/api/zabbix/trigger-dependencies/status', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `статус trigger dependencies не получен: ${response.status}`);
+    }
+
+    stateItem.status = result;
+    stateItem.message = 'Статус trigger dependencies обновлен.';
+  } catch (error) {
+    stateItem.error = error.message;
+  } finally {
+    stateItem.loadingStatus = false;
+    renderZabbixTriggerDependenciesView();
+  }
+}
+
+async function runZabbixTriggerDependencies(options = {}) {
+  const dryRun = Boolean(options.dryRun);
+  const stateItem = state.zabbixTriggerDependencies;
+  try {
+    stateItem.applying = true;
+    stateItem.error = '';
+    stateItem.message = dryRun
+      ? 'Dry-run trigger dependencies...'
+      : 'Публикация trigger dependencies в Zabbix...';
+    renderZabbixTriggerDependenciesView();
+
+    const response = await fetch(
+      dryRun ? '/api/zabbix/trigger-dependencies/dry-run' : '/api/zabbix/trigger-dependencies/apply',
+      {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `trigger dependencies не выполнены: ${response.status}`);
+    }
+
+    stateItem.result = result;
+    const finalMessage = result.message || (dryRun ? 'Dry-run dependencies завершен.' : 'Dependencies опубликованы в Zabbix.');
+    stateItem.message = finalMessage;
+    await loadZabbixTriggerDependenciesStatus();
+    stateItem.message = finalMessage;
+  } catch (error) {
+    stateItem.error = error.message;
+  } finally {
+    stateItem.applying = false;
+    renderZabbixTriggerDependenciesView();
+  }
+}
+
 async function applyZabbixLayer(layerKey, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const stateItem = zabbixApplyState(layerKey);
@@ -7284,11 +7380,17 @@ async function applyZabbixLayer(layerKey, options = {}) {
     } else {
       await loadZabbixApplyProgress(layerKey, operationId);
     }
+    const resultErrors = Array.isArray(result.errors)
+      ? result.errors.filter((item) => item)
+      : [];
     const finalMessage = dryRun
       ? `Dry-run завершен: карточек ${result.cardsScanned ?? 0}, команд ${result.commandsBuilt ?? 0}.`
       : `Опубликовано в Zabbix-топик: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`;
     await loadZabbixApplyStatus(layerKey);
     stateItem.message = finalMessage;
+    stateItem.error = resultErrors.length
+      ? `${finalMessage} Ошибки: ${resultErrors.slice(0, 3).join('; ')}${resultErrors.length > 3 ? '...' : ''}`
+      : '';
   } catch (error) {
     stateItem.error = error.message;
   } finally {
@@ -7417,11 +7519,14 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
   const zabbixPlan = progress?.zabbixPlan ?? result?.zabbixPlan;
   const samples = Array.isArray(result?.sampleCommands) ? result.sampleCommands : [];
   const classes = Array.isArray(result?.classes) ? result.classes : [];
+  const operationErrors = Array.isArray(result?.errors) ? result.errors.filter((item) => item) : [];
   const errors = Array.isArray(layerStatus.errors) ? layerStatus.errors : [];
   const warnings = Array.isArray(layerStatus.warnings) ? layerStatus.warnings : [];
+  const membershipTargets = Array.isArray(layerStatus.membershipTargets) ? layerStatus.membershipTargets : [];
   return `
     ${progress ? renderZabbixApplyProgress(progress) : ''}
     ${zabbixPlan ? renderZabbixObjectPlan(zabbixPlan, layerKey) : ''}
+    ${membershipTargets.length > 0 ? renderZabbixMembershipTargets(membershipTargets) : ''}
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
       <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : 'последняя публикация') : 'ожидание запуска')}</strong>
@@ -7429,6 +7534,13 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
       <span>топики: ${escapeHtml((result?.topics ?? (result?.topic ? [result.topic] : [])).join(', ') || '-')}</span>
       <span>последняя команда: ${escapeHtml(layerStatus.lastRuleName || layerStatus.lastRuleId || '-')} -> ${escapeHtml(layerStatus.lastTargetClass || '-')}:${escapeHtml(layerStatus.lastTargetKey || '-')}</span>
     </div>
+    ${operationErrors.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">ошибки последнего запуска</span>
+        <strong>${escapeHtml(operationErrors.length)} ошибок</strong>
+        <span>${escapeHtml(operationErrors.join('; '))}</span>
+      </div>
+    ` : ''}
     ${classes.map((item) => `
       <div class="rule-summary">
         <span class="structure-mark">${escapeHtml(item.sourceClass || '-')}</span>
@@ -7441,7 +7553,7 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
       <div class="rule-summary">
         <span class="structure-mark">примеры команд</span>
         <strong>${escapeHtml(samples.length)} примеров</strong>
-        <span>${escapeHtml(samples.map((item) => `${item.ruleId} ${item.sourceClass}/${item.sourceCardId} -> ${item.targetClass}:${item.targetKey}`).join('; '))}</span>
+        <span>${escapeHtml(samples.map((item) => `${item.ruleId} ${zabbixApplyCommandSourceLabel(item)} -> ${item.targetClass}:${item.targetKey}`).join('; '))}</span>
       </div>
     ` : ''}
     ${errors.length > 0 ? `
@@ -7459,6 +7571,226 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
       </div>
     ` : ''}
   `;
+}
+
+function renderZabbixTriggerDependenciesView() {
+  const summary = document.querySelector('#zabbixTriggerDependenciesSummary');
+  const status = document.querySelector('#zabbixTriggerDependenciesStatus');
+  const list = document.querySelector('#zabbixTriggerDependenciesList');
+  const refreshButton = document.querySelector('#zabbixTriggerDependenciesRefreshButton');
+  const dryRunButton = document.querySelector('#zabbixTriggerDependenciesDryRunButton');
+  const applyButton = document.querySelector('#zabbixTriggerDependenciesApplyButton');
+  if (!summary || !status || !list || !refreshButton || !dryRunButton || !applyButton) {
+    return;
+  }
+
+  const stateItem = state.zabbixTriggerDependencies;
+  const busy = stateItem.applying || stateItem.loadingStatus;
+  refreshButton.disabled = busy;
+  dryRunButton.disabled = busy;
+  applyButton.disabled = busy;
+
+  const payload = stateItem.result ?? stateItem.status ?? {};
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Статус</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(payload.status || payload.lastStatus || '-'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Желаемых зависимостей</span>
+      <strong>${escapeHtml(payload.desiredDependencyCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Зависимых триггеров</span>
+      <strong>${escapeHtml(payload.dependentTriggerCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Причинные triggers</span>
+      <strong>${escapeHtml(payload.dependencyTriggerCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Aggregate triggers</span>
+      <strong>${escapeHtml(payload.aggregateCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Aggregate создано</span>
+      <strong>${escapeHtml((payload.aggregateItemsCreated ?? 0) + (payload.aggregateTriggersCreated ?? 0))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Состояний записано</span>
+      <strong>${escapeHtml(payload.aggregateStatesPushed ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">К обновлению</span>
+      <strong>${escapeHtml(payload.triggersToUpdate ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Обновлено</span>
+      <strong>${escapeHtml(payload.triggersUpdated ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Добавить</span>
+      <strong>${escapeHtml(payload.dependenciesAdded ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Удалить stale</span>
+      <strong>${escapeHtml(payload.dependenciesRemoved ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Ручные сохранены</span>
+      <strong>${escapeHtml(payload.preservedManualDependencies ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Managed-зависимостей</span>
+      <strong>${escapeHtml(payload.managedDependencyCount ?? payload.managedDependencyCountBefore ?? 0)}</strong>
+    </div>
+  `;
+
+  status.textContent = stateItem.error
+    || stateItem.message
+    || payload.message
+    || payload.lastMessage
+    || 'Сначала примените suppression-модель в Zabbix, затем выполните dry-run dependencies.';
+  status.classList.toggle('error', Boolean(stateItem.error) || (payload.status || payload.lastStatus) === 'error');
+  list.innerHTML = renderZabbixTriggerDependenciesDetails(payload);
+}
+
+function renderZabbixTriggerDependenciesDetails(payload) {
+  const samples = Array.isArray(payload?.sampleDependencies) ? payload.sampleDependencies : [];
+  const aggregates = Array.isArray(payload?.sampleAggregates) ? payload.sampleAggregates : [];
+  const warnings = Array.isArray(payload?.warnings) ? payload.warnings : [];
+  const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+  return `
+    ${aggregates.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">aggregate triggers</span>
+        <strong>${escapeHtml(aggregates.length)} примеров</strong>
+        <span>Каждый suppression-объект получает единый управляемый trigger причины; downstream triggers зависят от него.</span>
+      </div>
+      ${aggregates.slice(0, 100).map(renderZabbixSuppressionAggregateSample).join('')}
+    ` : ''}
+    ${samples.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">примеры dependencies</span>
+        <strong>${escapeHtml(samples.length)} примеров</strong>
+        <span>${escapeHtml(payload?.hasMoreSamples ? 'Список ограничен лимитом.' : 'Показаны рассчитанные примеры.')}</span>
+      </div>
+      ${samples.slice(0, 100).map(renderZabbixTriggerDependencySample).join('')}
+    ` : ''}
+    ${warnings.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">предупреждения</span>
+        <strong>${escapeHtml(warnings.length)}</strong>
+        <span>${escapeHtml(warnings.join('; '))}</span>
+      </div>
+    ` : ''}
+    ${errors.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">ошибки</span>
+        <strong>${escapeHtml(errors.length)}</strong>
+        <span>${escapeHtml(errors.join('; '))}</span>
+      </div>
+    ` : ''}
+  `;
+}
+
+function renderZabbixSuppressionAggregateSample(item) {
+  const stateText = Number(item?.stateValue ?? 0) === 1 ? 'PROBLEM' : 'OK';
+  return `
+    <details class="rule-summary zabbix-plan-object">
+      <summary>
+        <strong>${escapeHtml(item?.targetName || item?.targetManagedKey || '-')}</strong>
+        <span>${escapeHtml(stateText)} · ${escapeHtml(item?.aggregationType || 'all')} · hosts ${escapeHtml(item?.hostCount ?? 0)}</span>
+      </summary>
+      <span>trigger: ${escapeHtml(item?.triggerId || '-')} ${escapeHtml(item?.triggerName || '')}</span>
+      <span>item: ${escapeHtml(item?.itemId || '-')} ${escapeHtml(item?.itemKey || '-')}</span>
+      <span>host: ${escapeHtml(item?.hostId || '-')} ${escapeHtml(item?.hostName || '-')}</span>
+      <span>source-hosts: healthy=${escapeHtml(item?.healthyHostCount ?? 0)} problem=${escapeHtml(item?.problemHostCount ?? 0)} unknown=${escapeHtml(item?.unknownHostCount ?? 0)}</span>
+      <span>actions: host=${escapeHtml(item?.hostAction || 'planned')} item=${escapeHtml(item?.itemAction || 'planned')} trigger=${escapeHtml(item?.triggerAction || 'planned')} push=${escapeHtml(item?.statePushed ? 'yes' : 'no')}</span>
+    </details>
+  `;
+}
+
+function renderZabbixTriggerDependencySample(item) {
+  return `
+    <details class="rule-summary zabbix-plan-object">
+      <summary>
+        <strong>${escapeHtml(item?.dependentTargetName || item?.dependentTargetManagedKey || '-')}</strong>
+        <span>зависит от aggregate trigger ${escapeHtml(item?.dependencyTargetName || item?.dependencyTargetManagedKey || '-')}</span>
+      </summary>
+      <span>dependent trigger: ${escapeHtml(item?.dependentTriggerId || '-')} ${escapeHtml(item?.dependentTriggerName || '')}</span>
+      <span>aggregate cause trigger: ${escapeHtml(item?.dependencyTriggerId || '-')} ${escapeHtml(item?.dependencyTriggerName || '')}</span>
+      <span>hostid: ${escapeHtml(item?.dependentHostId || '-')} -> ${escapeHtml(item?.dependencyHostId || '-')}</span>
+      <span>domain: ${escapeHtml(item?.relationDomainCode || '-')}</span>
+    </details>
+  `;
+}
+
+function renderZabbixMembershipTargets(targets) {
+  const hostAttr = zabbixHostIdAttributeName();
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">membership Zabbix</span>
+      <strong>${escapeHtml(targets.length)} последних объектов</strong>
+      <span>Показывает, какие source-карточки сейчас закреплены за managed service и готовы попасть в Zabbix через source leaf/problem tags.</span>
+    </div>
+    ${targets.slice(0, 10).map((target) => {
+      const sources = Array.isArray(target?.sources) ? target.sources : [];
+      const sourceText = sources.slice(0, 6).map(zabbixMembershipSourceText);
+      return `
+        <details class="rule-summary zabbix-plan-object">
+          <summary>
+            <strong>${escapeHtml(target?.targetName || target?.targetManagedKey || '-')}</strong>
+            <span>source ${escapeHtml(target?.sourceCount ?? 0)} · с ${escapeHtml(hostAttr)} ${escapeHtml(target?.hostBindingCount ?? 0)} · без ${escapeHtml(hostAttr)} ${escapeHtml(target?.missingHostBindingCount ?? 0)}</span>
+          </summary>
+          <span>ключ: ${escapeHtml(target?.targetManagedKey || '-')}</span>
+          <span>агрегация: ${escapeHtml(zabbixMembershipAggregationText(target))}</span>
+          <span>leaf children: ${escapeHtml((target?.sourceLeafManagedKeys ?? []).join(', ') || '-')}</span>
+          <span>source: ${escapeHtml(sourceText.join('; ') || '-')}</span>
+        </details>
+      `;
+    }).join('')}
+  `;
+}
+
+function zabbixHostIdAttributeName() {
+  return String(state.zabbixHostIdAttribute || 'zabbix_main_hostid').trim() || 'zabbix_main_hostid';
+}
+
+function zabbixMembershipAggregationText(target) {
+  const type = String(target?.aggregationType ?? '').trim() || 'all';
+  const details = [];
+  if (String(target?.threshold ?? '').trim()) {
+    details.push(`threshold=${target.threshold}`);
+  }
+  if (String(target?.n ?? '').trim()) {
+    details.push(`n=${target.n}`);
+  }
+
+  return details.length > 0 ? `${type} (${details.join(', ')})` : type;
+}
+
+function zabbixMembershipSourceText(source) {
+  const hostAttr = zabbixHostIdAttributeName();
+  const identity = `${source?.sourceClass || '-'}/${source?.sourceCardId || '-'}`;
+  const keyValue = String(source?.sourceKeyValue ?? '').trim();
+  const key = keyValue ? ` ${source?.sourceKeyAttribute || 'key'}=${keyValue}` : '';
+  const host = source?.zabbixHostId ? ` ${hostAttr}=${source.zabbixHostId}` : ` нет ${hostAttr}`;
+  return `${identity}${key}${host}`;
+}
+
+function zabbixApplyCommandSourceLabel(item) {
+  const hostAttr = zabbixHostIdAttributeName();
+  const source = `${item?.sourceClass || '-'}${item?.sourceCardId ? `/${item.sourceCardId}` : ''}`;
+  const keyAttribute = String(item?.sourceKeyAttribute ?? '').trim();
+  const keyValue = String(item?.sourceKeyValue ?? '').trim();
+  const hostId = String(item?.sourceZabbixHostId ?? '').trim();
+  const hostSuffix = hostId ? ` ${hostAttr}=${hostId}` : ` без ${hostAttr}`;
+  if (!keyValue || keyValue === String(item?.sourceCardId ?? '').trim()) {
+    return `${source}${hostSuffix}`;
+  }
+
+  return `${source} ${keyAttribute || 'key'}=${keyValue}${hostSuffix}`;
 }
 
 function renderZabbixObjectPlan(plan, layerKey) {
@@ -7494,6 +7826,7 @@ function renderZabbixObjectPlan(plan, layerKey) {
 }
 
 function renderZabbixObjectPlanItem(item) {
+  const hostAttr = zabbixHostIdAttributeName();
   const attributes = Object.entries(item?.attributes ?? {})
     .slice(0, 8)
     .map(([key, value]) => `${key}=${value}`);
@@ -7502,23 +7835,45 @@ function renderZabbixObjectPlanItem(item) {
     .slice(0, 6)
     .map((relation) => `${relation.domainCode || '-'} -> ${relation.targetClassCode || '-'}:${relation.targetLookup || '-'}`);
   const sources = Array.isArray(item?.sourceObjects) ? item.sourceObjects : [];
+  const sourceBindings = Array.isArray(item?.sourceBindings) ? item.sourceBindings : [];
+  const sourceBindingText = sourceBindings
+    .slice(0, 8)
+    .map((binding) => zabbixSourceBindingPlanText(binding));
   const ruleIds = Array.isArray(item?.ruleIds) ? item.ruleIds : [];
   const ruleNames = Array.isArray(item?.ruleNames) ? item.ruleNames : [];
   const title = item?.targetName || item?.targetKey || '-';
   const target = `${item?.targetClass || '-'}:${item?.targetCardId || item?.targetKey || '-'}`;
+  const bindingSummary = [
+    `source ${item?.sourceCount ?? sources.length}`,
+    `с ${hostAttr} ${item?.hostBindingCount ?? 0}`,
+    `без ${hostAttr} ${item?.missingHostBindingCount ?? 0}`,
+    `problem tags ${item?.problemTagCount ?? 0}`
+  ].join(' · ');
   return `
     <details class="rule-summary zabbix-plan-object">
       <summary>
         <strong>${escapeHtml(title)}</strong>
-        <span>цель: ${escapeHtml(target)} · команд ${escapeHtml(item?.commandCount ?? 0)} · связей ${escapeHtml(item?.relationCount ?? 0)}</span>
+        <span>цель: ${escapeHtml(target)} · команд ${escapeHtml(item?.commandCount ?? 0)} · связей ${escapeHtml(item?.relationCount ?? 0)} · ${escapeHtml(bindingSummary)}</span>
       </summary>
       <span>действие: ${escapeHtml(item?.actionLabel || zabbixObjectActionLabel(item?.action))}</span>
       <span>правила: ${escapeHtml(ruleNames.length > 0 ? ruleNames.join(', ') : ruleIds.join(', ') || '-')}</span>
       <span>источники: ${escapeHtml(sources.join(', ') || '-')}</span>
+      ${sourceBindingText.length > 0 ? `<span>привязка к проблемам Zabbix: ${escapeHtml(sourceBindingText.join('; '))}</span>` : ''}
       ${attributes.length > 0 ? `<span>атрибуты: ${escapeHtml(attributes.join('; '))}</span>` : ''}
       ${relationText.length > 0 ? `<span>связи: ${escapeHtml(relationText.join('; '))}</span>` : ''}
     </details>
   `;
+}
+
+function zabbixSourceBindingPlanText(binding) {
+  const hostAttr = zabbixHostIdAttributeName();
+  const label = binding?.label || `${binding?.sourceClass || '-'}/${binding?.sourceCardId || '-'}`;
+  const hostId = String(binding?.zabbixHostId ?? '').trim();
+  const problemTags = Array.isArray(binding?.problemTags) ? binding.problemTags : [];
+  const leaf = binding?.sourceLeafManagedKey ? `leaf ${binding.sourceLeafManagedKey}` : 'leaf не задан';
+  return hostId
+    ? `${label}: ${leaf}, ${hostAttr}=${hostId}, problem tags ${problemTags.join(', ') || '-'}`
+    : `${label}: ${leaf}, нет ${hostAttr}`;
 }
 
 function zabbixObjectActionLabel(action) {
@@ -7673,6 +8028,9 @@ function zabbixReconcileText(reconcile) {
   return [
     `объекты +${reconcile.ensureObjects ?? 0}`,
     `связи +${reconcile.ensureRelations ?? 0}`,
+    `source leaf +${reconcile.ensureSourceLeafServices ?? 0}`,
+    `problem tags +${reconcile.ensureProblemTags ?? 0}`,
+    `host tags +${reconcile.ensureHostTags ?? 0}`,
     `объекты -${reconcile.removeObjects ?? 0}`,
     `связи -${reconcile.removeRelations ?? 0}`
   ].join(', ');
@@ -8297,11 +8655,26 @@ function zabbixObjectPathDisplayLabel(edges) {
 async function applyTemplatesToRuleDocuments() {
   try {
     const syncedDrafts = syncDirtyTemplateEditorDraftsBeforeApply();
-    state.templateApplyMessage = 'Подготовка карточек-источников для материализации шаблонов...';
+    state.templateApplyMessage = 'Проверка шаблонов перед материализацией...';
     state.templateApplyError = '';
     renderTemplateApplyView();
-    await ensureTemplateMaterializationSourceCards('service');
-    await ensureTemplateMaterializationSourceCards('suppression');
+    const auditResult = await runTemplateAudit({ syncDrafts: false, render: false });
+    if (!auditResult) {
+      throw new Error(state.templateAudit.error || 'Проверка шаблонов не выполнена.');
+    }
+
+    const blockingErrors = templateAuditBlockingErrors(auditResult);
+    if (blockingErrors.length > 0) {
+      state.templateApplyMessage = '';
+      state.templateApplyError = `Проверка шаблонов нашла блокирующие ошибки: ${blockingErrors.slice(0, 5).join('; ')}${blockingErrors.length > 5 ? `; еще ${blockingErrors.length - 5}` : ''}.`;
+      state.templateApplyLastResult = null;
+      renderTemplateApplyView();
+      renderTemplateAuditView();
+      return;
+    }
+
+    state.templateApplyMessage = 'Материализация шаблонов и управляемых связей...';
+    renderTemplateApplyView();
     const servicePlan = templateMaterializationPlan('service');
     const suppressionPlan = templateMaterializationPlan('suppression');
     const serviceResult = materializeTemplatesForLayer('service', servicePlan);
@@ -8366,7 +8739,7 @@ function syncDirtyTemplateEditorDraftsBeforeApply() {
   return synced;
 }
 
-async function ensureTemplateMaterializationSourceCards(layerKey) {
+async function ensureTemplateMaterializationSourceCards(layerKey, options = {}) {
   const document = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey);
   const classCodes = new Set();
   for (const template of document.templates.filter((item) => item.enabled !== false)) {
@@ -8375,7 +8748,17 @@ async function ensureTemplateMaterializationSourceCards(layerKey) {
       continue;
     }
 
-    for (const candidate of templateCandidateClasses(template)) {
+    let candidates = [];
+    try {
+      candidates = templateCandidateClasses(template);
+    } catch (error) {
+      if (!options.safe) {
+        throw error;
+      }
+      continue;
+    }
+
+    for (const candidate of candidates) {
       classCodes.add(candidate.code);
 
       for (const dependencyClass of templatePopulationDimensionDependencyClasses(candidate.code, dimension)) {
@@ -9742,6 +10125,7 @@ function relationGraphNodeFromManualRule(rule) {
     templateId: '',
     templateName: '',
     sourceClass: ruleSourceClassCode(rule),
+    sourceKeyAttribute: String(rule.source?.key_attribute ?? rule.when?.fieldExists ?? '').trim(),
     targetClass: ruleTargetClassCode(rule),
     objectCount: expectedObjects.length,
     objectKey: expectedObject?.key ?? '',
@@ -9755,6 +10139,7 @@ function relationGraphNodeFromManualRule(rule) {
       rule.rule_id,
       rule.name,
       ruleSourceClassCode(rule),
+      rule.source?.key_attribute,
       ruleTargetClassCode(rule),
       expectedObject?.key,
       expectedObject?.label
@@ -10730,11 +11115,12 @@ function renderRelationGraphNode(node, graphState) {
   const sourceTargetLabel = node.nodeType === 'template'
     ? `${node.sourceClass || 'regex источника не задан'} -> ${node.targetClass || '-'}`
     : `${node.sourceClass || '-'} -> ${node.targetClass || '-'}`;
+  const title = relationGraphNodeTitle(node);
   return `
     <article
       class="relation-graph-node ${node.nodeType === 'template' ? 'template' : 'manual'} ${escapeHtml(onlineState.className)}"
       style="left:${node.x}px;top:${node.y}px;width:${node.width}px;height:${node.height}px"
-      title="${escapeHtml(node.id)}"
+      title="${escapeHtml(title)}"
     >
       <div class="relation-graph-priority" title="Приоритет ${escapeHtml(node.priority)}">P${escapeHtml(node.priority)}</div>
       <strong>${escapeHtml(shortText(node.label || node.id, 54))}</strong>
@@ -10749,6 +11135,24 @@ function renderRelationGraphNode(node, graphState) {
       ${graphState.showRegex ? renderRelationGraphRegexChip(node.regexItems, 'Регулярные выражения узла') : ''}
     </article>
   `;
+}
+
+function relationGraphNodeTitle(node) {
+  const lines = [
+    node.label || node.id,
+    node.nodeType === 'template'
+      ? `Шаблон: ${node.templateId || '-'}`
+      : `Правило: ${node.ruleId || '-'}`,
+    `Источник: ${node.sourceClass || '-'}`,
+    node.sourceKeyAttribute ? `Ключ источника: ${node.sourceKeyAttribute}` : '',
+    `Цель модели: ${node.targetClass || '-'}:${node.objectLookup || '-'}`,
+    node.nodeType === 'manual_rule' && node.objectLookup
+      ? 'Ручное правило связывает все подходящие source-карточки с этим целевым объектом модели.'
+      : '',
+    `Ожидаемых объектов: ${node.objectCount}`,
+    `Runtime-связей: ${node.runtimeRelationCount}`
+  ];
+  return lines.filter(Boolean).join('\n');
 }
 
 function renderRelationGraphRegexChip(regexItems, title) {
@@ -11745,6 +12149,8 @@ function renderTemplateApplyView() {
   const candidateCount = document.querySelector('#templateApplyCandidateCount');
   const status = document.querySelector('#templateApplyStatus');
   const list = document.querySelector('#templateApplyPlanList');
+  const applyButton = document.querySelector('#applyTemplatesButton');
+  const auditButton = document.querySelector('#runTemplateAuditButton');
   if (!serviceCount || !suppressionCount || !ruleCount || !relationCount || !candidateCount || !status || !list) {
     return;
   }
@@ -11756,9 +12162,24 @@ function renderTemplateApplyView() {
   ruleCount.textContent = String(plan.generatedRules.length + suppressionPlan.generatedRules.length);
   relationCount.textContent = String(templateGeneratedRelationCount(plan) + templateGeneratedRelationCount(suppressionPlan));
   candidateCount.textContent = String(plan.candidateCount + suppressionPlan.candidateCount);
-  status.textContent = state.templateApplyError || state.templateApplyMessage || '';
-  status.classList.toggle('error', Boolean(state.templateApplyError));
+  if (applyButton) {
+    const canApply = templateAuditCanApply();
+    applyButton.disabled = !canApply;
+    applyButton.title = canApply
+      ? ''
+      : templateAuditGateMessage();
+  }
+  if (auditButton) {
+    auditButton.disabled = state.templateAudit.checking;
+    auditButton.textContent = state.templateAudit.checking ? 'Проверка...' : 'Проверить шаблоны';
+  }
+  status.textContent = state.templateApplyError || state.templateApplyMessage || templateAuditGateMessage();
+  status.classList.toggle('error', Boolean(state.templateApplyError || templateAuditBlockingErrors().length > 0));
+  const auditResult = state.templateAudit.result;
   list.innerHTML = [
+    renderTemplateAuditGateCard(),
+    auditResult ? renderTemplateAuditLayer('service', auditResult.service) : '',
+    auditResult ? renderTemplateAuditLayer('suppression', auditResult.suppression) : '',
     renderTemplateApplyLastResultCard(),
     renderTemplateApplicationCard('service'),
     renderTemplateApplicationCard('suppression'),
@@ -11766,8 +12187,8 @@ function renderTemplateApplyView() {
     renderTemplatePlanErrorsCard('suppression', suppressionPlan),
     renderTemplateDeletionPlansCard('service'),
     renderTemplateDeletionPlansCard('suppression'),
-    ...renderTemplatePlanCards('service', plan),
-    ...renderTemplatePlanCards('suppression', suppressionPlan),
+    ...(auditResult ? [] : renderTemplatePlanCards('service', plan)),
+    ...(auditResult ? [] : renderTemplatePlanCards('suppression', suppressionPlan)),
     renderCurrentGeneratedRulesCard('service'),
     renderCurrentGeneratedRulesCard('suppression')
   ].filter(Boolean).join('')
@@ -11881,14 +12302,7 @@ function renderTemplateApplicationCard(layerKey) {
 }
 
 function renderTemplateAuditView() {
-  const list = document.querySelector('#templateAuditList');
-  if (!list) {
-    return;
-  }
-
-  const serviceAudit = templateAuditForLayer('service');
-  const suppressionAudit = templateAuditForLayer('suppression');
-  list.innerHTML = renderTemplateAuditCard('service', serviceAudit) + renderTemplateAuditCard('suppression', suppressionAudit);
+  renderTemplateApplyView();
 }
 
 function renderTemplatePlanCards(layerKey, plan) {
@@ -11950,48 +12364,457 @@ function renderCurrentGeneratedRulesCard(layerKey) {
   `;
 }
 
-function renderTemplateAuditCard(layerKey, audit) {
+async function runTemplateAudit(options = {}) {
+  if (state.templateAudit.checking) {
+    return state.templateAudit.result;
+  }
+
+  state.templateAudit.checking = true;
+  state.templateAudit.message = 'Подгрузка карточек-источников и расчет шаблонов...';
+  state.templateAudit.error = '';
+  if (options.render !== false) {
+    renderTemplateAuditView();
+    renderTemplateApplyView();
+  }
+
+  try {
+    const syncedDrafts = options.syncDrafts === false
+      ? []
+      : syncDirtyTemplateEditorDraftsBeforeApply();
+    await ensureTemplateMaterializationSourceCards('service', { safe: true });
+    await ensureTemplateMaterializationSourceCards('suppression', { safe: true });
+    const result = buildTemplateAuditResult();
+    const blockingErrors = templateAuditBlockingErrors(result);
+    const syncedText = syncedDrafts.length > 0
+      ? ` Сохранены измененные шаблоны: ${syncedDrafts.map((item) => `${item.layer}:${item.templateId}`).join(', ')}.`
+      : '';
+    state.templateAudit.result = result;
+    state.templateAudit.checkedAt = result.checkedAt;
+    state.templateAudit.fingerprint = templateAuditFingerprint();
+    state.templateAudit.message = blockingErrors.length > 0
+      ? `Проверка завершена: ${blockingErrors.length} блокирующих ошибок.${syncedText}`
+      : `Проверка завершена: блокирующих ошибок нет.${syncedText}`;
+    state.templateAudit.error = '';
+    return result;
+  } catch (error) {
+    state.templateAudit.error = error.message;
+    state.templateAudit.message = '';
+    state.templateAudit.result = null;
+    state.templateAudit.checkedAt = '';
+    state.templateAudit.fingerprint = '';
+    return null;
+  } finally {
+    state.templateAudit.checking = false;
+    if (options.render !== false) {
+      renderTemplateAuditView();
+      renderTemplateApplyView();
+      renderConversionConfigSyncView();
+    }
+  }
+}
+
+function buildTemplateAuditResult() {
+  const checkedAt = new Date().toISOString();
+  const service = templateAuditForLayer('service');
+  const suppression = templateAuditForLayer('suppression');
+  const warnings = service.warnings.concat(suppression.warnings);
+  const errors = service.errors.concat(suppression.errors);
+  return {
+    checkedAt,
+    service,
+    suppression,
+    templates: service.templates + suppression.templates,
+    candidates: service.candidates + suppression.candidates,
+    generatedRules: service.generatedRules + suppression.generatedRules,
+    generatedRelations: service.generatedRelations + suppression.generatedRelations,
+    warnings,
+    errors,
+    hasBlockingErrors: errors.length > 0
+  };
+}
+
+function templateAuditForLayer(layerKey) {
+  const templateDocument = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey);
+  const enabledTemplates = templateDocument.templates.filter((template) => template.enabled !== false);
+  const plan = templateMaterializationPlan(layerKey, { safe: true });
+  const parsed = parseRuleDocument(layerKey);
+  const document = parsed.ok ? parsed.document : defaultRuleDocument(layerKey);
+  const currentGeneratedRules = (document.rules ?? [])
+    .filter((rule) => rule.generated_from_template)
+    .map((rule) => enrichGeneratedRuleOwnership(rule, layerKey));
+  const currentByKey = new Map(currentGeneratedRules.map((rule) => [generatedRuleManagedKeyFromRule(rule, layerKey), rule]));
+  const desiredByKey = new Map(plan.generatedRules
+    .map((rule) => enrichGeneratedRuleOwnership(rule, layerKey))
+    .map((rule) => [generatedRuleManagedKeyFromRule(rule, layerKey), rule]));
+  const planByTemplate = new Map(plan.templates.map((item) => [item.template.template_id, item]));
+  const errors = uniqueTextList(parsed.ok ? plan.errors : [parsed.error].concat(plan.errors));
+  const warnings = [];
+  const duplicateMessages = templateAuditDuplicateMessages(layerKey, plan.generatedRules);
+  errors.push(...duplicateMessages);
+
+  const rows = enabledTemplates.map((template) => {
+    const planItem = planByTemplate.get(template.template_id);
+    return templateAuditRowForTemplate(layerKey, template, planItem, {
+      currentGeneratedRules,
+      currentByKey,
+      desiredByKey,
+      planErrors: errors
+    });
+  });
+
+  for (const row of rows) {
+    warnings.push(...row.warnings.map((message) => `${row.templateLabel}: ${message}`));
+  }
+
+  const currentTemplateIds = new Set(enabledTemplates.map((template) => template.template_id));
+  const staleRules = currentGeneratedRules.filter((rule) =>
+    !currentTemplateIds.has(ruleTemplateId(rule))
+    || !desiredByKey.has(generatedRuleManagedKeyFromRule(rule, layerKey)));
+  const detachedRules = currentGeneratedRules.filter((rule) => rule.detached_from_template
+    || rule.template_generation?.status === 'detached');
+  const deletionPlans = (document.templateDeletionPlans ?? []).filter((deletionPlan) => deletionPlan.status !== 'done');
+  const reconcile = plan.reconcile ?? {};
+  if (enabledTemplates.length === 0) {
+    warnings.push(`${layerHumanLabel(layerKey)}: активные шаблоны не настроены.`);
+  }
+
+  return {
+    layerKey,
+    templates: enabledTemplates.length,
+    candidates: plan.candidateCount,
+    generatedRules: plan.generatedRules.length,
+    generatedRelations: templateGeneratedRelationCount(plan),
+    reconcile: {
+      created: reconcile.created ?? 0,
+      updated: reconcile.updated ?? 0,
+      unchanged: reconcile.unchanged ?? 0,
+      removed: reconcile.removed ?? 0,
+      relations: relationReconcileSummary(reconcile.relations)
+    },
+    staleRules: staleRules.length,
+    detachedRules: detachedRules.length,
+    deletionPlans: deletionPlans.length,
+    errors: uniqueTextList(errors),
+    warnings: uniqueTextList(warnings),
+    rows
+  };
+}
+
+function templateAuditRowForTemplate(layerKey, template, planItem, context) {
+  const candidates = planItem?.candidates ?? safeTemplateCandidateClasses(template).candidates;
+  const rules = planItem?.rules ?? [];
+  const desiredKeys = new Set(rules.map((rule) => generatedRuleManagedKeyFromRule(rule, layerKey)));
+  const currentTemplateRules = context.currentGeneratedRules.filter((rule) => ruleTemplateId(rule) === template.template_id);
+  const rowErrors = context.planErrors.filter((message) =>
+    templateAuditMessageBelongsToTemplate(message, template, rules));
+  const warnings = [];
+  const dimension = templatePopulationDimension(template);
+  if (candidates.length === 0) {
+    warnings.push(`регулярное выражение source-класса не выбрало ни одного класса (${template.source_class_regex || 'пустое выражение'}).`);
+  }
+  if (!template.source_class_regex && candidates.length > 10) {
+    warnings.push(`source regex пустой и выбирает ${candidates.length} классов; проверьте, что такой широкий охват нужен.`);
+  } else if (template.source_class_regex && candidates.length > 50) {
+    warnings.push(`source regex выбирает ${candidates.length} классов; это может породить тяжелый набор правил.`);
+  }
+  const maxRules = dimension.max_rules || TEMPLATE_DIMENSION_DEFAULT_MAX_RULES;
+  if (rules.length > 0 && rules.length >= Math.floor(maxRules * 0.8)) {
+    warnings.push(`правил ${rules.length} при лимите ${maxRules}; проверьте кардинальность dimension.`);
+  }
+  if (planItem && candidates.length > 0 && rules.length === 0) {
+    warnings.push('шаблон выбрал source-классы, но не породил правил.');
+  }
+
+  const reconcile = {
+    created: 0,
+    updated: 0,
+    unchanged: 0,
+    removed: currentTemplateRules.filter((rule) =>
+      !desiredKeys.has(generatedRuleManagedKeyFromRule(rule, layerKey))).length
+  };
+  for (const rule of rules.map((item) => enrichGeneratedRuleOwnership(item, layerKey))) {
+    const existingRule = context.currentByKey.get(generatedRuleManagedKeyFromRule(rule, layerKey));
+    if (!existingRule) {
+      reconcile.created += 1;
+      continue;
+    }
+
+    const desiredFingerprint = generatedRuleArtifactFingerprint(rule);
+    const existingFingerprint = String(existingRule.template_generation?.artifact_fingerprint ?? '')
+      || generatedRuleArtifactFingerprint(existingRule);
+    const desiredMetadataFingerprint = generatedRuleTemplateMetadataFingerprint(rule);
+    const existingMetadataFingerprint = generatedRuleTemplateMetadataFingerprint(existingRule);
+    if (desiredFingerprint === existingFingerprint && desiredMetadataFingerprint === existingMetadataFingerprint) {
+      reconcile.unchanged += 1;
+    } else {
+      reconcile.updated += 1;
+    }
+  }
+
+  return {
+    layerKey,
+    template,
+    templateLabel: templateHumanLabel(template),
+    candidates,
+    rules,
+    dimension,
+    reconcile,
+    relationCount: rules.reduce((sum, rule) => sum + runtimeRelationsFromRule(rule).length, 0),
+    staleRules: reconcile.removed,
+    detachedRules: currentTemplateRules.filter((rule) => rule.detached_from_template
+      || rule.template_generation?.status === 'detached').length,
+    errors: uniqueTextList(rowErrors),
+    warnings: uniqueTextList(warnings)
+  };
+}
+
+function safeTemplateCandidateClasses(template) {
+  try {
+    return { candidates: templateCandidateClasses(template), error: '' };
+  } catch (error) {
+    return { candidates: [], error: error.message };
+  }
+}
+
+function templateAuditMessageBelongsToTemplate(message, template, rules) {
+  const text = String(message ?? '');
+  const templateId = String(template.template_id ?? '').trim();
+  const templateName = String(template.name ?? '').trim();
+  if (templateId && (text.startsWith(`${templateId}:`) || text.includes(`[${templateId}]`) || text.includes(`"${templateId}"`))) {
+    return true;
+  }
+  if (templateName && text.includes(`"${templateName}"`)) {
+    return true;
+  }
+
+  return rules.some((rule) => {
+    const ruleId = String(rule.rule_id ?? '').trim();
+    return ruleId && text.startsWith(`${ruleId}:`);
+  });
+}
+
+function templateAuditDuplicateMessages(layerKey, rules) {
+  const ruleIds = duplicateNonEmptyValues(rules.map((rule) => rule.rule_id));
+  const managedKeys = duplicateNonEmptyValues(rules.map((rule) => generatedRuleManagedKeyFromRule(rule, layerKey)));
+  return [
+    ...ruleIds.map((ruleId) => `${layerHumanLabel(layerKey)}: rule_id "${ruleId}" дублируется в сгенерированных правилах.`),
+    ...managedKeys.map((managedKey) => `${layerHumanLabel(layerKey)}: managed_key "${managedKey}" дублируется в сгенерированных правилах.`)
+  ];
+}
+
+function duplicateNonEmptyValues(values) {
+  const counts = new Map();
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (!text) {
+      continue;
+    }
+
+    counts.set(text, (counts.get(text) ?? 0) + 1);
+  }
+
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value);
+}
+
+function renderTemplateAuditLayer(layerKey, audit) {
+  if (!audit) {
+    return '';
+  }
+
+  const layerLabel = layerKey === 'service' ? 'Сервисный слой' : 'Каскадное подавление';
+  const relationText = relationReconcileText(audit.reconcile.relations);
   return `
     <div class="rule-summary">
-      <span class="structure-mark">${escapeHtml(layerKey === 'service' ? 'сервис' : 'подавление')} · аудит</span>
-      <strong>${escapeHtml(audit.templates)} шаблонов · ${escapeHtml(audit.generatedRules)} сгенерированных правил · ${escapeHtml(audit.generatedRelations)} связей</strong>
-      <span>кандидатов ${escapeHtml(audit.candidates)} · отсутствует ${escapeHtml(audit.missingRules)} · изменено ${escapeHtml(audit.changedRules)} · устарело ${escapeHtml(audit.staleRules)} · отвязано ${escapeHtml(audit.detachedRules)} · планов удаления ${escapeHtml(audit.deletionPlans)}</span>
-      <span>${escapeHtml(audit.errors.join('; ') || 'Ошибок шаблонов нет.')}</span>
+      <span class="structure-mark">${escapeHtml(layerLabel)} · проверка</span>
+      <strong>${escapeHtml(audit.templates)} шаблонов · ${escapeHtml(audit.generatedRules)} правил · ${escapeHtml(audit.generatedRelations)} связей</strong>
+      <span>кандидатов ${escapeHtml(audit.candidates)} · создать ${escapeHtml(audit.reconcile.created)} · обновить ${escapeHtml(audit.reconcile.updated)} · без изменений ${escapeHtml(audit.reconcile.unchanged)} · снять ${escapeHtml(audit.reconcile.removed)}</span>
+      <span>${escapeHtml(relationText)} · устаревших правил ${escapeHtml(audit.staleRules)} · отвязанных ${escapeHtml(audit.detachedRules)} · планов удаления ${escapeHtml(audit.deletionPlans)}</span>
+      <span>${escapeHtml(audit.errors.length ? `Ошибки: ${audit.errors.slice(0, 6).join('; ')}` : 'Блокирующих ошибок нет.')}</span>
+      ${audit.warnings.length ? `<span>${escapeHtml(`Предупреждения: ${audit.warnings.slice(0, 6).join('; ')}`)}</span>` : ''}
+    </div>
+    ${audit.rows.map((row) => renderTemplateAuditRow(row)).join('')}
+  `;
+}
+
+function renderTemplateAuditRow(row) {
+  const template = row.template;
+  const targetClass = template.target?.class_code || '-';
+  const errors = row.errors.length ? row.errors : [];
+  const warnings = row.warnings.length ? row.warnings : [];
+  const details = [
+    `source regex: ${template.source_class_regex || 'пусто'}`,
+    `source-классы: ${row.candidates.map((candidate) => `${candidate.code}${classDisplayName(candidate) !== candidate.code ? ` (${classDisplayName(candidate)})` : ''}`).join(', ') || '-'}`,
+    templatePlanDimensionText({ template, rules: row.rules }),
+    `target: ${targetClass} · атрибуты цели: ${templateAuditTargetAttributesText(row.layerKey, template, row.rules[0])}`,
+    `dimension.*: ${templateAuditDimensionExamples(row.rules)}`,
+    `target keys: ${templateAuditTargetKeyExamples(row.rules)}`,
+    `первые правила: ${templateAuditRuleExamples(row.rules)}`,
+    `связи: ${templateAuditRelationExamples(row.rules)}`
+  ];
+
+  return `
+    <details class="rule-summary template-audit-row${errors.length ? ' template-audit-error' : warnings.length ? ' template-audit-warning' : ''}">
+      <summary>
+        <span class="structure-mark">${escapeHtml(row.layerKey === 'service' ? 'сервис' : 'подавление')} · шаблон</span>
+        <strong>${escapeHtml(template.name || template.template_id)}</strong>
+        <span>source-классов ${escapeHtml(row.candidates.length)} · правил ${escapeHtml(row.rules.length)} · связей ${escapeHtml(row.relationCount)} · цель ${escapeHtml(targetClass)}</span>
+        <span>создать ${escapeHtml(row.reconcile.created)} · обновить ${escapeHtml(row.reconcile.updated)} · без изменений ${escapeHtml(row.reconcile.unchanged)} · снять ${escapeHtml(row.reconcile.removed)} · отвязанных ${escapeHtml(row.detachedRules)}</span>
+        ${errors.length ? `<span class="template-audit-message-error">${escapeHtml(`Ошибки: ${errors.join('; ')}`)}</span>` : ''}
+        ${warnings.length ? `<span class="template-audit-message-warning">${escapeHtml(`Предупреждения: ${warnings.join('; ')}`)}</span>` : ''}
+      </summary>
+      <div class="template-audit-details">
+        ${details.map((line) => `<span>${escapeHtml(line)}</span>`).join('')}
+      </div>
+    </details>
+  `;
+}
+
+function templateAuditTargetAttributesText(layerKey, template, sampleRule) {
+  const rendered = sampleRule?.target?.initial_user_values ?? {};
+  const raw = template.target?.initial_user_values ?? {};
+  const keys = uniqueTextList(allowedUserResponsibilityAttributes(layerKey)
+    .concat(Object.keys(rendered))
+    .concat(Object.keys(raw)));
+  const values = keys
+    .filter((key) => Object.hasOwn(rendered, key) || Object.hasOwn(raw, key))
+    .map((key) => `${key}=${String(rendered[key] ?? raw[key] ?? '').trim() || 'пусто'}`);
+  return values.join(', ') || '-';
+}
+
+function templateAuditDimensionExamples(rules) {
+  const values = rules
+    .map((rule) => {
+      const generation = rule.template_generation ?? {};
+      const key = generation.dimension_key || '';
+      const value = generation.dimension_value || '';
+      const name = generation.dimension_name || '';
+      return key || value || name
+        ? `key=${key || '-'}, value=${value || '-'}, name=${name || '-'}`
+        : '';
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+  return values.join('; ') || '-';
+}
+
+function templateAuditTargetKeyExamples(rules) {
+  const values = uniqueTextList(rules.map((rule) => rule.target?.idempotency_key).filter(Boolean)).slice(0, 8);
+  return values.join(', ') || '-';
+}
+
+function templateAuditRuleExamples(rules) {
+  const values = rules.slice(0, 8).map((rule) =>
+    `${rule.rule_id || '-'} (${ruleSourceClassCode(rule) || '-'} -> ${ruleTargetClassCode(rule) || '-'})`);
+  const hidden = rules.length > values.length ? `; еще ${rules.length - values.length}` : '';
+  return `${values.join('; ') || '-'}${hidden}`;
+}
+
+function templateAuditRelationExamples(rules) {
+  const values = rules
+    .flatMap((rule) => runtimeRelationsFromRule(rule).map((relation) =>
+      `${rule.rule_id || '-'} -> ${relation.target_lookup || relation.target_class_code || '-'} (${relation.domain_code || '-'})`))
+    .slice(0, 8);
+  const total = rules.reduce((sum, rule) => sum + runtimeRelationsFromRule(rule).length, 0);
+  const hidden = total > values.length ? `; еще ${total - values.length}` : '';
+  return `${values.join('; ') || '-'}${hidden}`;
+}
+
+function templateAuditEmptySummary() {
+  const serviceTemplates = normalizeTemplateDocument(state.templateDocuments.service, 'service').templates
+    .filter((template) => template.enabled !== false).length;
+  const suppressionTemplates = normalizeTemplateDocument(state.templateDocuments.suppression, 'suppression').templates
+    .filter((template) => template.enabled !== false).length;
+  return {
+    templates: serviceTemplates + suppressionTemplates,
+    generatedRules: 0,
+    generatedRelations: 0,
+    warnings: [],
+    errors: []
+  };
+}
+
+function templateAuditBlockingErrors(result = state.templateAudit.result) {
+  return result?.errors ?? [];
+}
+
+function templateAuditCanApply() {
+  const result = state.templateAudit.result;
+  return Boolean(result)
+    && !state.templateAudit.checking
+    && !state.templateAudit.error
+    && !isTemplateAuditStale()
+    && templateAuditBlockingErrors(result).length === 0;
+}
+
+function templateAuditGateMessage(result = state.templateAudit.result, stale = isTemplateAuditStale(), blockingErrors = templateAuditBlockingErrors(result)) {
+  if (state.templateAudit.checking) {
+    return 'Идет проверка шаблонов.';
+  }
+  if (!result) {
+    return 'Перед применением выполните "Проверить шаблоны".';
+  }
+  if (stale) {
+    return 'После последней проверки изменились шаблоны, правила или данные CMDBuild; выполните проверку заново.';
+  }
+  if (blockingErrors.length > 0) {
+    return `Исправьте блокирующие ошибки проверки: ${blockingErrors.slice(0, 3).join('; ')}${blockingErrors.length > 3 ? `; еще ${blockingErrors.length - 3}` : ''}.`;
+  }
+
+  return `Последняя проверка ${formatCacheTimestamp(state.templateAudit.checkedAt) || state.templateAudit.checkedAt}: можно создавать/обновлять правила.`;
+}
+
+function renderTemplateAuditGateCard() {
+  const result = state.templateAudit.result;
+  const blockingErrors = templateAuditBlockingErrors(result);
+  const stale = result ? isTemplateAuditStale() : false;
+  const canApply = templateAuditCanApply();
+  return `
+    <div class="rule-summary${canApply ? ' preview-linked' : blockingErrors.length ? ' template-audit-error' : ''}">
+      <span class="structure-mark">проверка шаблонов</span>
+      <strong>${escapeHtml(canApply ? 'Проверка пройдена' : 'Перед применением нужна проверка')}</strong>
+      <span>${escapeHtml(templateAuditGateMessage(result, stale, blockingErrors))}</span>
+      ${result ? `<span>шаблонов ${escapeHtml(result.templates)} · правил ${escapeHtml(result.generatedRules)} · связей ${escapeHtml(result.generatedRelations)} · предупреждений ${escapeHtml(result.warnings.length)} · ошибок ${escapeHtml(blockingErrors.length)}</span>` : ''}
     </div>
   `;
 }
 
-function templateAuditForLayer(layerKey) {
-  const plan = templateMaterializationPlan(layerKey, { safe: true });
-  const document = parseRuleDocument(layerKey).document;
-  const generatedRules = (document.rules ?? [])
-    .filter((rule) => rule.generated_from_template)
-    .map((rule) => enrichGeneratedRuleOwnership(rule, layerKey));
-  const generatedRuleKeys = new Set(generatedRules.map((rule) => generatedRuleManagedKeyFromRule(rule, layerKey)));
-  const expectedRuleKeys = new Set(plan.generatedRules.map((rule) => generatedRuleManagedKeyFromRule(rule, layerKey)));
-  const currentTemplateIds = new Set(normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey).templates
-    .map((template) => template.template_id));
-  const staleRules = (document.rules ?? []).filter((rule) =>
-    rule.generated_from_template
-    && (!currentTemplateIds.has(rule.generated_from_template)
-      || !expectedRuleKeys.has(generatedRuleManagedKeyFromRule(rule, layerKey))));
-  const detachedRules = (document.rules ?? []).filter((rule) => rule.detached_from_template
-    || rule.template_generation?.status === 'detached');
-  const deletionPlans = (document.templateDeletionPlans ?? []).filter((plan) => plan.status !== 'done');
-  const reconcile = plan.reconcile ?? {};
+function isTemplateAuditStale() {
+  return Boolean(state.templateAudit.result)
+    && state.templateAudit.fingerprint
+    && state.templateAudit.fingerprint !== templateAuditFingerprint();
+}
 
-  return {
-    templates: plan.templates.length,
-    candidates: plan.candidateCount,
-    generatedRules: generatedRuleKeys.size,
-    generatedRelations: generatedRules.reduce((sum, rule) => sum + runtimeRelationsFromRule(rule).length, 0),
-    missingRules: [...expectedRuleKeys].filter((ruleKey) => !generatedRuleKeys.has(ruleKey)).length,
-    changedRules: reconcile.updated ?? 0,
-    staleRules: staleRules.length,
-    detachedRules: detachedRules.length,
-    deletionPlans: deletionPlans.length,
-    errors: plan.errors
-  };
+function templateAuditFingerprint() {
+  const serviceRuleDocument = parseRuleDocument('service');
+  const suppressionRuleDocument = parseRuleDocument('suppression');
+  return stableHash({
+    templates: {
+      service: normalizeTemplateDocument(state.templateDocuments.service, 'service'),
+      suppression: normalizeTemplateDocument(state.templateDocuments.suppression, 'suppression')
+    },
+    rules: {
+      service: serviceRuleDocument.ok ? serviceRuleDocument.document : serviceRuleDocument.error,
+      suppression: suppressionRuleDocument.ok ? suppressionRuleDocument.document : suppressionRuleDocument.error
+    },
+    sourceClasses: availableSourceClasses().map((item) => ({
+      code: item.code,
+      name: classDisplayName(item),
+      path: item.hierarchyPath || ''
+    })),
+    sourceCards: state.cmdbClassInstances.map((item) => ({
+      classCode: item.classCode ?? item.code ?? item.class_code ?? item.name ?? '',
+      layer: item.layer ?? '',
+      count: Array.isArray(item.cards) ? item.cards.length : 0,
+      hash: stableHash(item.cards ?? [])
+    })),
+    maxTraversalDepth: state.maxTraversalDepth
+  });
+}
+
+function uniqueTextList(values) {
+  return [...new Set((values ?? [])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean))];
 }
 
 function templateMaterializationPlan(layerKey, options = {}) {
@@ -14662,16 +15485,7 @@ function referenceTargetClass(attribute, sourceClass = '') {
 }
 
 function targetClassAttributes(classCode) {
-  const instanceClass = state.cmdbClassInstances.find((item) =>
-    canonicalToken(item.classCode) === canonicalToken(classCode));
-  if (instanceClass?.attributes?.length > 0) {
-    return [...instanceClass.attributes].sort((left, right) =>
-      String(left.displayName || left.description || left.code || left.name)
-        .localeCompare(String(right.displayName || right.description || right.code || right.name), undefined, {
-          sensitivity: 'base'
-        }));
-  }
-
+  const token = canonicalToken(classCode);
   const byCode = new Map(state.classes.map((item) => [item.code, item]));
   const attributes = [];
   const seenClasses = new Set();
@@ -14687,6 +15501,32 @@ function targetClassAttributes(classCode) {
     const code = attribute.code || attribute.name;
     if (code) {
       byAttributeCode.set(code, attribute);
+    }
+  }
+
+  const plannedAttributes = [...byAttributeCode.values()];
+  if (plannedAttributes.length > 0) {
+    return sortedUniqueTargetAttributes(plannedAttributes);
+  }
+
+  const instanceClass = state.cmdbClassInstances.find((item) =>
+    canonicalToken(item.classCode) === token);
+  const instanceAttributes = sortedUniqueTargetAttributes(instanceClass?.attributes ?? []);
+  if (instanceAttributes.length > 0) {
+    return instanceAttributes;
+  }
+
+  const cmdbSchemaClass = state.cmdbClassSchemas.find((item) =>
+    canonicalToken(item.code || item.name) === token);
+  return sortedUniqueTargetAttributes(cmdbSchemaClass?.attributes ?? []);
+}
+
+function sortedUniqueTargetAttributes(attributes) {
+  const byAttributeCode = new Map();
+  for (const attribute of attributes ?? []) {
+    const code = attributeCode(attribute);
+    if (code) {
+      byAttributeCode.set(canonicalToken(code), attribute);
     }
   }
 
@@ -15047,29 +15887,34 @@ function ruleSelectOptions(rules, options = {}) {
   ];
 }
 
-function targetClassOptions(layerKey, suggestedCode = '') {
+function templateTargetClassOptions(layerKey) {
+  return targetClassOptions(layerKey, '', { includeInstances: false });
+}
+
+function targetClassOptions(layerKey, suggestedCode = '', options = {}) {
+  const includeInstances = options.includeInstances !== false;
   const layer = layerKey === 'service' ? 'Service' : 'Suppression';
   const hierarchyClasses = schemaClassesForLayer(layer);
   const classes = sortSchemaClassesByInheritance(
     hierarchyClasses.filter((item) => !item.isSuperclass && item.origin !== 'model_root_superclass'),
     hierarchyClasses);
-  const instancesByClass = targetInstanceOptionsByClass(layerKey);
+  const instancesByClass = includeInstances ? targetInstanceOptionsByClass(layerKey) : new Map();
   const instanceCount = [...instancesByClass.values()].reduce((sum, items) => sum + items.length, 0);
   if (classes.length === 0 && instanceCount === 0) {
     return [{ value: '', label: 'Целевые классы не загружены', disabled: true }];
   }
 
-  const options = [];
+  const selectOptions = [];
   const renderedClassTokens = new Set();
   for (const item of classes) {
     const classToken = canonicalToken(item.code);
     const classLabel = schemaClassOptionLabel(item);
     renderedClassTokens.add(classToken);
-    options.push({
+    selectOptions.push({
       value: item.code,
       label: `Класс: ${classLabel}`
     });
-    options.push(...(instancesByClass.get(classToken) ?? []).map((card) => ({
+    selectOptions.push(...(instancesByClass.get(classToken) ?? []).map((card) => ({
       value: targetInstanceOptionValue(item.code, card.id),
       label: `Класс: ${classLabel} -> экземпляр: ${targetCardDisplayLabel({ ...card, classCode: item.code }, item.code)}`
     })));
@@ -15082,7 +15927,7 @@ function targetClassOptions(layerKey, suggestedCode = '') {
 
     for (const card of cards) {
       const classLabel = targetFallbackClassLabel(card.classCode);
-      options.push({
+      selectOptions.push({
         value: targetInstanceOptionValue(card.classCode, card.id),
         label: `Класс: ${classLabel} -> экземпляр: ${targetCardDisplayLabel(card, card.classCode)}`
       });
@@ -15092,11 +15937,13 @@ function targetClassOptions(layerKey, suggestedCode = '') {
   return [
     {
       value: '',
-      label: suggestedCode
-        ? `Выберите целевой класс\\экземпляр класса, например ${suggestedCode}`
-        : 'Выберите целевой класс\\экземпляр класса'
+      label: includeInstances
+        ? (suggestedCode
+          ? `Выберите целевой класс\\экземпляр класса, например ${suggestedCode}`
+          : 'Выберите целевой класс\\экземпляр класса')
+        : 'Выберите целевой класс'
     },
-    ...options
+    ...selectOptions
   ];
 }
 

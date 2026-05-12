@@ -63,6 +63,13 @@ public sealed record AggregationSourceObject
 
     [JsonPropertyName("key_value")]
     public string KeyValue { get; init; } = "";
+
+    [JsonPropertyName("zabbix_hostid")]
+    public string ZabbixHostId { get; init; } = "";
+
+    [JsonPropertyName("attributes")]
+    public IReadOnlyDictionary<string, string> Attributes { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed record AggregationTargetObject

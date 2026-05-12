@@ -86,7 +86,7 @@ Common sections:
   "Level": "Basic"
 },
 "Readiness": {
-  "ZabbixHostIdAttribute": "zabbix_hostid"
+  "ZabbixHostIdAttribute": "zabbix_main_hostid"
 }
 ```
 
@@ -99,12 +99,12 @@ KafkaTopics__CmdbWebhookEvents=service-suppression.cmdb.events.raw
 KafkaTopics__AggregationCommands=service-suppression.monitoring.aggregation.commands
 KafkaTopics__ZabbixServiceApplyPlans=service-suppression.zabbix.service.apply-plans
 KafkaTopics__ZabbixSuppressionApplyPlans=service-suppression.zabbix.suppression.apply-plans
-Readiness__ZabbixHostIdAttribute=zabbix_hostid
+Readiness__ZabbixHostIdAttribute=zabbix_main_hostid
 Debug__Enabled=false
 Debug__Level=Basic
 ```
 
-`zabbix_hostid` is the CMDBuild card attribute that marks a source object as
+`zabbix_main_hostid` is the CMDBuild card attribute that marks a source object as
 ready for the Zabbix side of the pipeline. `CREATE` and `UPDATE` events without
 this value must not create service/suppression membership. `DELETE` must remove
 only previously recorded managed membership and otherwise be a no-op.
@@ -192,7 +192,7 @@ Configure UI health and event browsing endpoints explicitly:
   "defaultEventLimit": 5
 },
 "readiness": {
-  "zabbixHostIdAttribute": "zabbix_hostid"
+  "zabbixHostIdAttribute": "zabbix_main_hostid"
 },
 "conversionConfig": {
   "storageFolder": "state/conversion-config",
@@ -287,6 +287,20 @@ new command during a short troubleshooting window.
   "Mode": "auto",
   "AutoApplyEnabled": true,
   "SafeApply": true
+},
+"ZabbixApplyState": {
+  "FilePath": "state/zabbixconfig2api/apply-membership.json"
+},
+"ZabbixTriggerDependencies": {
+  "Enabled": true,
+  "IncludeDisabledTriggers": false,
+  "MaxDependenciesPerRun": 10000,
+  "SampleLimit": 100,
+  "AggregateHostGroupName": "CMDB2Monitoring",
+  "AggregateHostName": "cmdb2monitoring-suppression-aggregates",
+  "AggregateHostVisibleName": "CMDB2Monitoring suppression aggregates",
+  "AggregateItemKeyPrefix": "cmdb2monitoring.suppression.aggregate",
+  "AggregateTriggerPriority": 3
 }
 ```
 
@@ -296,6 +310,21 @@ In auto mode `zabbixconfig2api` consumes
 Operators can verify the result in Zabbix under `Monitoring -> Services` by
 service name or by tags such as `cmdb2monitoring:managed=true` and
 `cmdb2monitoring:layer=service|suppression`.
+
+The apply state file keeps source membership for target services and the set of
+managed Zabbix trigger dependencies. Keep this path on durable storage if
+`zabbixconfig2api` can restart; without it the service can rebuild desired
+dependencies from membership, but it cannot distinguish old managed trigger
+dependencies from manual Zabbix dependencies.
+
+`ZabbixTriggerDependencies` controls the suppression dependency reconciliation:
+dry-run and apply read suppression membership, find active triggers for
+`zabbix_main_hostid` source hosts, create one managed aggregate trigger per
+suppression object on `AggregateHostName`, push the calculated aggregate state
+through `history.push`, and update `trigger.dependencies` through
+`trigger.update`. `IncludeDisabledTriggers=false` limits the model to enabled
+triggers. `MaxDependenciesPerRun` is a guard against accidental many-to-many
+explosions caused by broad suppression rules.
 
 ### cmdbaggregation2cmdbuild
 

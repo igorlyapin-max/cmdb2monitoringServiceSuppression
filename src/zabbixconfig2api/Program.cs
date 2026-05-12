@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
@@ -15,6 +17,18 @@ builder.Services.AddOptions<ApplyOptions>()
     .Bind(builder.Configuration.GetSection(ApplyOptions.SectionName))
     .Validate(options => options.HasValidMode(), "Apply mode must be manual, auto, or dry-run.")
     .ValidateOnStart();
+builder.Services.AddOptions<ZabbixApplyStateOptions>()
+    .Bind(builder.Configuration.GetSection(ZabbixApplyStateOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.FilePath), "ZabbixApplyState:FilePath is required.")
+    .ValidateOnStart();
+builder.Services.AddOptions<ZabbixTriggerDependenciesOptions>()
+    .Bind(builder.Configuration.GetSection(ZabbixTriggerDependenciesOptions.SectionName))
+    .Validate(options => options.MaxDependenciesPerRun > 0, "ZabbixTriggerDependencies:MaxDependenciesPerRun must be greater than zero.")
+    .Validate(options => options.SampleLimit > 0, "ZabbixTriggerDependencies:SampleLimit must be greater than zero.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.AggregateHostGroupName), "ZabbixTriggerDependencies:AggregateHostGroupName is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.AggregateHostName), "ZabbixTriggerDependencies:AggregateHostName is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.AggregateItemKeyPrefix), "ZabbixTriggerDependencies:AggregateItemKeyPrefix is required.")
+    .ValidateOnStart();
 builder.Services.AddOptions<ZabbixOptions>()
     .Bind(builder.Configuration.GetSection(ZabbixOptions.SectionName))
     .Validate(options => options.HasValidAuthMode(), "Zabbix auth mode is invalid.")
@@ -27,6 +41,7 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .ValidateOnStart();
 builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddTransient<ZabbixAggregationApplier>();
+builder.Services.AddTransient<ZabbixTriggerDependencyApplier>();
 builder.Services.AddSingleton<ZabbixApplyStateStore>();
 builder.Services.AddHostedService<ZabbixServiceAggregationCommandWorker>();
 builder.Services.AddHostedService<ZabbixSuppressionAggregationCommandWorker>();
@@ -92,6 +107,27 @@ app.MapGet("/apply/status/{layer}", (
     }
 
     return Results.Ok(state.LayerSnapshot(normalizedLayer, topicOptions.Value, applyOptions.CurrentValue));
+});
+
+app.MapGet("/dependencies/suppression/status", (
+    ZabbixApplyStateStore state,
+    IOptionsMonitor<ZabbixTriggerDependenciesOptions> options) =>
+{
+    return Results.Ok(state.TriggerDependencySnapshot("suppression", options.CurrentValue));
+});
+
+app.MapPost("/dependencies/suppression/dry-run", async (
+    ZabbixTriggerDependencyApplier applier,
+    CancellationToken cancellationToken) =>
+{
+    return Results.Ok(await applier.RunAsync(dryRun: true, cancellationToken));
+});
+
+app.MapPost("/dependencies/suppression/apply", async (
+    ZabbixTriggerDependencyApplier applier,
+    CancellationToken cancellationToken) =>
+{
+    return Results.Ok(await applier.RunAsync(dryRun: false, cancellationToken));
 });
 
 app.MapPost("/commands/apply/dry-run", (
@@ -272,6 +308,7 @@ public static class ZabbixApplyPlanner
             SourceClass = command.Source.ClassCode,
             SourceCardId = command.Source.CardId,
             Reconcile = ReconcileCounters(command),
+            Membership = ZabbixMembershipPreview(command, layer),
             Message = status switch
             {
                 "dry-run" => "Команда проверена без публикации изменений в Zabbix.",
@@ -320,19 +357,190 @@ public static class ZabbixApplyPlanner
         return new ZabbixReconcileCounters
         {
             EnsureObjects = string.IsNullOrWhiteSpace(command.Target.ClassCode) ? 0 : 1,
-            EnsureRelations = relationCount
+            EnsureRelations = relationCount,
+            EnsureSourceLeafServices = string.IsNullOrWhiteSpace(command.Source.CardId)
+                || string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 0 : 1,
+            EnsureProblemTags = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 0 : 1,
+            EnsureHostTags = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 0 : 1
+        };
+    }
+
+    private static ZabbixTargetMembershipSnapshot ZabbixMembershipPreview(AggregationCommand command, string layer)
+    {
+        if (string.IsNullOrWhiteSpace(command.Source.CardId))
+        {
+            return new ZabbixTargetMembershipSnapshot();
+        }
+
+        var source = new ZabbixSourceMembership
+        {
+            SourceClass = command.Source.ClassCode,
+            SourceCardId = command.Source.CardId,
+            SourceKeyAttribute = command.Source.KeyAttribute,
+            SourceKeyValue = command.Source.KeyValue,
+            ZabbixHostId = command.Source.ZabbixHostId,
+            SourceLeafManagedKey = ZabbixManagedServiceMapper.SourceLeafManagedKey(layer, command.Source),
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+
+        return new ZabbixTargetMembershipSnapshot
+        {
+            Layer = layer,
+            TargetManagedKey = ZabbixManagedServiceMapper.ManagedKey(command.Target),
+            TargetClass = command.Target.ClassCode,
+            TargetCardId = command.Target.CardId,
+            TargetName = command.RuleName,
+            AggregationType = TargetAttribute(command.Target.Attributes, "aggregation_type"),
+            Threshold = TargetAttribute(command.Target.Attributes, "threshold"),
+            N = TargetAttribute(command.Target.Attributes, "n"),
+            SourceCount = 1,
+            HostBindingCount = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 0 : 1,
+            MissingHostBindingCount = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 1 : 0,
+            SourceLeafManagedKeys = [source.SourceLeafManagedKey],
+            Sources = [source],
+            Relations = command.Target.Relations
+                .Select(relation => new ZabbixMembershipRelation
+                {
+                    DomainCode = relation.DomainCode,
+                    TargetClassCode = relation.TargetClassCode,
+                    TargetLookup = relation.TargetLookup
+                })
+                .ToArray(),
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+    }
+
+    private static string TargetAttribute(IReadOnlyDictionary<string, object?> attributes, string name)
+    {
+        foreach (var attribute in attributes)
+        {
+            if (string.Equals(attribute.Key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScalarString(attribute.Value);
+            }
+        }
+
+        return "";
+    }
+
+    private static string ScalarString(object? value)
+    {
+        return value switch
+        {
+            null => "",
+            string text => text.Trim(),
+            bool boolean => boolean ? "true" : "false",
+            JsonElement element => element.ValueKind switch
+            {
+                JsonValueKind.String => element.GetString()?.Trim() ?? "",
+                JsonValueKind.Number => element.GetRawText(),
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                _ => ""
+            },
+            IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            _ => value.ToString()?.Trim() ?? ""
         };
     }
 }
 
 public sealed class ZabbixApplyStateStore
 {
-    private readonly ConcurrentDictionary<string, ZabbixLayerApplyStatus> layers = new(StringComparer.OrdinalIgnoreCase);
-
-    public ZabbixApplyStateStore()
+    private static readonly JsonSerializerOptions StateJsonOptions = new(JsonSerializerDefaults.Web)
     {
+        WriteIndented = true
+    };
+
+    private readonly string stateFilePath;
+    private readonly ILogger<ZabbixApplyStateStore> logger;
+    private readonly object membershipLock = new();
+    private readonly ConcurrentDictionary<string, ZabbixLayerApplyStatus> layers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ZabbixTargetMembership> memberships = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ZabbixTriggerDependencyLayerStatus> triggerDependencyLayers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ZabbixManagedTriggerDependency> triggerDependencies = new(StringComparer.Ordinal);
+
+    public ZabbixApplyStateStore(
+        IOptions<ZabbixApplyStateOptions> options,
+        ILogger<ZabbixApplyStateStore> logger)
+    {
+        stateFilePath = options.Value.FilePath;
+        this.logger = logger;
         layers.TryAdd("service", new ZabbixLayerApplyStatus { Layer = "service" });
         layers.TryAdd("suppression", new ZabbixLayerApplyStatus { Layer = "suppression" });
+        triggerDependencyLayers.TryAdd("suppression", new ZabbixTriggerDependencyLayerStatus { Layer = "suppression" });
+        LoadMemberships();
+    }
+
+    public ZabbixTargetMembershipSnapshot UpdateMembership(AggregationCommand command, string layer)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        var targetManagedKey = ZabbixManagedServiceMapper.ManagedKey(command.Target);
+        if (string.IsNullOrWhiteSpace(normalizedLayer) || string.IsNullOrWhiteSpace(targetManagedKey))
+        {
+            return new ZabbixTargetMembershipSnapshot();
+        }
+
+        lock (membershipLock)
+        {
+            var membershipKey = MembershipKey(normalizedLayer, targetManagedKey);
+            var membership = memberships.GetOrAdd(
+                membershipKey,
+                _ => new ZabbixTargetMembership
+                {
+                    Layer = normalizedLayer,
+                    TargetManagedKey = targetManagedKey,
+                    TargetClass = command.Target.ClassCode,
+                    TargetCardId = command.Target.CardId,
+                    TargetName = TargetObjectName(command)
+                });
+            membership.Layer = normalizedLayer;
+            membership.TargetManagedKey = targetManagedKey;
+            membership.TargetClass = command.Target.ClassCode;
+            membership.TargetCardId = command.Target.CardId;
+            membership.TargetName = TargetObjectName(command);
+            membership.AggregationType = TargetAttribute(command.Target.Attributes, "aggregation_type");
+            membership.Threshold = TargetAttribute(command.Target.Attributes, "threshold");
+            membership.N = TargetAttribute(command.Target.Attributes, "n");
+            membership.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            membership.Relations = command.Target.Relations
+                .Select(relation => new ZabbixMembershipRelation
+                {
+                    DomainCode = relation.DomainCode,
+                    TargetClassCode = relation.TargetClassCode,
+                    TargetLookup = relation.TargetLookup
+                })
+                .DistinctBy(relation => $"{relation.DomainCode}\u001f{relation.TargetClassCode}\u001f{relation.TargetLookup}", StringComparer.Ordinal)
+                .ToList();
+
+            var sourceKey = SourceMembershipKey(command.Source);
+            if (!string.IsNullOrWhiteSpace(sourceKey))
+            {
+                if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveMembership, StringComparison.OrdinalIgnoreCase))
+                {
+                    membership.Sources.Remove(sourceKey);
+                }
+                else if (string.IsNullOrWhiteSpace(command.Source.ZabbixHostId))
+                {
+                    membership.Sources.Remove(sourceKey);
+                }
+                else
+                {
+                    membership.Sources[sourceKey] = new ZabbixSourceMembership
+                    {
+                        SourceClass = command.Source.ClassCode,
+                        SourceCardId = command.Source.CardId,
+                        SourceKeyAttribute = command.Source.KeyAttribute,
+                        SourceKeyValue = command.Source.KeyValue,
+                        ZabbixHostId = command.Source.ZabbixHostId,
+                        SourceLeafManagedKey = ZabbixManagedServiceMapper.SourceLeafManagedKey(normalizedLayer, command.Source),
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    };
+                }
+            }
+
+            SaveMemberships();
+            return membership.ToSnapshot();
+        }
     }
 
     public void Record(ZabbixCommandApplyResult result)
@@ -349,6 +557,7 @@ public sealed class ZabbixApplyStateStore
             status.LastRuleName = result.RuleName;
             status.LastTargetClass = result.TargetClass;
             status.LastTargetKey = result.TargetKey;
+            status.LastMembership = result.Membership;
             status.CommandsReceived++;
             status.Reconcile.Add(result.Reconcile);
             if (string.Equals(result.Status, "dry-run", StringComparison.OrdinalIgnoreCase))
@@ -452,10 +661,319 @@ public sealed class ZabbixApplyStateStore
                 pendingManualCommands = status.PendingManualCommands,
                 errorCommands = status.ErrorCommands,
                 reconcile = status.Reconcile,
+                membership = status.LastMembership,
+                membershipTargets = MembershipSnapshots(layer),
                 errors = status.Errors.ToArray(),
                 warnings = status.Warnings.ToArray()
             };
         }
+    }
+
+    public IReadOnlyList<ZabbixTargetMembershipSnapshot> ListMemberships(string layer)
+    {
+        lock (membershipLock)
+        {
+            return memberships.Values
+                .Where(item => item.Layer.Equals(layer, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.TargetManagedKey, StringComparer.Ordinal)
+                .Select(item => item.ToSnapshot())
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<ZabbixManagedTriggerDependency> ListManagedTriggerDependencies(string layer)
+    {
+        lock (membershipLock)
+        {
+            return triggerDependencies.Values
+                .Where(item => item.Layer.Equals(layer, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.DependentTriggerId, StringComparer.Ordinal)
+                .ThenBy(item => item.DependencyTriggerId, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
+    public void ReplaceManagedTriggerDependencies(
+        string layer,
+        IReadOnlyList<ZabbixManagedTriggerDependency> dependencies)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        if (string.IsNullOrWhiteSpace(normalizedLayer))
+        {
+            return;
+        }
+
+        lock (membershipLock)
+        {
+            foreach (var key in triggerDependencies
+                .Where(pair => pair.Value.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.Key)
+                .ToArray())
+            {
+                triggerDependencies.TryRemove(key, out _);
+            }
+
+            foreach (var dependency in dependencies)
+            {
+                if (string.IsNullOrWhiteSpace(dependency.DependentTriggerId)
+                    || string.IsNullOrWhiteSpace(dependency.DependencyTriggerId))
+                {
+                    continue;
+                }
+
+                dependency.Layer = normalizedLayer;
+                dependency.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                triggerDependencies[TriggerDependencyKey(dependency)] = dependency;
+            }
+
+            SaveMemberships();
+        }
+    }
+
+    public void RecordTriggerDependencyRun(ZabbixTriggerDependencyRunResult result)
+    {
+        var status = triggerDependencyLayers.GetOrAdd(
+            result.Layer,
+            layer => new ZabbixTriggerDependencyLayerStatus { Layer = layer });
+        lock (status)
+        {
+            status.LastUpdatedAtUtc = result.CompletedAtUtc;
+            status.LastStatus = result.Status;
+            status.LastMode = result.DryRun ? "dry-run" : "apply";
+            status.LastMessage = result.Message;
+            status.DesiredDependencyCount = result.DesiredDependencyCount;
+            status.DependentTriggerCount = result.DependentTriggerCount;
+            status.DependencyTriggerCount = result.DependencyTriggerCount;
+            status.AggregateCount = result.AggregateCount;
+            status.AggregateHostsCreated = result.AggregateHostsCreated;
+            status.AggregateItemsCreated = result.AggregateItemsCreated;
+            status.AggregateItemsUpdated = result.AggregateItemsUpdated;
+            status.AggregateTriggersCreated = result.AggregateTriggersCreated;
+            status.AggregateTriggersUpdated = result.AggregateTriggersUpdated;
+            status.AggregateStatesPushed = result.AggregateStatesPushed;
+            status.TriggersToUpdate = result.TriggersToUpdate;
+            status.TriggersUpdated = result.TriggersUpdated;
+            status.DependenciesAdded = result.DependenciesAdded;
+            status.DependenciesRemoved = result.DependenciesRemoved;
+            status.PreservedManualDependencies = result.PreservedManualDependencies;
+            status.ManagedDependencyCount = ListManagedTriggerDependencies(result.Layer).Count;
+            status.Errors.Clear();
+            status.Errors.AddRange(result.Errors.Take(20));
+            status.Warnings.Clear();
+            status.Warnings.AddRange(result.Warnings.Take(20));
+            status.Samples.Clear();
+            status.Samples.AddRange(result.SampleDependencies.Take(20));
+            status.AggregateSamples.Clear();
+            status.AggregateSamples.AddRange(result.SampleAggregates.Take(20));
+        }
+    }
+
+    public object TriggerDependencySnapshot(
+        string layer,
+        ZabbixTriggerDependenciesOptions options)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        var status = triggerDependencyLayers.GetOrAdd(
+            string.IsNullOrWhiteSpace(normalizedLayer) ? "suppression" : normalizedLayer,
+            key => new ZabbixTriggerDependencyLayerStatus { Layer = key });
+        lock (status)
+        {
+            return new
+            {
+                layer = status.Layer,
+                enabled = options.Enabled,
+                includeDisabledTriggers = options.IncludeDisabledTriggers,
+                maxDependenciesPerRun = options.MaxDependenciesPerRun,
+                sampleLimit = options.SampleLimit,
+                lastUpdatedAt = status.LastUpdatedAtUtc,
+                lastStatus = status.LastStatus,
+                lastMode = status.LastMode,
+                lastMessage = status.LastMessage,
+                desiredDependencyCount = status.DesiredDependencyCount,
+                dependentTriggerCount = status.DependentTriggerCount,
+                dependencyTriggerCount = status.DependencyTriggerCount,
+                aggregateCount = status.AggregateCount,
+                aggregateHostsCreated = status.AggregateHostsCreated,
+                aggregateItemsCreated = status.AggregateItemsCreated,
+                aggregateItemsUpdated = status.AggregateItemsUpdated,
+                aggregateTriggersCreated = status.AggregateTriggersCreated,
+                aggregateTriggersUpdated = status.AggregateTriggersUpdated,
+                aggregateStatesPushed = status.AggregateStatesPushed,
+                triggersToUpdate = status.TriggersToUpdate,
+                triggersUpdated = status.TriggersUpdated,
+                dependenciesAdded = status.DependenciesAdded,
+                dependenciesRemoved = status.DependenciesRemoved,
+                preservedManualDependencies = status.PreservedManualDependencies,
+                managedDependencyCount = ListManagedTriggerDependencies(status.Layer).Count,
+                errors = status.Errors.ToArray(),
+                warnings = status.Warnings.ToArray(),
+                sampleDependencies = status.Samples.ToArray(),
+                sampleAggregates = status.AggregateSamples.ToArray()
+            };
+        }
+    }
+
+    private IReadOnlyList<ZabbixTargetMembershipSnapshot> MembershipSnapshots(string layer)
+    {
+        lock (membershipLock)
+        {
+            return memberships.Values
+                .Where(item => item.Layer.Equals(layer, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.TargetManagedKey, StringComparer.Ordinal)
+                .Take(50)
+                .Select(item => item.ToSnapshot())
+                .ToArray();
+        }
+    }
+
+    private void LoadMemberships()
+    {
+        try
+        {
+            if (!File.Exists(stateFilePath))
+            {
+                return;
+            }
+
+            var state = JsonSerializer.Deserialize<ZabbixApplyPersistentState>(
+                File.ReadAllText(stateFilePath),
+                StateJsonOptions);
+            if (state?.Memberships is null)
+            {
+                return;
+            }
+
+            foreach (var membership in state.Memberships)
+            {
+                if (string.IsNullOrWhiteSpace(membership.Layer)
+                    || string.IsNullOrWhiteSpace(membership.TargetManagedKey))
+                {
+                    continue;
+                }
+
+                memberships[MembershipKey(membership.Layer, membership.TargetManagedKey)] = membership;
+            }
+
+            foreach (var dependency in state.TriggerDependencies)
+            {
+                if (string.IsNullOrWhiteSpace(dependency.Layer)
+                    || string.IsNullOrWhiteSpace(dependency.DependentTriggerId)
+                    || string.IsNullOrWhiteSpace(dependency.DependencyTriggerId))
+                {
+                    continue;
+                }
+
+                triggerDependencies[TriggerDependencyKey(dependency)] = dependency;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            logger.LogWarning(ex, "Failed to load Zabbix apply membership state from {StateFilePath}", stateFilePath);
+        }
+    }
+
+    private void SaveMemberships()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(stateFilePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var state = new ZabbixApplyPersistentState
+            {
+                Memberships = memberships.Values
+                    .OrderBy(item => item.Layer, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.TargetManagedKey, StringComparer.Ordinal)
+                    .ToList(),
+                TriggerDependencies = triggerDependencies.Values
+                    .OrderBy(item => item.Layer, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.DependentTriggerId, StringComparer.Ordinal)
+                    .ThenBy(item => item.DependencyTriggerId, StringComparer.Ordinal)
+                    .ToList()
+            };
+            File.WriteAllText(stateFilePath, JsonSerializer.Serialize(state, StateJsonOptions));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(ex, "Failed to save Zabbix apply membership state to {StateFilePath}", stateFilePath);
+        }
+    }
+
+    private static string MembershipKey(string layer, string targetManagedKey)
+    {
+        return $"{layer}\u001f{targetManagedKey}";
+    }
+
+    private static string SourceMembershipKey(AggregationSourceObject source)
+    {
+        return string.IsNullOrWhiteSpace(source.ClassCode) || string.IsNullOrWhiteSpace(source.CardId)
+            ? ""
+            : $"{source.ClassCode}\u001f{source.CardId}";
+    }
+
+    private static string TriggerDependencyKey(ZabbixManagedTriggerDependency dependency)
+    {
+        return $"{dependency.Layer}\u001f{dependency.DependentTriggerId}\u001f{dependency.DependencyTriggerId}";
+    }
+
+    private static string TargetObjectName(AggregationCommand command)
+    {
+        if (!string.IsNullOrWhiteSpace(command.RuleName))
+        {
+            return command.RuleName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(command.Target.CardDescription))
+        {
+            return command.Target.CardDescription;
+        }
+
+        return string.IsNullOrWhiteSpace(command.Target.CardId)
+            ? command.Target.IdempotencyKey
+            : command.Target.CardId;
+    }
+
+    private static string TargetAttribute(IReadOnlyDictionary<string, object?> attributes, string name)
+    {
+        foreach (var attribute in attributes)
+        {
+            if (string.Equals(attribute.Key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScalarString(attribute.Value);
+            }
+        }
+
+        return "";
+    }
+
+    private static string ScalarString(object? value)
+    {
+        return value switch
+        {
+            null => "",
+            string text => text.Trim(),
+            bool boolean => boolean ? "true" : "false",
+            JsonElement element => JsonElementString(element),
+            IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            _ => value.ToString()?.Trim() ?? ""
+        };
+    }
+
+    private static string JsonElementString(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString()?.Trim() ?? "",
+            JsonValueKind.Number => element.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => ""
+        };
     }
 }
 
@@ -481,6 +999,8 @@ public sealed class ZabbixLayerApplyStatus
 
     public string LastTargetKey { get; set; } = "";
 
+    public ZabbixTargetMembershipSnapshot LastMembership { get; set; } = new();
+
     public int CommandsReceived { get; set; }
 
     public int DryRunCommands { get; set; }
@@ -502,6 +1022,217 @@ public sealed class ZabbixLayerApplyStatus
     public List<string> Errors { get; } = [];
 
     public List<string> Warnings { get; } = [];
+}
+
+public sealed class ZabbixApplyStateOptions
+{
+    public const string SectionName = "ZabbixApplyState";
+
+    public string FilePath { get; init; } = "state/zabbixconfig2api/apply-membership.json";
+}
+
+public sealed class ZabbixApplyPersistentState
+{
+    public List<ZabbixTargetMembership> Memberships { get; init; } = [];
+
+    public List<ZabbixManagedTriggerDependency> TriggerDependencies { get; init; } = [];
+}
+
+public sealed class ZabbixTargetMembership
+{
+    public string Layer { get; set; } = "";
+
+    public string TargetManagedKey { get; set; } = "";
+
+    public string TargetClass { get; set; } = "";
+
+    public string TargetCardId { get; set; } = "";
+
+    public string TargetName { get; set; } = "";
+
+    public string AggregationType { get; set; } = "";
+
+    public string Threshold { get; set; } = "";
+
+    public string N { get; set; } = "";
+
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    public Dictionary<string, ZabbixSourceMembership> Sources { get; set; } = new(StringComparer.Ordinal);
+
+    public List<ZabbixMembershipRelation> Relations { get; set; } = [];
+
+    public ZabbixTargetMembershipSnapshot ToSnapshot()
+    {
+        var sources = Sources.Values
+            .OrderBy(item => item.SourceClass, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.SourceKeyValue, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.SourceCardId, StringComparer.Ordinal)
+            .ToArray();
+        return new ZabbixTargetMembershipSnapshot
+        {
+            Layer = Layer,
+            TargetManagedKey = TargetManagedKey,
+            TargetClass = TargetClass,
+            TargetCardId = TargetCardId,
+            TargetName = TargetName,
+            AggregationType = AggregationType,
+            Threshold = Threshold,
+            N = N,
+            SourceCount = sources.Length,
+            HostBindingCount = sources.Count(item => !string.IsNullOrWhiteSpace(item.ZabbixHostId)),
+            MissingHostBindingCount = sources.Count(item => string.IsNullOrWhiteSpace(item.ZabbixHostId)),
+            SourceLeafManagedKeys = sources
+                .Select(item => item.SourceLeafManagedKey)
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray(),
+            Sources = sources,
+            Relations = Relations.ToArray(),
+            UpdatedAtUtc = UpdatedAtUtc
+        };
+    }
+}
+
+public sealed class ZabbixTargetMembershipSnapshot
+{
+    public string Layer { get; init; } = "";
+
+    public string TargetManagedKey { get; init; } = "";
+
+    public string TargetClass { get; init; } = "";
+
+    public string TargetCardId { get; init; } = "";
+
+    public string TargetName { get; init; } = "";
+
+    public string AggregationType { get; init; } = "";
+
+    public string Threshold { get; init; } = "";
+
+    public string N { get; init; } = "";
+
+    public int SourceCount { get; init; }
+
+    public int HostBindingCount { get; init; }
+
+    public int MissingHostBindingCount { get; init; }
+
+    public IReadOnlyList<string> SourceLeafManagedKeys { get; init; } = [];
+
+    public IReadOnlyList<ZabbixSourceMembership> Sources { get; init; } = [];
+
+    public IReadOnlyList<ZabbixMembershipRelation> Relations { get; init; } = [];
+
+    public DateTimeOffset UpdatedAtUtc { get; init; }
+}
+
+public sealed class ZabbixSourceMembership
+{
+    public string SourceClass { get; init; } = "";
+
+    public string SourceCardId { get; init; } = "";
+
+    public string SourceKeyAttribute { get; init; } = "";
+
+    public string SourceKeyValue { get; init; } = "";
+
+    public string ZabbixHostId { get; init; } = "";
+
+    public string SourceLeafManagedKey { get; init; } = "";
+
+    public DateTimeOffset UpdatedAtUtc { get; init; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class ZabbixMembershipRelation
+{
+    public string DomainCode { get; init; } = "";
+
+    public string TargetClassCode { get; init; } = "";
+
+    public string TargetLookup { get; init; } = "";
+}
+
+public sealed class ZabbixManagedTriggerDependency
+{
+    public string Layer { get; set; } = "";
+
+    public string DependentTriggerId { get; init; } = "";
+
+    public string DependencyTriggerId { get; init; } = "";
+
+    public string DependentTriggerName { get; init; } = "";
+
+    public string DependencyTriggerName { get; init; } = "";
+
+    public string DependentHostId { get; init; } = "";
+
+    public string DependencyHostId { get; init; } = "";
+
+    public string DependentTargetManagedKey { get; init; } = "";
+
+    public string DependencyTargetManagedKey { get; init; } = "";
+
+    public string DependentTargetName { get; init; } = "";
+
+    public string DependencyTargetName { get; init; } = "";
+
+    public string RelationDomainCode { get; init; } = "";
+
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class ZabbixTriggerDependencyLayerStatus
+{
+    public string Layer { get; init; } = "";
+
+    public DateTimeOffset? LastUpdatedAtUtc { get; set; }
+
+    public string LastStatus { get; set; } = "";
+
+    public string LastMode { get; set; } = "";
+
+    public string LastMessage { get; set; } = "";
+
+    public int DesiredDependencyCount { get; set; }
+
+    public int DependentTriggerCount { get; set; }
+
+    public int DependencyTriggerCount { get; set; }
+
+    public int AggregateCount { get; set; }
+
+    public int AggregateHostsCreated { get; set; }
+
+    public int AggregateItemsCreated { get; set; }
+
+    public int AggregateItemsUpdated { get; set; }
+
+    public int AggregateTriggersCreated { get; set; }
+
+    public int AggregateTriggersUpdated { get; set; }
+
+    public int AggregateStatesPushed { get; set; }
+
+    public int TriggersToUpdate { get; set; }
+
+    public int TriggersUpdated { get; set; }
+
+    public int DependenciesAdded { get; set; }
+
+    public int DependenciesRemoved { get; set; }
+
+    public int PreservedManualDependencies { get; set; }
+
+    public int ManagedDependencyCount { get; set; }
+
+    public List<string> Errors { get; } = [];
+
+    public List<string> Warnings { get; } = [];
+
+    public List<ZabbixTriggerDependencyPlanItem> Samples { get; } = [];
+
+    public List<ZabbixSuppressionAggregatePlanItem> AggregateSamples { get; } = [];
 }
 
 public sealed class ZabbixCommandApplyResult
@@ -546,6 +1277,14 @@ public sealed class ZabbixCommandApplyResult
 
     public int RelationsDeferred { get; set; }
 
+    public int SourceLeafServicesApplied { get; set; }
+
+    public int ProblemTagsApplied { get; set; }
+
+    public int HostTagsApplied { get; set; }
+
+    public ZabbixTargetMembershipSnapshot Membership { get; set; } = new();
+
     public IReadOnlyList<string> Warnings { get; set; } = [];
 
     public DateTimeOffset AppliedAtUtc { get; set; }
@@ -557,6 +1296,12 @@ public sealed class ZabbixReconcileCounters
 
     public int EnsureRelations { get; set; }
 
+    public int EnsureSourceLeafServices { get; set; }
+
+    public int EnsureProblemTags { get; set; }
+
+    public int EnsureHostTags { get; set; }
+
     public int RemoveObjects { get; set; }
 
     public int RemoveRelations { get; set; }
@@ -565,6 +1310,9 @@ public sealed class ZabbixReconcileCounters
     {
         EnsureObjects += counters.EnsureObjects;
         EnsureRelations += counters.EnsureRelations;
+        EnsureSourceLeafServices += counters.EnsureSourceLeafServices;
+        EnsureProblemTags += counters.EnsureProblemTags;
+        EnsureHostTags += counters.EnsureHostTags;
         RemoveObjects += counters.RemoveObjects;
         RemoveRelations += counters.RemoveRelations;
     }

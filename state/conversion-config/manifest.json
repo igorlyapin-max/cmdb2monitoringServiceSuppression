@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "version": 37,
-  "etag": "6539446278fec536be7fa8f99da8533ed6e5c55332aea1e5045d0a9de1fc200b",
-  "savedAt": "2026-05-12T07:39:53.775Z",
+  "version": 38,
+  "etag": "1480055a5379af57b4dcca31d694d00e606edb107e8daf96577991d05324f3e5",
+  "savedAt": "2026-05-12T12:42:36.731Z",
   "prefix": "C2M_",
   "writer": "monitoring-ui-api",
   "files": {

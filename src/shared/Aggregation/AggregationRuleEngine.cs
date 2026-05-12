@@ -9,6 +9,32 @@ namespace Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 public sealed class AggregationRuleEngine
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string[] DefaultSourceZabbixHostIdFields =
+    [
+        "zabbix_main_hostid",
+        "zabbixMainHostId",
+        "zabbix_main_host_id",
+        "zabbix_hostid",
+        "zabbixHostId",
+        "zabbix_host_id",
+        "hostid",
+        "host_id"
+    ];
+
+    private readonly string[] sourceZabbixHostIdFields;
+
+    public AggregationRuleEngine(string? zabbixHostIdAttribute = null)
+    {
+        var configuredAttribute = string.IsNullOrWhiteSpace(zabbixHostIdAttribute)
+            ? "zabbix_main_hostid"
+            : zabbixHostIdAttribute.Trim();
+        sourceZabbixHostIdFields = new[] { configuredAttribute }
+            .Concat(DefaultSourceZabbixHostIdFields)
+            .Where(field => !string.IsNullOrWhiteSpace(field))
+            .Select(field => field.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
 
     public IReadOnlyList<AggregationCommand> BuildCommands(
         CmdbRawEvent rawEvent,
@@ -44,7 +70,7 @@ public sealed class AggregationRuleEngine
             .ToArray();
     }
 
-    private static AggregationCommand BuildCommand(CmdbRawEvent rawEvent, ConversionRule rule)
+    private AggregationCommand BuildCommand(CmdbRawEvent rawEvent, ConversionRule rule)
     {
         var isDelete = rawEvent.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase);
         var keyAttribute = rule.Source.KeyAttribute
@@ -89,7 +115,9 @@ public sealed class AggregationRuleEngine
                 ClassCode = rawEvent.ClassCode,
                 CardId = rawEvent.CardId,
                 KeyAttribute = keyAttribute,
-                KeyValue = keyValue
+                KeyValue = keyValue,
+                ZabbixHostId = SourceZabbixHostId(rawEvent),
+                Attributes = new Dictionary<string, string>(rawEvent.Attributes, StringComparer.OrdinalIgnoreCase)
             },
             Target = new AggregationTargetObject
             {
@@ -224,6 +252,20 @@ public sealed class AggregationRuleEngine
         }
 
         return rawEvent.Attributes.TryGetValue(field, out var value) ? value : "";
+    }
+
+    private string SourceZabbixHostId(CmdbRawEvent rawEvent)
+    {
+        foreach (var field in sourceZabbixHostIdFields)
+        {
+            var value = ReadField(rawEvent, field);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return "";
     }
 
     private static string BuildSemanticKey(CmdbRawEvent rawEvent, ConversionRule rule)

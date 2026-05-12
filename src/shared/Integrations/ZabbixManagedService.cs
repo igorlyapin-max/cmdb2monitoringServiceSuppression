@@ -21,6 +21,12 @@ public sealed record ZabbixManagedServiceDefinition
 
     public string SourceCardId { get; init; } = "";
 
+    public string SourceKeyAttribute { get; init; } = "";
+
+    public string SourceKeyValue { get; init; } = "";
+
+    public string SourceZabbixHostId { get; init; } = "";
+
     public string Name { get; init; } = "";
 
     public string Description { get; init; } = "";
@@ -32,6 +38,10 @@ public sealed record ZabbixManagedServiceDefinition
     public int Weight { get; init; }
 
     public IReadOnlyList<ZabbixManagedServiceRelation> Relations { get; init; } = [];
+
+    public IReadOnlyList<string> ChildManagedKeys { get; init; } = [];
+
+    public IReadOnlyList<ZabbixProblemTag> ProblemTags { get; init; } = [];
 
     public IReadOnlyDictionary<string, string> Tags { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
@@ -48,6 +58,8 @@ public sealed record ZabbixManagedServiceRelation
 
 public sealed record ZabbixServiceTag(string Tag, string Value);
 
+public sealed record ZabbixProblemTag(string Tag, string Value, int Operator = ZabbixProblemTagOperators.Equal);
+
 public sealed record ZabbixServiceInfo
 {
     public string ServiceId { get; init; } = "";
@@ -62,6 +74,89 @@ public sealed record ZabbixServiceInfo
     public IReadOnlyList<ZabbixServiceInfo> Parents { get; init; } = [];
 }
 
+public sealed record ZabbixHostInfo
+{
+    public string HostId { get; init; } = "";
+
+    public string Host { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public IReadOnlyList<ZabbixServiceTag> Tags { get; init; } = [];
+}
+
+public sealed record ZabbixTriggerInfo
+{
+    public string TriggerId { get; init; } = "";
+
+    public string Description { get; init; } = "";
+
+    public string Status { get; init; } = "";
+
+    public string Priority { get; init; } = "";
+
+    public string Value { get; init; } = "";
+
+    public IReadOnlyList<ZabbixHostInfo> Hosts { get; init; } = [];
+
+    public IReadOnlyList<ZabbixTriggerDependencyInfo> Dependencies { get; init; } = [];
+}
+
+public sealed record ZabbixTriggerDependencyInfo
+{
+    public string TriggerId { get; init; } = "";
+
+    public string Description { get; init; } = "";
+}
+
+public sealed record ZabbixSuppressionAggregateDefinition
+{
+    public string Layer { get; init; } = "suppression";
+
+    public string TargetManagedKey { get; init; } = "";
+
+    public string TargetClass { get; init; } = "";
+
+    public string TargetCardId { get; init; } = "";
+
+    public string TargetName { get; init; } = "";
+
+    public string AggregationType { get; init; } = "";
+
+    public string HostGroupName { get; init; } = "";
+
+    public string HostName { get; init; } = "";
+
+    public string HostVisibleName { get; init; } = "";
+
+    public string ItemKey { get; init; } = "";
+
+    public string ItemName { get; init; } = "";
+
+    public string TriggerName { get; init; } = "";
+
+    public int TriggerPriority { get; init; }
+
+    public int StateValue { get; init; }
+}
+
+public sealed record ZabbixSuppressionAggregateApplyResult
+{
+    public string HostId { get; init; } = "";
+
+    public string ItemId { get; init; } = "";
+
+    public string TriggerId { get; init; } = "";
+
+    public string HostAction { get; init; } = "";
+
+    public string ItemAction { get; init; } = "";
+
+    public string TriggerAction { get; init; } = "";
+
+    public bool StatePushed { get; init; }
+}
+
 public sealed record ZabbixManagedServiceApplyResult
 {
     public bool Success { get; init; }
@@ -74,6 +169,12 @@ public sealed record ZabbixManagedServiceApplyResult
 
     public int RelationsDeferred { get; init; }
 
+    public int SourceLeafServicesApplied { get; init; }
+
+    public int ProblemTagsApplied { get; init; }
+
+    public int HostTagsApplied { get; init; }
+
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
@@ -84,6 +185,13 @@ public static class ZabbixServiceAlgorithms
     public const int MostCriticalIfAllChildrenHaveProblems = 1;
 
     public const int MostCriticalOfChildren = 2;
+}
+
+public static class ZabbixProblemTagOperators
+{
+    public const int Equal = 0;
+
+    public const int Contains = 2;
 }
 
 public static class ZabbixManagedServiceTags
@@ -105,11 +213,26 @@ public static class ZabbixManagedServiceTags
     public const string SourceClass = "cmdb2monitoring:source_class";
 
     public const string SourceCardId = "cmdb2monitoring:source_card_id";
+
+    public const string SourceKeyAttribute = "cmdb2monitoring:source_key_attribute";
+
+    public const string SourceKeyValue = "cmdb2monitoring:source_key_value";
+
+    public const string SourceZabbixHostId = "cmdb2monitoring:source_hostid";
+
+    public const string SourceLeaf = "cmdb2monitoring:source_leaf";
+
+    public const string Aggregate = "cmdb2monitoring:aggregate";
+
+    public const string AggregateKind = "cmdb2monitoring:aggregate_kind";
 }
 
 public static class ZabbixManagedServiceMapper
 {
-    public static ZabbixManagedServiceDefinition FromAggregationCommand(AggregationCommand command, string layer)
+    public static ZabbixManagedServiceDefinition FromAggregationCommand(
+        AggregationCommand command,
+        string layer,
+        IReadOnlyList<string>? childManagedKeys = null)
     {
         var managedKey = ManagedKey(command.Target);
         var name = ServiceDisplayName(command, managedKey);
@@ -133,6 +256,9 @@ public static class ZabbixManagedServiceMapper
             RuleName = command.RuleName,
             SourceClass = command.Source.ClassCode,
             SourceCardId = command.Source.CardId,
+            SourceKeyAttribute = command.Source.KeyAttribute,
+            SourceKeyValue = command.Source.KeyValue,
+            SourceZabbixHostId = command.Source.ZabbixHostId,
             Name = Trim(name, 255),
             Description = Trim(description, 2048),
             Algorithm = ServiceAlgorithm(command.Target.Attributes),
@@ -146,8 +272,91 @@ public static class ZabbixManagedServiceMapper
                     TargetLookup = relation.TargetLookup
                 })
                 .ToArray(),
+            ChildManagedKeys = (childManagedKeys ?? [])
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray(),
             Tags = tags
         };
+    }
+
+    public static ZabbixManagedServiceDefinition FromSourceBinding(AggregationCommand command, string layer)
+    {
+        var managedKey = SourceLeafManagedKey(layer, command.Source);
+        var name = SourceLeafDisplayName(command.Source);
+        var tags = HostProblemBindingTags(command.Source)
+            .Where(item => !string.IsNullOrWhiteSpace(item.Value))
+            .Concat(new[]
+            {
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.Managed, "true"),
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.Layer, layer),
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.Class, command.Source.ClassCode),
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.Key, managedKey),
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceLeaf, "true")
+            })
+            .GroupBy(item => item.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => Trim(group.Last().Value, 255), StringComparer.Ordinal);
+
+        AddTag(tags, ZabbixManagedServiceTags.CardId, command.Source.CardId);
+        AddTag(tags, ZabbixManagedServiceTags.RuleId, command.RuleId);
+        AddTag(tags, ZabbixManagedServiceTags.RuleName, command.RuleName);
+
+        return new ZabbixManagedServiceDefinition
+        {
+            Layer = layer,
+            ManagedKey = managedKey,
+            ClassCode = command.Source.ClassCode,
+            CardId = command.Source.CardId,
+            RuleId = command.RuleId,
+            RuleName = command.RuleName,
+            SourceClass = command.Source.ClassCode,
+            SourceCardId = command.Source.CardId,
+            SourceKeyAttribute = command.Source.KeyAttribute,
+            SourceKeyValue = command.Source.KeyValue,
+            SourceZabbixHostId = command.Source.ZabbixHostId,
+            Name = Trim(name, 255),
+            Description = Trim($"CMDBuild source object for Zabbix problem binding: {name}", 2048),
+            Algorithm = ZabbixServiceAlgorithms.MostCriticalOfChildren,
+            Tags = tags,
+            ProblemTags = ProblemTagsForSource(command.Source)
+        };
+    }
+
+    public static string SourceLeafManagedKey(string layer, AggregationSourceObject source)
+    {
+        return string.Join(
+            ":",
+            new[]
+            {
+                "source",
+                string.IsNullOrWhiteSpace(layer) ? "unknown" : layer.Trim(),
+                string.IsNullOrWhiteSpace(source.ClassCode) ? "unknown" : source.ClassCode.Trim(),
+                string.IsNullOrWhiteSpace(source.CardId) ? "unknown" : source.CardId.Trim()
+            });
+    }
+
+    public static IReadOnlyDictionary<string, string> HostTagsForSource(AggregationSourceObject source)
+    {
+        return HostProblemBindingTags(source)
+            .Where(item => !string.IsNullOrWhiteSpace(item.Value))
+            .GroupBy(item => item.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => Trim(group.Last().Value, 255), StringComparer.Ordinal);
+    }
+
+    public static IReadOnlyList<ZabbixProblemTag> ProblemTagsForSource(AggregationSourceObject source)
+    {
+        if (string.IsNullOrWhiteSpace(source.ZabbixHostId))
+        {
+            return [];
+        }
+
+        return
+        [
+            new ZabbixProblemTag(
+                ZabbixManagedServiceTags.SourceZabbixHostId,
+                Trim(source.ZabbixHostId, 255),
+                ZabbixProblemTagOperators.Equal)
+        ];
     }
 
     public static string ManagedKey(AggregationTargetObject target)
@@ -214,11 +423,36 @@ public static class ZabbixManagedServiceMapper
         AddTag(tags, ZabbixManagedServiceTags.RuleName, command.RuleName);
         AddTag(tags, ZabbixManagedServiceTags.SourceClass, command.Source.ClassCode);
         AddTag(tags, ZabbixManagedServiceTags.SourceCardId, command.Source.CardId);
+        AddTag(tags, ZabbixManagedServiceTags.SourceKeyAttribute, command.Source.KeyAttribute);
+        AddTag(tags, ZabbixManagedServiceTags.SourceKeyValue, command.Source.KeyValue);
+        AddTag(tags, ZabbixManagedServiceTags.SourceZabbixHostId, command.Source.ZabbixHostId);
         AddTag(tags, "cmdb2monitoring:aggregation_type", FirstAttribute(command.Target.Attributes, "aggregation_type"));
         AddTag(tags, "cmdb2monitoring:is_critical", FirstAttribute(command.Target.Attributes, "is_critical"));
         AddTag(tags, "cmdb2monitoring:threshold", FirstAttribute(command.Target.Attributes, "threshold"));
         AddTag(tags, "cmdb2monitoring:n", FirstAttribute(command.Target.Attributes, "n"));
         return tags;
+    }
+
+    private static IEnumerable<KeyValuePair<string, string>> HostProblemBindingTags(AggregationSourceObject source)
+    {
+        yield return new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceClass, source.ClassCode);
+        yield return new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceCardId, source.CardId);
+        yield return new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceKeyAttribute, source.KeyAttribute);
+        yield return new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceKeyValue, source.KeyValue);
+        yield return new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceZabbixHostId, source.ZabbixHostId);
+    }
+
+    private static string SourceLeafDisplayName(AggregationSourceObject source)
+    {
+        var key = string.IsNullOrWhiteSpace(source.KeyValue) || source.KeyValue.Equals(source.CardId, StringComparison.OrdinalIgnoreCase)
+            ? source.CardId
+            : source.KeyValue;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            key = "unknown";
+        }
+
+        return $"{source.ClassCode} / {key}";
     }
 
     private static int ServiceAlgorithm(IReadOnlyDictionary<string, object?> attributes)

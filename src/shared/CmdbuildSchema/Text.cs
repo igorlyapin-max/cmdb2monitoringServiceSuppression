@@ -107,6 +107,7 @@ internal static class Text
                 "service_depends_on" => "Suggested so platform services can depend on the custom service entity.",
                 "suppression_resource_dependency" => "Suggested so suppression resources can depend on the custom suppression entity.",
                 "suppression_network_dependency" => "Suggested to keep the custom suppression entity tied to network access.",
+                "suppression_suppresses_resource" => "Suggested so the custom suppression entity can suppress generated suppression resources.",
                 _ => "Suggested by schema setup."
             };
         }
@@ -118,6 +119,7 @@ internal static class Text
             "service_depends_on" => "Предлагается, чтобы платформенные сервисы могли зависеть от пользовательской сервисной сущности.",
             "suppression_resource_dependency" => "Предлагается, чтобы ресурсы suppression могли зависеть от пользовательской сущности подавления.",
             "suppression_network_dependency" => "Предлагается, чтобы пользовательская suppression-сущность была связана с сетевым доступом.",
+            "suppression_suppresses_resource" => "Предлагается, чтобы пользовательская suppression-сущность могла подавлять сгенерированные ресурсы suppression.",
             _ => "Предложено мастером подготовки схемы."
         };
     }

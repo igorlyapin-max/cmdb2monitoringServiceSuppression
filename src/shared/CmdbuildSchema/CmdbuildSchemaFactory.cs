@@ -287,7 +287,12 @@ public sealed class CmdbuildSchemaFactory
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionResourceDependsOnStoragePool", "depends_on", classes["SuppressionResource"], classes["SuppressionStoragePool"]),
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionResourceMonitoredViaProxyGroup", "monitored_via", classes["SuppressionResource"], classes["SuppressionProxyGroup"]),
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionComputeDependsOnStoragePool", "depends_on", classes["SuppressionComputeCluster"], classes["SuppressionStoragePool"]),
-            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionNetworkZoneDependsOnNetworkZone", "depends_on_network", classes["SuppressionNetworkAccessZone"], classes["SuppressionNetworkAccessZone"])
+            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionNetworkZoneDependsOnNetworkZone", "depends_on_network", classes["SuppressionNetworkAccessZone"], classes["SuppressionNetworkAccessZone"]),
+            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionResourceSuppressesResource", "depends_on", classes["SuppressionResource"], classes["SuppressionResource"]),
+            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionNetworkZoneSuppressesResource", "depends_on", classes["SuppressionNetworkAccessZone"], classes["SuppressionResource"]),
+            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionComputeSuppressesResource", "depends_on", classes["SuppressionComputeCluster"], classes["SuppressionResource"]),
+            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionStoragePoolSuppressesResource", "depends_on", classes["SuppressionStoragePool"], classes["SuppressionResource"]),
+            Domain(prefix, language, BuilderLayer.Suppression, "SuppressionProxyGroupSuppressesResource", "depends_on", classes["SuppressionProxyGroup"], classes["SuppressionResource"])
         ];
     }
 
@@ -456,6 +461,20 @@ public sealed class CmdbuildSchemaFactory
                 customClass,
                 networkZone,
                 Text.SuggestedDomainReason("suppression_network_dependency", language));
+        }
+
+        if (classes.TryGetValue("SuppressionResource", out suppressionResource)
+            && !string.Equals(baseCode, "SuppressionResource", StringComparison.Ordinal))
+        {
+            yield return SuggestedDomain(
+                prefix,
+                language,
+                layer,
+                $"{baseCode}SuppressesSuppressionResource",
+                "depends_on",
+                customClass,
+                suppressionResource,
+                Text.SuggestedDomainReason("suppression_suppresses_resource", language));
         }
     }
 

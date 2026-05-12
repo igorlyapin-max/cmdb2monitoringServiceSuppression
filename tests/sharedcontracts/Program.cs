@@ -73,11 +73,16 @@ AssertModelRoots(schema, "/Мониторинг", "/Мониторинг");
 Assert(schema.Domains.Count > 0, "domains are missing");
 Assert(schema.Domains.All(d => d.DeleteRelationOnCardDelete), "all domains must delete relation on linked card delete");
 Assert(schema.Domains.All(d => d.Help.Contains("удалять связь", StringComparison.Ordinal)), "domain delete help is missing");
-Assert(schema.SuggestedDomains.Count >= 3, "suggested domains are missing");
+Assert(schema.SuggestedDomains.Count >= 4, "suggested domains are missing");
 Assert(schema.SuggestedDomains.All(d => d.Suggested), "suggested domains must be marked as suggested");
 Assert(schema.SuggestedDomains.All(d => !string.IsNullOrWhiteSpace(d.Reason)), "suggested domains must explain the reason");
 Assert(schema.SuggestedDomains.Any(d => d.TargetClassCode == "C2M_ServiceApplicationCluster"), "custom service suggested domain is missing");
 Assert(schema.SuggestedDomains.Any(d => d.TargetClassCode == "C2M_SuppressionFirewallGroup"), "custom suppression suggested domain is missing");
+Assert(schema.SuggestedDomains.Any(d =>
+        d.SourceClassCode == "C2M_SuppressionFirewallGroup"
+        && d.TargetClassCode == "C2M_SuppressionResource"
+        && d.RelationType == "depends_on"),
+    "custom suppression entity must be able to point to suppressed resources.");
 AssertServiceAggregationLookup(schema);
 AssertServiceTypeLookup(schema);
 AssertAttributeValidationRules(schema);
@@ -152,6 +157,27 @@ AssertDomainAttributes(
     "C2M_SuppressionResourceMonitoredViaProxyGroup",
     present: ["is_active", "priority", "source"],
     absent: ["fallback_supported", "is_critical", "is_dynamic"]);
+foreach (var (domainCode, sourceClassCode) in new[]
+{
+    ("C2M_SuppressionResourceSuppressesResource", "C2M_SuppressionResource"),
+    ("C2M_SuppressionNetworkZoneSuppressesResource", "C2M_SuppressionNetworkAccessZone"),
+    ("C2M_SuppressionComputeSuppressesResource", "C2M_SuppressionComputeCluster"),
+    ("C2M_SuppressionStoragePoolSuppressesResource", "C2M_SuppressionStoragePool"),
+    ("C2M_SuppressionProxyGroupSuppressesResource", "C2M_SuppressionProxyGroup")
+})
+{
+    AssertDomainAttributes(
+        schema,
+        domainCode,
+        present: ["is_active", "priority", "source"],
+        absent: ["fallback_supported", "is_critical", "is_dynamic"]);
+    Assert(schema.Domains.Any(domain =>
+            domain.Code == domainCode
+            && domain.SourceClassCode == sourceClassCode
+            && domain.TargetClassCode == "C2M_SuppressionResource"
+            && domain.RelationType == "depends_on"),
+        $"{sourceClassCode} must be able to point to suppressed resources.");
+}
 AssertDomainAttributes(
     schema,
     "C2M_ServicePlatformDependsOnDatabase",
@@ -274,7 +300,10 @@ var validation = new ConversionRulesValidator().Validate(new ConversionRulesDocu
 Assert(validation.IsValid, "sample conversion rule must be valid");
 AssertApplyModeContract();
 AssertRouterCoreAggregationContract();
+AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
+await AssertZabbixManagedServiceClientCreatesTaggedServiceAsync();
+await AssertZabbixManagedServiceClientClearsChildrenAsync();
 await AssertCmdbuildApplyCreatesSourceLinkAsync();
 
 Console.WriteLine("Shared contract checks passed.");
@@ -318,6 +347,120 @@ static void AssertRouterCoreAggregationContract()
     Assert(cityCommand.Target.Relations[0].DomainCode == "C2M_ServiceNetworkZoneDependsOnNetworkZone",
         "city command managed relation domain is invalid.");
     Assert(cityCommand.Target.Relations[0].TargetLookup == "576100", "city command must link to the core-router target.");
+}
+
+static void AssertZabbixManagedServiceMappingContract()
+{
+    var commands = BuildRouterCorePlans("City04").Select(plan => plan.Command).ToArray();
+    var coreCommand = commands.Single(command => command.RuleId == "core-router");
+    var cityCommand = commands.Single(command => command.RuleId == "network-access-zone-by-city-routercore-city04");
+
+    var coreService = ZabbixManagedServiceMapper.FromAggregationCommand(coreCommand, "service");
+    Assert(coreService.ManagedKey == "cmdbuild:C2M_ServiceNetworkAccessZone:576100",
+        "static target must use the CMDBuild card idempotency key as Zabbix managed key.");
+    Assert(coreService.CardId == "576100", "static target must keep CMDBuild card id tag value.");
+    Assert(coreService.Name == "Маршрутизаторы ядра", "static target service name is invalid.");
+    Assert(coreService.Tags[ZabbixManagedServiceTags.Managed] == "true", "managed Zabbix service tag is missing.");
+    Assert(coreService.Tags[ZabbixManagedServiceTags.Layer] == "service", "Zabbix service layer tag is invalid.");
+    Assert(coreService.Tags[ZabbixManagedServiceTags.Class] == "C2M_ServiceNetworkAccessZone", "Zabbix service class tag is invalid.");
+    Assert(coreService.Tags[ZabbixManagedServiceTags.CardId] == "576100", "Zabbix service card id tag is invalid.");
+    Assert(coreService.Algorithm == ZabbixServiceAlgorithms.MostCriticalOfChildren,
+        "aggregation_type=any must map to the Zabbix most-critical-of-children algorithm.");
+
+    var cityService = ZabbixManagedServiceMapper.FromAggregationCommand(cityCommand, "service");
+    Assert(cityService.ManagedKey == "network-access-zone-by-city:City04",
+        "dynamic target must use the generated idempotency key as Zabbix managed key.");
+    Assert(cityService.Name == "Уровень коммутации / City04",
+        "dynamic target Zabbix service name must use the user-visible rule name.");
+    Assert(cityService.Relations.Count == 1, "dynamic city target must expose one Zabbix child relation.");
+    Assert(cityService.Relations[0].TargetLookup == "576100", "Zabbix relation must keep the CMDBuild target lookup.");
+    Assert(ZabbixManagedServiceMapper.LookupCandidates("C2M_ServiceNetworkAccessZone", "576100")
+        .Contains("cmdbuild:C2M_ServiceNetworkAccessZone:576100", StringComparer.Ordinal),
+        "Zabbix relation lookup candidates must include CMDBuild card idempotency key fallback.");
+}
+
+static async Task AssertZabbixManagedServiceClientCreatesTaggedServiceAsync()
+{
+    var command = BuildRouterCorePlans("City04")
+        .Select(plan => plan.Command)
+        .Single(command => command.RuleId == "core-router");
+    var handler = new DiagnosticZabbixHandler();
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyManagedServiceAsync(
+        ZabbixManagedServiceMapper.FromAggregationCommand(command, "service"),
+        CancellationToken.None);
+    Assert(result.Success, "Zabbix managed service apply result must be successful.");
+    Assert(result.Action == "created", "Zabbix managed service action must be created.");
+    Assert(result.ServiceId == "9001", "Zabbix service id must be returned from service.create.");
+
+    var payloadText = handler.CreatePayload
+        ?? throw new InvalidOperationException("Zabbix service.create payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var payload = document.RootElement;
+    Assert(JsonString(payload, "method") == "service.create", "Zabbix method must be service.create.");
+    var parameters = payload.GetProperty("params");
+    Assert(JsonString(parameters, "name") == "Маршрутизаторы ядра", "Zabbix service.create name is invalid.");
+    Assert(parameters.GetProperty("algorithm").GetInt32() == ZabbixServiceAlgorithms.MostCriticalOfChildren,
+        "Zabbix service.create algorithm is invalid.");
+    Assert(parameters.GetProperty("sortorder").GetInt32() == 0, "Zabbix service.create sortorder is invalid.");
+
+    var tags = parameters.GetProperty("tags")
+        .EnumerateArray()
+        .ToDictionary(tag => JsonString(tag, "tag"), tag => JsonString(tag, "value"), StringComparer.Ordinal);
+    Assert(tags[ZabbixManagedServiceTags.Managed] == "true", "Zabbix service.create managed tag is missing.");
+    Assert(tags[ZabbixManagedServiceTags.Key] == "cmdbuild:C2M_ServiceNetworkAccessZone:576100",
+        "Zabbix service.create managed key tag is invalid.");
+    Assert(tags[ZabbixManagedServiceTags.CardId] == "576100", "Zabbix service.create card id tag is invalid.");
+}
+
+static async Task AssertZabbixManagedServiceClientClearsChildrenAsync()
+{
+    var handler = new DiagnosticZabbixHandler { ExistingManagedService = true };
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyManagedServiceAsync(
+        new ZabbixManagedServiceDefinition
+        {
+            Layer = "suppression",
+            ManagedKey = "rule:City04",
+            ClassCode = "C2M_SuppressionResource",
+            RuleId = "suppression-rule-arm-city04",
+            RuleName = "Рабочие места / City04",
+            Name = "Рабочие места / City04"
+        },
+        CancellationToken.None);
+
+    Assert(result.Success, "Zabbix managed service clear-children result must be successful.");
+    Assert(result.Action == "updated", "Zabbix managed service clear-children action must be updated.");
+    var payloadText = handler.UpdatePayload
+        ?? throw new InvalidOperationException("Zabbix service.update payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var payload = document.RootElement;
+    Assert(JsonString(payload, "method") == "service.update", "Zabbix method must be service.update.");
+    var parameters = payload.GetProperty("params");
+    Assert(parameters.TryGetProperty("children", out var children)
+        && children.ValueKind == JsonValueKind.Array
+        && !children.EnumerateArray().Any(),
+        "Zabbix service.update must send an empty children array when desired relations are empty.");
 }
 
 static void AssertSemanticFingerprintIncludesDimensionField()
@@ -935,5 +1078,145 @@ public sealed class DiagnosticCmdbuildHandler : HttpMessageHandler
         {
             Content = new StringContent(json)
         };
+    }
+}
+
+public sealed class DiagnosticZabbixHandler : HttpMessageHandler
+{
+    public bool ExistingManagedService { get; init; }
+
+    public string? CreatePayload { get; private set; }
+
+    public string? UpdatePayload { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var body = request.Content is null
+            ? ""
+            : await request.Content.ReadAsStringAsync(cancellationToken);
+        using var document = JsonDocument.Parse(body);
+        var method = JsonStringValue(document.RootElement, "method");
+
+        return method switch
+        {
+            "user.login" => Json(HttpStatusCode.OK, """
+            {
+              "jsonrpc": "2.0",
+              "result": "diagnostic-token",
+              "id": 1
+            }
+            """),
+            "service.get" => ExistingManagedService ? ExistingServiceResponse() : Json(HttpStatusCode.OK, """
+            {
+              "jsonrpc": "2.0",
+              "result": [],
+              "id": 2
+            }
+            """),
+            "service.create" => CaptureCreate(body),
+            "service.update" => CaptureUpdate(body),
+            _ => Json(
+                HttpStatusCode.OK,
+                $$"""
+                {
+                  "jsonrpc": "2.0",
+                  "error": {
+                    "code": -32601,
+                    "message": "unexpected method",
+                    "data": "{{method}}"
+                  },
+                  "id": 99
+                }
+                """)
+        };
+    }
+
+    private HttpResponseMessage CaptureCreate(string body)
+    {
+        CreatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "serviceids": [
+              "9001"
+            ]
+          },
+          "id": 3
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureUpdate(string body)
+    {
+        UpdatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "serviceids": [
+              "9001"
+            ]
+          },
+          "id": 4
+        }
+        """);
+    }
+
+    private static HttpResponseMessage ExistingServiceResponse()
+    {
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "serviceid": "9001",
+              "name": "Рабочие места / City04",
+              "algorithm": "2",
+              "sortorder": "0",
+              "description": "",
+              "tags": [
+                {
+                  "tag": "cmdb2monitoring:managed",
+                  "value": "true"
+                },
+                {
+                  "tag": "cmdb2monitoring:layer",
+                  "value": "suppression"
+                },
+                {
+                  "tag": "cmdb2monitoring:key",
+                  "value": "rule:City04"
+                }
+              ],
+              "children": [
+                {
+                  "serviceid": "9002",
+                  "name": "МаршрутизаторыSupp / City04"
+                }
+              ],
+              "parents": []
+            }
+          ],
+          "id": 2
+        }
+        """);
+    }
+
+    private static HttpResponseMessage Json(HttpStatusCode statusCode, string json)
+    {
+        return new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent(json)
+        };
+    }
+
+    private static string JsonStringValue(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString() ?? ""
+            : "";
     }
 }

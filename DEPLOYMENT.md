@@ -282,8 +282,20 @@ new command during a short troubleshooting window.
   "ApiToken": "secret://AAA.LOCAL/PROD/zabbix-api-token",
   "User": "",
   "Password": ""
+},
+"Apply": {
+  "Mode": "auto",
+  "AutoApplyEnabled": true,
+  "SafeApply": true
 }
 ```
+
+In auto mode `zabbixconfig2api` consumes
+`KafkaTopics:ZabbixServiceApplyPlans` and
+`KafkaTopics:ZabbixSuppressionApplyPlans` and upserts managed Zabbix Services.
+Operators can verify the result in Zabbix under `Monitoring -> Services` by
+service name or by tags such as `cmdb2monitoring:managed=true` and
+`cmdb2monitoring:layer=service|suppression`.
 
 ### cmdbaggregation2cmdbuild
 

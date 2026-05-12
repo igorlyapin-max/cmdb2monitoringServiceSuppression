@@ -57,7 +57,6 @@
               <button class="nav-item" data-view="templateApply">Создать/обновить правила по шаблонам и связям</button>
               <button class="nav-item" data-view="relationsGraph">Визуализация графа связей</button>
               <button class="nav-item" data-view="zabbixPreflight">Контроль графов перед Zabbix</button>
-              <button class="nav-item" data-view="apply">Верификация и применение</button>
             </div>
           </div>
           <div class="nav-group">
@@ -422,32 +421,6 @@
             </div>
             <datalist id="suppressionRuleSourceFieldOptions"></datalist>
             <datalist id="suppressionRuleTargetFieldOptions"></datalist>
-          </section>
-        </section>
-
-        <section id="applyView" class="view hidden">
-          <section class="panel">
-            <h2>Верификация и применение</h2>
-            <div class="apply-grid">
-              <div>
-                <span class="metric-label">Режим</span>
-                <strong>ручной</strong>
-              </div>
-              <div>
-                <span class="metric-label">Безопасное применение</span>
-                <strong>включено</strong>
-              </div>
-              <div>
-                <span class="metric-label">Автоприменение</span>
-                <strong>только для разработки</strong>
-              </div>
-            </div>
-            <div class="sync-actions">
-              <button id="applyCurrentRulesButton" class="primary-button" type="button">Запросить применение текущих карточек</button>
-              <button id="dryRunCurrentRulesButton" class="secondary-button" type="button">Проверить без публикации</button>
-            </div>
-            <p id="applyCurrentRulesStatus" class="status-line"></p>
-            <div id="applyCurrentRulesList" class="preview-list"></div>
           </section>
         </section>
 
@@ -1146,8 +1119,8 @@
                 <li>Проверьте планируемые и готовые классы/домены отдельно для сервиса и подавления.</li>
                 <li>Для конкретных классов добавьте связи наполнения с существующими классами CMDBuild заказчика.</li>
                 <li>Отправьте выбранные классы и домены в CMDBuild кнопкой <strong>Отправить выбранное в CMDBuild</strong>.</li>
-                <li>Настройте правила конвертации и выполняйте применение через <strong>Управление правилами -> Верификация и применение</strong>.</li>
-                <li><strong>Создать/обновить правила по шаблонам и связям</strong> создает только сгенерированные правила и <code>managed_relations</code>. Целевые карточки сервиса/подавления появляются позже, когда обработчик правил получит подходящие CMDBuild webhooks или оператор нажмет <strong>Запросить применение текущих карточек</strong>.</li>
+                <li>Настройте правила конвертации, создайте/обновите правила по шаблонам и связям, затем используйте отдельные меню <strong>Применить в Zabbix</strong> в сервисном слое и каскадном подавлении.</li>
+                <li><strong>Создать/обновить правила по шаблонам и связям</strong> создает только сгенерированные правила и <code>managed_relations</code>. Целевые карточки сервиса/подавления появляются позже, когда обработчик правил получит подходящие CMDBuild webhooks.</li>
               </ol>
             </section>
 

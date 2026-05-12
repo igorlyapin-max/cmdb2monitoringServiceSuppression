@@ -52,6 +52,7 @@ builder.Services.AddSingleton<SemanticCommandDeduplicator>();
 builder.Services.AddSingleton<SourceEventEnricher>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
 builder.Services.AddSingleton<KafkaTopicExplorer>();
+builder.Services.AddSingleton<ApplyCurrentRulesProgressStore>();
 builder.Services.AddHostedService<RuleEngineWorker>();
 builder.Services.AddHttpClient<CmdbuildClient>();
 builder.Services.AddHttpClient<ZabbixClient>();
@@ -122,18 +123,21 @@ app.MapPost("/rules/apply-current", async (
     ConversionRulesValidator validator,
     AggregationRuleEngine engine,
     SourceEventEnricher enricher,
-    SemanticCommandDeduplicator deduplicator,
     KafkaJsonProducer producer,
     CmdbuildClient cmdbuild,
     IOptions<KafkaTopicsOptions> topicOptions,
+    ApplyCurrentRulesProgressStore progress,
     CancellationToken cancellationToken) =>
 {
+    var operationId = progress.Start(request.OperationId, request.DryRun);
     try
     {
+        progress.Stage(operationId, "loading_rules", "Загрузка правил конвертации.");
         var rules = await loader.LoadAsync(cancellationToken);
         var validation = validator.Validate(rules);
         if (!validation.IsValid)
         {
+            progress.Fail(operationId, "validation_failed", "Правила конвертации не прошли проверку.");
             return Results.BadRequest(validation);
         }
 
@@ -142,17 +146,21 @@ app.MapPost("/rules/apply-current", async (
         var sourceClasses = SourceClassesForCurrentApply(selectedRules, request);
         var publishTargets = ResolvePublishTargets(request.Targets);
         var publishTopics = PublishTopicsForRequest(topicOptions.Value, publishTargets, selectedRules.Select(rule => rule.Layer));
+        progress.Configure(operationId, sourceClasses, selectedRules.Count, publishTopics);
         var result = new ApplyCurrentRulesResult
         {
+            OperationId = operationId,
             DryRun = request.DryRun,
             Topic = string.Join(", ", publishTopics),
             Topics = publishTopics,
             SourceClassCount = sourceClasses.Count,
             RuleCount = selectedRules.Count
         };
+        var operationDeduplicationKeys = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var sourceClass in sourceClasses)
         {
+            progress.BeginClass(operationId, sourceClass);
             var classResult = new ApplyCurrentRulesClassResult
             {
                 SourceClass = sourceClass
@@ -160,22 +168,28 @@ app.MapPost("/rules/apply-current", async (
 
             try
             {
+                progress.Stage(operationId, "loading_cards", $"Загрузка карточек класса {sourceClass}.");
                 var catalog = await cmdbuild.ListClassCardsCatalogAsync(sourceClass, "source", cancellationToken);
                 var cards = request.MaxCardsPerClass > 0
                     ? catalog.Cards.Take(request.MaxCardsPerClass).ToArray()
                     : catalog.Cards;
                 classResult.Cards = cards.Count;
+                progress.SetCurrentClassCards(operationId, sourceClass, cards.Count);
 
                 foreach (var card in cards)
                 {
+                    progress.Stage(operationId, "processing_cards", $"Обработка {sourceClass}/{card.Id}.");
                     var rawEvent = BuildApplyCurrentRawEvent(sourceClass, card, request.EventType);
                     var enrichedEvent = await enricher.EnrichAsync(rawEvent, selectedDocument, cancellationToken);
                     var plans = engine.BuildCommandPlans(enrichedEvent, selectedDocument);
                     classResult.CommandsBuilt += plans.Count;
                     result.CommandsBuilt += plans.Count;
+                    progress.AddCommandsBuilt(operationId, plans.Count);
 
                     foreach (var plan in plans)
                     {
+                        result.ZabbixPlan.Add(plan.Command);
+                        progress.AddPlannedCommand(operationId, plan.Command);
                         Increment(result.CommandsByLayer, plan.Command.Layer);
                         if (result.SampleCommands.Count < 20)
                         {
@@ -195,10 +209,11 @@ app.MapPost("/rules/apply-current", async (
                             continue;
                         }
 
-                        if (deduplicator.IsDuplicate(plan, out _))
+                        if (ShouldSkipOperationDuplicate(plan, publishTargets, operationDeduplicationKeys))
                         {
                             classResult.CommandsSkippedAsDuplicates++;
                             result.CommandsSkippedAsDuplicates++;
+                            progress.AddDuplicate(operationId);
                             continue;
                         }
 
@@ -208,32 +223,48 @@ app.MapPost("/rules/apply-current", async (
                             plan,
                             publishTargets,
                             cancellationToken);
-                        deduplicator.MarkPublished(plan);
                         classResult.CommandsPublished++;
                         result.CommandsPublished++;
+                        progress.AddPublished(operationId, publishedTopics);
                         foreach (var topic in publishedTopics)
                         {
                             Increment(result.CommandsPublishedByTopic, topic);
                         }
                     }
+
+                    progress.CardProcessed(operationId, sourceClass, card.Id);
                 }
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
             {
                 classResult.Error = ex.Message;
                 result.Errors.Add($"{sourceClass}: {ex.Message}");
+                progress.AddError(operationId, $"{sourceClass}: {ex.Message}");
             }
 
             result.Classes.Add(classResult);
             result.CardsScanned += classResult.Cards;
+            progress.CompleteClass(operationId, classResult);
         }
 
+        progress.Complete(operationId);
         return Results.Ok(result);
     }
     catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException)
     {
+        progress.Fail(operationId, "failed", ex.Message);
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
     }
+});
+
+app.MapGet("/rules/apply-current/progress/{operationId}", (
+    string operationId,
+    ApplyCurrentRulesProgressStore progress) =>
+{
+    var snapshot = progress.Get(operationId);
+    return snapshot is null
+        ? Results.NotFound(new { error = "not_found" })
+        : Results.Ok(snapshot);
 });
 
 app.MapGet("/integrations/check", async (
@@ -472,6 +503,40 @@ static string CommandKafkaKey(AggregationCommand command)
         : command.Target.IdempotencyKey;
 }
 
+static string OperationDeduplicationKey(AggregationCommandPlan plan)
+{
+    var command = plan.Command;
+    var targetKey = string.IsNullOrWhiteSpace(command.Target.IdempotencyKey)
+        ? command.Target.CardId
+        : command.Target.IdempotencyKey;
+    var relationKey = string.Join(
+        "|",
+        command.Target.Relations
+            .Select(relation => $"{relation.DomainCode}:{relation.TargetClassCode}:{relation.TargetLookup}")
+            .OrderBy(value => value, StringComparer.Ordinal));
+    return string.Join(
+        "\n",
+        command.Layer,
+        command.CommandType,
+        command.RuleId,
+        command.Target.ClassCode,
+        targetKey,
+        relationKey);
+}
+
+static bool ShouldSkipOperationDuplicate(
+    AggregationCommandPlan plan,
+    PublishTargets targets,
+    ISet<string> operationDeduplicationKeys)
+{
+    if (!targets.Zabbix || targets.Aggregation)
+    {
+        return false;
+    }
+
+    return !operationDeduplicationKeys.Add(OperationDeduplicationKey(plan));
+}
+
 app.Run();
 
 public sealed record PublishTargets(bool Aggregation, bool Zabbix)
@@ -483,6 +548,8 @@ public sealed record PublishTargets(bool Aggregation, bool Zabbix)
 
 public sealed record ApplyCurrentRulesRequest
 {
+    public string OperationId { get; init; } = "";
+
     public IReadOnlyList<string> Layers { get; init; } = [];
 
     public IReadOnlyList<string> SourceClasses { get; init; } = [];
@@ -498,6 +565,8 @@ public sealed record ApplyCurrentRulesRequest
 
 public sealed class ApplyCurrentRulesResult
 {
+    public string OperationId { get; init; } = "";
+
     public bool DryRun { get; init; }
 
     public string Topic { get; init; } = "";
@@ -519,6 +588,8 @@ public sealed class ApplyCurrentRulesResult
     public Dictionary<string, int> CommandsByLayer { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<string, int> CommandsPublishedByTopic { get; } = new(StringComparer.Ordinal);
+
+    public ApplyCurrentRulesZabbixPlanSummary ZabbixPlan { get; } = new();
 
     public List<ApplyCurrentRulesClassResult> Classes { get; } = [];
 
@@ -555,6 +626,630 @@ public sealed class ApplyCurrentRulesCommandSample
     public string TargetClass { get; init; } = "";
 
     public string TargetKey { get; init; } = "";
+}
+
+public sealed class ApplyCurrentRulesProgressStore
+{
+    private const int MaxErrors = 30;
+    private readonly ConcurrentDictionary<string, ApplyCurrentRulesProgress> operations = new(StringComparer.OrdinalIgnoreCase);
+
+    public string Start(string requestedOperationId, bool dryRun)
+    {
+        var operationId = NormalizeOperationId(requestedOperationId);
+        var now = DateTimeOffset.UtcNow;
+        var progress = new ApplyCurrentRulesProgress
+        {
+            OperationId = operationId,
+            Status = "running",
+            Stage = "starting",
+            Message = "Операция применения поставлена в работу.",
+            DryRun = dryRun,
+            StartedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        operations[operationId] = progress;
+        TrimOldOperations();
+        return operationId;
+    }
+
+    public ApplyCurrentRulesProgressSnapshot? Get(string operationId)
+    {
+        if (!operations.TryGetValue(operationId, out var progress))
+        {
+            return null;
+        }
+
+        lock (progress)
+        {
+            return progress.ToSnapshot();
+        }
+    }
+
+    public void Configure(
+        string operationId,
+        IReadOnlyList<string> sourceClasses,
+        int ruleCount,
+        IReadOnlyList<string> topics)
+    {
+        Update(operationId, progress =>
+        {
+            progress.SourceClassCount = sourceClasses.Count;
+            progress.RuleCount = ruleCount;
+            progress.SourceClasses = sourceClasses.ToArray();
+            progress.Topics = topics.ToArray();
+            progress.Stage = "configured";
+            progress.Message = $"Подготовлено классов-источников: {sourceClasses.Count}; правил: {ruleCount}.";
+        });
+    }
+
+    public void Stage(string operationId, string stage, string message)
+    {
+        Update(operationId, progress =>
+        {
+            progress.Stage = stage;
+            progress.Message = message;
+        });
+    }
+
+    public void BeginClass(string operationId, string sourceClass)
+    {
+        Update(operationId, progress =>
+        {
+            progress.CurrentSourceClass = sourceClass;
+            progress.CurrentClassCardsTotal = 0;
+            progress.CurrentClassCardsProcessed = 0;
+            progress.Stage = "loading_cards";
+            progress.Message = $"Загрузка карточек класса {sourceClass}.";
+        });
+    }
+
+    public void SetCurrentClassCards(string operationId, string sourceClass, int cardCount)
+    {
+        Update(operationId, progress =>
+        {
+            progress.CurrentSourceClass = sourceClass;
+            progress.CurrentClassCardsTotal = cardCount;
+            progress.CurrentClassCardsProcessed = 0;
+            progress.CardsDiscovered += cardCount;
+            progress.Stage = "processing_cards";
+            progress.Message = $"Класс {sourceClass}: загружено карточек {cardCount}.";
+        });
+    }
+
+    public void AddCommandsBuilt(string operationId, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        Update(operationId, progress => progress.CommandsBuilt += count);
+    }
+
+    public void AddPlannedCommand(string operationId, AggregationCommand command)
+    {
+        Update(operationId, progress => progress.ZabbixPlan.Add(command));
+    }
+
+    public void AddPublished(string operationId, IReadOnlyList<string> topics)
+    {
+        Update(operationId, progress =>
+        {
+            progress.CommandsPublished++;
+            foreach (var topic in topics)
+            {
+                IncrementValue(progress.CommandsPublishedByTopic, topic);
+            }
+        });
+    }
+
+    public void AddDuplicate(string operationId)
+    {
+        Update(operationId, progress => progress.CommandsSkippedAsDuplicates++);
+    }
+
+    public void CardProcessed(string operationId, string sourceClass, string cardId)
+    {
+        Update(operationId, progress =>
+        {
+            progress.CurrentSourceClass = sourceClass;
+            progress.CurrentSourceCardId = cardId;
+            progress.CurrentClassCardsProcessed++;
+            progress.CardsScanned++;
+            progress.Stage = "processing_cards";
+            progress.Message = $"Класс {sourceClass}: обработано карточек {progress.CurrentClassCardsProcessed} из {progress.CurrentClassCardsTotal}.";
+        });
+    }
+
+    public void AddError(string operationId, string error)
+    {
+        Update(operationId, progress =>
+        {
+            progress.Errors.Insert(0, error);
+            if (progress.Errors.Count > MaxErrors)
+            {
+                progress.Errors.RemoveRange(MaxErrors, progress.Errors.Count - MaxErrors);
+            }
+        });
+    }
+
+    public void CompleteClass(string operationId, ApplyCurrentRulesClassResult classResult)
+    {
+        Update(operationId, progress =>
+        {
+            progress.SourceClassesCompleted++;
+            progress.CompletedClasses.Add(new ApplyCurrentRulesClassProgress
+            {
+                SourceClass = classResult.SourceClass,
+                Cards = classResult.Cards,
+                CommandsBuilt = classResult.CommandsBuilt,
+                CommandsPublished = classResult.CommandsPublished,
+                CommandsSkippedAsDuplicates = classResult.CommandsSkippedAsDuplicates,
+                Error = classResult.Error
+            });
+            progress.CurrentClassCardsProcessed = progress.CurrentClassCardsTotal;
+            progress.Message = $"Класс {classResult.SourceClass} завершен: карточек {classResult.Cards}, команд {classResult.CommandsBuilt}.";
+        });
+    }
+
+    public void Complete(string operationId)
+    {
+        Update(operationId, progress =>
+        {
+            progress.Status = "completed";
+            progress.Stage = "completed";
+            progress.CurrentSourceClass = "";
+            progress.CurrentSourceCardId = "";
+            progress.FinishedAtUtc = DateTimeOffset.UtcNow;
+            progress.Message = "Операция применения завершена.";
+        });
+    }
+
+    public void Fail(string operationId, string stage, string error)
+    {
+        Update(operationId, progress =>
+        {
+            progress.Status = "error";
+            progress.Stage = stage;
+            progress.Message = error;
+            progress.FinishedAtUtc = DateTimeOffset.UtcNow;
+            progress.Errors.Insert(0, error);
+        });
+    }
+
+    private void Update(string operationId, Action<ApplyCurrentRulesProgress> update)
+    {
+        if (!operations.TryGetValue(operationId, out var progress))
+        {
+            return;
+        }
+
+        lock (progress)
+        {
+            update(progress);
+            progress.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void TrimOldOperations()
+    {
+        const int maxOperations = 50;
+        if (operations.Count <= maxOperations)
+        {
+            return;
+        }
+
+        foreach (var item in operations
+            .OrderBy(pair => pair.Value.UpdatedAtUtc)
+            .Take(Math.Max(0, operations.Count - maxOperations)))
+        {
+            operations.TryRemove(item.Key, out _);
+        }
+    }
+
+    private static string NormalizeOperationId(string operationId)
+    {
+        var value = (operationId ?? "").Trim();
+        return !string.IsNullOrWhiteSpace(value) && value.Length <= 120
+            ? value
+            : Guid.NewGuid().ToString("N");
+    }
+
+    private static void IncrementValue(IDictionary<string, int> values, string key)
+    {
+        values[key] = values.TryGetValue(key, out var current)
+            ? current + 1
+            : 1;
+    }
+}
+
+public sealed class ApplyCurrentRulesProgress
+{
+    public string OperationId { get; init; } = "";
+
+    public string Status { get; set; } = "";
+
+    public string Stage { get; set; } = "";
+
+    public string Message { get; set; } = "";
+
+    public bool DryRun { get; init; }
+
+    public DateTimeOffset StartedAtUtc { get; init; }
+
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+
+    public DateTimeOffset? FinishedAtUtc { get; set; }
+
+    public IReadOnlyList<string> Topics { get; set; } = [];
+
+    public IReadOnlyList<string> SourceClasses { get; set; } = [];
+
+    public int SourceClassCount { get; set; }
+
+    public int SourceClassesCompleted { get; set; }
+
+    public int RuleCount { get; set; }
+
+    public int CardsDiscovered { get; set; }
+
+    public int CardsScanned { get; set; }
+
+    public int CommandsBuilt { get; set; }
+
+    public int CommandsPublished { get; set; }
+
+    public int CommandsSkippedAsDuplicates { get; set; }
+
+    public string CurrentSourceClass { get; set; } = "";
+
+    public string CurrentSourceCardId { get; set; } = "";
+
+    public int CurrentClassCardsTotal { get; set; }
+
+    public int CurrentClassCardsProcessed { get; set; }
+
+    public Dictionary<string, int> CommandsPublishedByTopic { get; } = new(StringComparer.Ordinal);
+
+    public ApplyCurrentRulesZabbixPlanSummary ZabbixPlan { get; } = new();
+
+    public List<ApplyCurrentRulesClassProgress> CompletedClasses { get; } = [];
+
+    public List<string> Errors { get; } = [];
+
+    public ApplyCurrentRulesProgressSnapshot ToSnapshot()
+    {
+        var remainingClasses = Math.Max(0, SourceClassCount - SourceClassesCompleted);
+        if (!string.IsNullOrWhiteSpace(CurrentSourceClass)
+            && CurrentClassCardsProcessed < CurrentClassCardsTotal
+            && remainingClasses > 0)
+        {
+            remainingClasses--;
+        }
+
+        return new ApplyCurrentRulesProgressSnapshot
+        {
+            OperationId = OperationId,
+            Status = Status,
+            Stage = Stage,
+            Message = Message,
+            DryRun = DryRun,
+            StartedAtUtc = StartedAtUtc,
+            UpdatedAtUtc = UpdatedAtUtc,
+            FinishedAtUtc = FinishedAtUtc,
+            Topics = Topics.ToArray(),
+            SourceClasses = SourceClasses.ToArray(),
+            SourceClassCount = SourceClassCount,
+            SourceClassesCompleted = SourceClassesCompleted,
+            SourceClassesRemaining = remainingClasses,
+            RuleCount = RuleCount,
+            CardsDiscovered = CardsDiscovered,
+            CardsScanned = CardsScanned,
+            CommandsBuilt = CommandsBuilt,
+            CommandsPublished = CommandsPublished,
+            CommandsSkippedAsDuplicates = CommandsSkippedAsDuplicates,
+            CurrentSourceClass = CurrentSourceClass,
+            CurrentSourceCardId = CurrentSourceCardId,
+            CurrentClassCardsTotal = CurrentClassCardsTotal,
+            CurrentClassCardsProcessed = CurrentClassCardsProcessed,
+            CurrentClassCardsRemaining = Math.Max(0, CurrentClassCardsTotal - CurrentClassCardsProcessed),
+            CommandsPublishedByTopic = new Dictionary<string, int>(CommandsPublishedByTopic, StringComparer.Ordinal),
+            ZabbixPlan = ZabbixPlan.ToSnapshot(),
+            CompletedClasses = CompletedClasses.ToArray(),
+            Errors = Errors.ToArray()
+        };
+    }
+}
+
+public sealed class ApplyCurrentRulesProgressSnapshot
+{
+    public string OperationId { get; init; } = "";
+
+    public string Status { get; init; } = "";
+
+    public string Stage { get; init; } = "";
+
+    public string Message { get; init; } = "";
+
+    public bool DryRun { get; init; }
+
+    public DateTimeOffset StartedAtUtc { get; init; }
+
+    public DateTimeOffset UpdatedAtUtc { get; init; }
+
+    public DateTimeOffset? FinishedAtUtc { get; init; }
+
+    public IReadOnlyList<string> Topics { get; init; } = [];
+
+    public IReadOnlyList<string> SourceClasses { get; init; } = [];
+
+    public int SourceClassCount { get; init; }
+
+    public int SourceClassesCompleted { get; init; }
+
+    public int SourceClassesRemaining { get; init; }
+
+    public int RuleCount { get; init; }
+
+    public int CardsDiscovered { get; init; }
+
+    public int CardsScanned { get; init; }
+
+    public int CommandsBuilt { get; init; }
+
+    public int CommandsPublished { get; init; }
+
+    public int CommandsSkippedAsDuplicates { get; init; }
+
+    public string CurrentSourceClass { get; init; } = "";
+
+    public string CurrentSourceCardId { get; init; } = "";
+
+    public int CurrentClassCardsTotal { get; init; }
+
+    public int CurrentClassCardsProcessed { get; init; }
+
+    public int CurrentClassCardsRemaining { get; init; }
+
+    public Dictionary<string, int> CommandsPublishedByTopic { get; init; } = new(StringComparer.Ordinal);
+
+    public ApplyCurrentRulesZabbixPlanSnapshot ZabbixPlan { get; init; } = new();
+
+    public IReadOnlyList<ApplyCurrentRulesClassProgress> CompletedClasses { get; init; } = [];
+
+    public IReadOnlyList<string> Errors { get; init; } = [];
+}
+
+public sealed class ApplyCurrentRulesClassProgress
+{
+    public string SourceClass { get; init; } = "";
+
+    public int Cards { get; init; }
+
+    public int CommandsBuilt { get; init; }
+
+    public int CommandsPublished { get; init; }
+
+    public int CommandsSkippedAsDuplicates { get; init; }
+
+    public string Error { get; init; } = "";
+}
+
+public sealed class ApplyCurrentRulesZabbixPlanSummary
+{
+    private const int MaxObjectSamples = 1000;
+    private const int MaxValuesPerObject = 8;
+    private readonly HashSet<string> objectKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ApplyCurrentRulesZabbixObjectPlan> objects = new(StringComparer.Ordinal);
+
+    public int ObjectCount { get; private set; }
+
+    public int RelationCount { get; private set; }
+
+    public int ObjectSamplesLimit => MaxObjectSamples;
+
+    public bool HasMoreObjects => ObjectCount > Objects.Count;
+
+    public IReadOnlyList<ApplyCurrentRulesZabbixObjectPlan> Objects => objects.Values
+        .OrderBy(item => item.TargetClass, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(item => item.TargetKey, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    public void Add(AggregationCommand command)
+    {
+        var targetKey = TargetObjectKey(command);
+        var objectKey = $"{command.CommandType}:{command.Target.ClassCode}:{targetKey}";
+        if (objectKeys.Add(objectKey))
+        {
+            ObjectCount++;
+        }
+
+        RelationCount += command.Target.Relations.Count;
+
+        if (!objects.TryGetValue(objectKey, out var plannedObject))
+        {
+            if (objects.Count >= MaxObjectSamples)
+            {
+                return;
+            }
+
+            plannedObject = new ApplyCurrentRulesZabbixObjectPlan
+            {
+                Action = command.CommandType,
+                ActionLabel = ActionLabel(command),
+                Layer = command.Layer,
+                TargetClass = command.Target.ClassCode,
+                TargetKey = targetKey,
+                TargetCardId = command.Target.CardId,
+                TargetName = TargetObjectName(command),
+                CreateInstance = command.Target.CreateInstance,
+                Attributes = AttributeSamples(command.Target.Attributes)
+            };
+            objects[objectKey] = plannedObject;
+        }
+
+        plannedObject.CommandCount++;
+        plannedObject.RelationCount += command.Target.Relations.Count;
+        AddLimited(plannedObject.RuleIds, command.RuleId, MaxValuesPerObject);
+        AddLimited(plannedObject.RuleNames, command.RuleName, MaxValuesPerObject);
+        AddLimited(plannedObject.SourceObjects, SourceObjectLabel(command.Source), MaxValuesPerObject);
+        foreach (var relation in command.Target.Relations)
+        {
+            if (plannedObject.Relations.Count >= MaxValuesPerObject)
+            {
+                break;
+            }
+
+            plannedObject.Relations.Add(new ApplyCurrentRulesZabbixRelationPlan
+            {
+                DomainCode = relation.DomainCode,
+                TargetClassCode = relation.TargetClassCode,
+                TargetLookup = relation.TargetLookup
+            });
+        }
+    }
+
+    public ApplyCurrentRulesZabbixPlanSnapshot ToSnapshot()
+    {
+        return new ApplyCurrentRulesZabbixPlanSnapshot
+        {
+            ObjectCount = ObjectCount,
+            RelationCount = RelationCount,
+            ObjectSamplesLimit = ObjectSamplesLimit,
+            HasMoreObjects = HasMoreObjects,
+            Objects = Objects
+        };
+    }
+
+    private static string TargetObjectKey(AggregationCommand command)
+    {
+        if (!string.IsNullOrWhiteSpace(command.Target.CardId))
+        {
+            return command.Target.CardId;
+        }
+
+        return command.Target.IdempotencyKey;
+    }
+
+    private static string TargetObjectName(AggregationCommand command)
+    {
+        if (!string.IsNullOrWhiteSpace(command.Target.CardDescription))
+        {
+            return command.Target.CardDescription;
+        }
+
+        foreach (var key in new[] { "Description", "description", "Name", "name", "Code", "code" })
+        {
+            if (command.Target.Attributes.TryGetValue(key, out var value) && value is not null)
+            {
+                var text = Convert.ToString(value, CultureInfo.InvariantCulture);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return TargetObjectKey(command);
+    }
+
+    private static string ActionLabel(AggregationCommand command)
+    {
+        if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveMembership, StringComparison.OrdinalIgnoreCase))
+        {
+            return "удалить связь";
+        }
+
+        return command.Target.CreateInstance
+            ? "создать при отсутствии / обновить"
+            : "обновить / связать существующий";
+    }
+
+    private static Dictionary<string, string> AttributeSamples(IReadOnlyDictionary<string, object?> attributes)
+    {
+        return attributes
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(MaxValuesPerObject)
+            .ToDictionary(
+                pair => pair.Key,
+                pair => Convert.ToString(pair.Value, CultureInfo.InvariantCulture) ?? "",
+                StringComparer.Ordinal);
+    }
+
+    private static string SourceObjectLabel(AggregationSourceObject source)
+    {
+        return string.IsNullOrWhiteSpace(source.CardId)
+            ? source.ClassCode
+            : $"{source.ClassCode}/{source.CardId}";
+    }
+
+    private static void AddLimited(List<string> values, string value, int limit)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || values.Contains(value, StringComparer.OrdinalIgnoreCase)
+            || values.Count >= limit)
+        {
+            return;
+        }
+
+        values.Add(value);
+    }
+}
+
+public sealed class ApplyCurrentRulesZabbixPlanSnapshot
+{
+    public int ObjectCount { get; init; }
+
+    public int RelationCount { get; init; }
+
+    public int ObjectSamplesLimit { get; init; }
+
+    public bool HasMoreObjects { get; init; }
+
+    public IReadOnlyList<ApplyCurrentRulesZabbixObjectPlan> Objects { get; init; } = [];
+}
+
+public sealed class ApplyCurrentRulesZabbixObjectPlan
+{
+    public string Action { get; init; } = "";
+
+    public string ActionLabel { get; init; } = "";
+
+    public string Layer { get; init; } = "";
+
+    public string TargetClass { get; init; } = "";
+
+    public string TargetKey { get; init; } = "";
+
+    public string TargetCardId { get; init; } = "";
+
+    public string TargetName { get; init; } = "";
+
+    public bool CreateInstance { get; init; }
+
+    public int CommandCount { get; set; }
+
+    public int RelationCount { get; set; }
+
+    public Dictionary<string, string> Attributes { get; init; } = new(StringComparer.Ordinal);
+
+    public List<string> RuleIds { get; } = [];
+
+    public List<string> RuleNames { get; } = [];
+
+    public List<string> SourceObjects { get; } = [];
+
+    public List<ApplyCurrentRulesZabbixRelationPlan> Relations { get; } = [];
+}
+
+public sealed class ApplyCurrentRulesZabbixRelationPlan
+{
+    public string DomainCode { get; init; } = "";
+
+    public string TargetClassCode { get; init; } = "";
+
+    public string TargetLookup { get; init; } = "";
 }
 
 public sealed class SourceEventEnricher(CmdbuildClient cmdbuild, ILogger<SourceEventEnricher> logger)

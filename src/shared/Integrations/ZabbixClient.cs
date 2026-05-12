@@ -11,6 +11,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private string? loginToken;
+    private int requestId = 10;
 
     public async Task<IntegrationCheckResult> CheckConnectionAsync(CancellationToken cancellationToken)
     {
@@ -41,6 +42,183 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         {
             return Failed(endpoint, ex.Message);
         }
+    }
+
+    public async Task<ZabbixManagedServiceApplyResult> ApplyManagedServiceAsync(
+        ZabbixManagedServiceDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(definition.ManagedKey))
+        {
+            throw new InvalidOperationException("Zabbix managed service key is empty.");
+        }
+
+        if (string.IsNullOrWhiteSpace(definition.Name))
+        {
+            throw new InvalidOperationException($"Zabbix managed service name is empty for key '{definition.ManagedKey}'.");
+        }
+
+        var existing = await FindManagedServiceByKeyAsync(definition.Layer, definition.ManagedKey, cancellationToken);
+        var warnings = new List<string>();
+        var childIds = new List<string>();
+
+        foreach (var relation in definition.Relations)
+        {
+            var child = await FindManagedServiceByReferenceAsync(
+                definition.Layer,
+                relation.TargetClassCode,
+                relation.TargetLookup,
+                cancellationToken);
+
+            if (child is null)
+            {
+                warnings.Add(
+                    $"Связь {relation.DomainCode}: целевой managed service не найден: {relation.TargetClassCode}/{relation.TargetLookup}.");
+                continue;
+            }
+
+            if (existing is not null && string.Equals(existing.ServiceId, child.ServiceId, StringComparison.Ordinal))
+            {
+                warnings.Add(
+                    $"Связь {relation.DomainCode}: пропущена самоссылка на serviceid {child.ServiceId}.");
+                continue;
+            }
+
+            childIds.Add(child.ServiceId);
+        }
+
+        childIds = childIds
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var replaceChildren = warnings.Count == 0;
+        var serviceId = existing is null
+            ? await CreateManagedServiceAsync(definition, childIds, replaceChildren, cancellationToken)
+            : await UpdateManagedServiceAsync(existing.ServiceId, definition, childIds, replaceChildren, cancellationToken);
+
+        return new ZabbixManagedServiceApplyResult
+        {
+            Success = true,
+            Action = existing is null ? "created" : "updated",
+            ServiceId = serviceId,
+            RelationsApplied = replaceChildren ? childIds.Count : 0,
+            RelationsDeferred = replaceChildren ? 0 : warnings.Count,
+            Warnings = warnings
+        };
+    }
+
+    public async Task<ZabbixServiceInfo?> FindManagedServiceByKeyAsync(
+        string layer,
+        string managedKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(managedKey))
+        {
+            return null;
+        }
+
+        var services = await GetServicesByTagsAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ZabbixManagedServiceTags.Managed] = "true",
+                [ZabbixManagedServiceTags.Layer] = layer,
+                [ZabbixManagedServiceTags.Key] = managedKey
+            },
+            cancellationToken);
+
+        return SingleManagedServiceOrDefault(services, $"key '{managedKey}'");
+    }
+
+    public async Task<ZabbixServiceInfo?> FindManagedServiceByReferenceAsync(
+        string layer,
+        string classCode,
+        string lookup,
+        CancellationToken cancellationToken)
+    {
+        foreach (var candidate in ZabbixManagedServiceMapper.LookupCandidates(classCode, lookup))
+        {
+            var service = await FindManagedServiceByKeyAsync(layer, candidate, cancellationToken);
+            if (service is not null)
+            {
+                return service;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(classCode) || string.IsNullOrWhiteSpace(lookup))
+        {
+            return null;
+        }
+
+        var services = await GetServicesByTagsAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ZabbixManagedServiceTags.Managed] = "true",
+                [ZabbixManagedServiceTags.Layer] = layer,
+                [ZabbixManagedServiceTags.Class] = classCode,
+                [ZabbixManagedServiceTags.CardId] = lookup
+            },
+            cancellationToken);
+
+        return SingleManagedServiceOrDefault(services, $"{classCode}/{lookup}");
+    }
+
+    private async Task<string> CreateManagedServiceAsync(
+        ZabbixManagedServiceDefinition definition,
+        IReadOnlyList<string> childIds,
+        bool includeChildren,
+        CancellationToken cancellationToken)
+    {
+        var service = BuildServicePayload(definition);
+        if (includeChildren)
+        {
+            service["children"] = ServiceReferences(childIds);
+        }
+
+        var response = await SendZabbixMethodAsync("service.create", service, cancellationToken);
+        return ReadServiceId(response, "service.create");
+    }
+
+    private async Task<string> UpdateManagedServiceAsync(
+        string serviceId,
+        ZabbixManagedServiceDefinition definition,
+        IReadOnlyList<string> childIds,
+        bool includeChildren,
+        CancellationToken cancellationToken)
+    {
+        var service = BuildServicePayload(definition);
+        service["serviceid"] = serviceId;
+        if (includeChildren)
+        {
+            service["children"] = ServiceReferences(childIds);
+        }
+
+        var response = await SendZabbixMethodAsync("service.update", service, cancellationToken);
+        return ReadServiceId(response, "service.update");
+    }
+
+    private async Task<IReadOnlyList<ZabbixServiceInfo>> GetServicesByTagsAsync(
+        IReadOnlyDictionary<string, string> tags,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("serviceid", "name", "algorithm", "sortorder", "description"),
+            ["selectTags"] = new JsonArray("tag", "value"),
+            ["selectChildren"] = new JsonArray("serviceid", "name"),
+            ["selectParents"] = new JsonArray("serviceid", "name"),
+            ["evaltype"] = 0,
+            ["tags"] = TagFilters(tags),
+            ["limit"] = 2
+        };
+
+        var response = await SendZabbixMethodAsync("service.get", parameters, cancellationToken);
+        var result = response.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonArray array
+            ? array
+            : throw new InvalidOperationException("Zabbix service.get did not return an array.");
+
+        return result
+            .OfType<JsonObject>()
+            .Select(ReadService)
+            .ToArray();
     }
 
     private async Task<string> GetApiVersionAsync(CancellationToken cancellationToken)
@@ -122,6 +300,26 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         throw new InvalidOperationException(ReadError(response) ?? "Zabbix user.login did not return token.");
     }
 
+    private async Task<JsonObject> SendZabbixMethodAsync(
+        string method,
+        JsonObject parameters,
+        CancellationToken cancellationToken)
+    {
+        var authenticated = !string.Equals(options.CurrentValue.AuthMode, "None", StringComparison.OrdinalIgnoreCase);
+        if (authenticated)
+        {
+            await EnsureAuthenticatedAsync(cancellationToken);
+        }
+
+        return await SendJsonRpcAsync(new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = method,
+            ["params"] = parameters,
+            ["id"] = Interlocked.Increment(ref requestId)
+        }, authenticated, cancellationToken);
+    }
+
     private async Task<JsonObject> SendJsonRpcAsync(
         JsonObject payload,
         bool authenticated,
@@ -188,6 +386,155 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             Success = false,
             Error = error
         };
+    }
+
+    private static ZabbixServiceInfo? SingleManagedServiceOrDefault(
+        IReadOnlyList<ZabbixServiceInfo> services,
+        string lookupDescription)
+    {
+        return services.Count switch
+        {
+            0 => null,
+            1 => services[0],
+            _ => throw new InvalidOperationException(
+                $"Zabbix contains duplicated managed services for {lookupDescription}: {string.Join(", ", services.Select(service => service.ServiceId))}.")
+        };
+    }
+
+    private static JsonObject BuildServicePayload(ZabbixManagedServiceDefinition definition)
+    {
+        return new JsonObject
+        {
+            ["name"] = definition.Name,
+            ["algorithm"] = definition.Algorithm,
+            ["sortorder"] = definition.SortOrder,
+            ["weight"] = definition.Weight,
+            ["description"] = definition.Description,
+            ["tags"] = ServiceTags(definition.Tags)
+        };
+    }
+
+    private static JsonArray ServiceTags(IReadOnlyDictionary<string, string> tags)
+    {
+        var result = new JsonArray();
+        foreach (var tag in tags.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            result.Add(new JsonObject
+            {
+                ["tag"] = tag.Key,
+                ["value"] = tag.Value
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray TagFilters(IReadOnlyDictionary<string, string> tags)
+    {
+        var result = new JsonArray();
+        foreach (var tag in tags)
+        {
+            result.Add(new JsonObject
+            {
+                ["tag"] = tag.Key,
+                ["value"] = tag.Value,
+                ["operator"] = 1
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray ServiceReferences(IReadOnlyList<string> serviceIds)
+    {
+        var result = new JsonArray();
+        foreach (var serviceId in serviceIds)
+        {
+            result.Add(new JsonObject
+            {
+                ["serviceid"] = serviceId
+            });
+        }
+
+        return result;
+    }
+
+    private static ZabbixServiceInfo ReadService(JsonObject service)
+    {
+        return new ZabbixServiceInfo
+        {
+            ServiceId = JsonString(service["serviceid"]),
+            Name = JsonString(service["name"]),
+            Tags = ReadTags(service["tags"] as JsonArray),
+            Children = ReadServiceReferences(service["children"] as JsonArray),
+            Parents = ReadServiceReferences(service["parents"] as JsonArray)
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string> ReadTags(JsonArray? tags)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (tags is null)
+        {
+            return result;
+        }
+
+        foreach (var item in tags.OfType<JsonObject>())
+        {
+            var tag = JsonString(item["tag"]);
+            if (!string.IsNullOrWhiteSpace(tag))
+            {
+                result[tag] = JsonString(item["value"]);
+            }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<ZabbixServiceInfo> ReadServiceReferences(JsonArray? services)
+    {
+        if (services is null)
+        {
+            return [];
+        }
+
+        return services
+            .OfType<JsonObject>()
+            .Select(service => new ZabbixServiceInfo
+            {
+                ServiceId = JsonString(service["serviceid"]),
+                Name = JsonString(service["name"])
+            })
+            .ToArray();
+    }
+
+    private static string ReadServiceId(JsonObject response, string method)
+    {
+        var ids = response["result"]?["serviceids"] as JsonArray;
+        var serviceId = ids is { Count: > 0 } ? JsonString(ids[0]) : "";
+        if (string.IsNullOrWhiteSpace(serviceId))
+        {
+            throw new InvalidOperationException($"Zabbix {method} did not return serviceids.");
+        }
+
+        return serviceId;
+    }
+
+    private static string JsonString(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return "";
+        }
+
+        try
+        {
+            return node.GetValue<string>() ?? "";
+        }
+        catch (InvalidOperationException)
+        {
+            return node.ToJsonString(JsonOptions).Trim('"');
+        }
     }
 
     private static string Trim(string value)

@@ -105,10 +105,50 @@ without publishing. The publish action writes only to that layer's Zabbix topic;
 it does not write to `KafkaTopics:AggregationCommands`, so CMDBuild aggregation
 objects are not touched by these layer-specific Zabbix actions.
 
+Long dry-run and publish actions receive a client operation id. While
+`cmdbconfigbuilder` scans CMDBuild cards and builds commands, the UI polls
+`/rules/apply-current/progress/{operationId}` through the BFF and shows current
+stage, completed source classes, current class card progress, commands built,
+commands published, duplicate skips, remaining class/card counts, and recent
+errors. The same progress/result payload includes a planned Zabbix object list:
+target class/key/name, action, source cards, rules, sample attributes, and
+planned relations. For dry-run this is the object set that would be published;
+for a real run it is the object set being published to the layer topic. The UI
+shows that list page by page and keeps per-object action, attributes, sources,
+and relations under expandable details so large plans remain readable.
+
 `zabbixconfig2api` exposes `/apply/status` with separate service and suppression
-status blocks. Each block reports the topic, last command, dry-run/accepted/manual
-pending/error counters, recent errors, and reconcile counters for objects and
-relations.
+status blocks. Each block reports the topic, last command,
+dry-run/applied/partial/skipped/manual pending/error counters, recent errors and
+warnings, and reconcile counters for objects and relations.
+
+When `zabbixconfig2api` has `Apply:Mode=auto` or `Apply:AutoApplyEnabled=true`,
+published layer commands are applied to Zabbix through the Service API. The
+applier performs an idempotent upsert of Zabbix Services and marks them with
+managed tags:
+
+- `cmdb2monitoring:managed=true`
+- `cmdb2monitoring:layer=service|suppression`
+- `cmdb2monitoring:class=<CMDBuild target class>`
+- `cmdb2monitoring:key=<target idempotency key>`
+- optional `cmdb2monitoring:card_id=<CMDBuild card id>` for existing cards
+
+Expected place in Zabbix UI: `Monitoring -> Services` / the service tree pages.
+Use the tags above or the generated service name to identify objects created by
+this system. Service-model and suppression-model contours are both materialized
+as separate managed Zabbix service graphs at this stage; trigger dependency
+writing needs a later trigger/profile mapping because the current aggregation
+command contains CMDBuild model objects and relations, not concrete trigger IDs.
+
+For managed relations the command target is treated as the parent service and
+the related target as a child service. If a referenced child service is not
+present yet, the parent service is still created/updated and the relation is
+reported as a warning with status `partial`; rerun the same publish action after
+all referenced objects have been created to complete those deferred links.
+For `Применить в Zabbix`, duplicate target commands are collapsed only inside
+one current-card operation. A later publish intentionally sends the same desired
+objects again so operators can replay Zabbix reconciliation after applier
+restart, Kafka offset changes, or temporary Zabbix API failures.
 
 ## CMDBuild Webhook Feedback Control
 
@@ -180,10 +220,8 @@ After `Создать/обновить правила по шаблонам и �
 `Сохранить в папку` before reloading appliers: generated rules, templates, and
 their `managed_relations` are persisted as one conversion configuration set.
 That action does not execute the rules against existing CMDBuild cards and does
-not create service/suppression target cards. Target cards appear only after a
-matching source-class webhook is processed by the rule engine, or after an
-explicit current-card apply is run from `Верификация и применение ->
-Запросить применение текущих карточек`.
+not create service/suppression target cards. Target cards appear after a
+matching source-class webhook is processed by the rule engine.
 
 The folder is intentionally server-side configuration, not a free browser input.
 This keeps write scope controlled and allows the same folder to be mounted from
@@ -292,6 +330,14 @@ Administrative constraints for that workflow:
   is skipped and will be retried when the source object is processed again.
   For service-layer links between two `ServiceNetworkAccessZone` objects, use
   the standard `ServiceNetworkZoneDependsOnNetworkZone` domain.
+  For suppression chains where a suppression aggregate must sit above a
+  resource, for example `МаршрутизаторыSupp / City04 -> Рабочие места / City04`,
+  use the relation role `Подавляет`. Standard schema domains allow
+  `SuppressionResource`, `SuppressionNetworkAccessZone`,
+  `SuppressionComputeCluster`, `SuppressionStoragePool`, and
+  `SuppressionProxyGroup` to point to `SuppressionResource` with internal
+  `relationType=depends_on`. Custom suppression classes get a suggested
+  `<Custom>SuppressesSuppressionResource` domain for the same pattern.
 - For template-to-template links, operators can filter generated rules on both
   sides before variable matching. The left and right filter blocks use the same
   include/exclude regex semantics as template selection filters: include rows

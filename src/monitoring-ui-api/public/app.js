@@ -192,7 +192,9 @@ const state = {
       message: '',
       error: '',
       result: null,
-      status: null
+      status: null,
+      progress: null,
+      planPage: 1
     },
     suppression: {
       applying: false,
@@ -200,7 +202,9 @@ const state = {
       message: '',
       error: '',
       result: null,
-      status: null
+      status: null,
+      progress: null,
+      planPage: 1
     }
   },
   ruleEditorTargetValues: {
@@ -222,10 +226,6 @@ const state = {
   applying: false,
   applyMessage: '',
   applyError: '',
-  applyingCurrentRules: false,
-  applyCurrentRulesMessage: '',
-  applyCurrentRulesError: '',
-  applyCurrentRulesResult: null,
   syncingSources: false,
   loadingSourcesCache: false,
   syncMessage: '',
@@ -667,14 +667,6 @@ document.querySelector('#applyTemplatesButton')?.addEventListener('click', () =>
   void applyTemplatesToRuleDocuments();
 });
 
-document.querySelector('#applyCurrentRulesButton')?.addEventListener('click', () => {
-  void applyCurrentRules({ dryRun: false });
-});
-
-document.querySelector('#dryRunCurrentRulesButton')?.addEventListener('click', () => {
-  void applyCurrentRules({ dryRun: true });
-});
-
 document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
   const layerKey = panel.dataset.zabbixApplyLayer;
   panel.querySelector('[data-zabbix-apply-refresh]')?.addEventListener('click', () => {
@@ -685,6 +677,20 @@ document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
   });
   panel.querySelector('[data-zabbix-apply-publish]')?.addEventListener('click', () => {
     void applyZabbixLayer(layerKey, { dryRun: false });
+  });
+  panel.addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-zabbix-plan-page]');
+    if (!button || !panel.contains(button)) {
+      return;
+    }
+
+    const page = Number(button.dataset.zabbixPlanPage);
+    if (!Number.isInteger(page) || page < 1) {
+      return;
+    }
+
+    zabbixApplyState(layerKey).planPage = page;
+    renderZabbixApplyView(layerKey);
   });
 });
 
@@ -831,8 +837,6 @@ async function activateView(view, activeButton = null) {
     renderTemplateEditor('service');
   } else if (view === 'suppressionTemplates') {
     renderTemplateEditor('suppression');
-  } else if (view === 'apply') {
-    renderCurrentRulesApplyView();
   } else if (view === 'templateApply') {
     renderTemplateApplyView();
   } else if (view === 'templateAudit') {
@@ -1507,8 +1511,8 @@ async function saveConversionConfigsToFolder() {
 
   try {
     const payload = currentConversionConfigPayload();
-    const response = await fetch('/api/conversion-config/storage', {
-      method: 'PUT',
+    const response = await fetch('/api/conversion-config/deploy', {
+      method: 'POST',
       headers: {
         'content-type': 'application/json',
         accept: 'application/json'
@@ -1527,7 +1531,10 @@ async function saveConversionConfigsToFolder() {
     state.conversionConfigStorageVersion = Number(result.version ?? state.conversionConfigStorageVersion) || 0;
     state.conversionConfigStorageEtag = String(result.etag ?? state.conversionConfigStorageEtag ?? '');
     const cacheMessage = await writeConversionConfigCacheSnapshot(payload);
-    state.syncConversionConfigMessage = `${conversionConfigStatsMessage('Сохранено')} Папка: ${conversionConfigFolderLabel()}.${cacheMessage}`;
+    const runtime = result.runtimeRules
+      ? ` Runtime: ${result.runtimeRules.configuredFile}, ${Number(result.runtimeRules.ruleCount) || 0} правил.`
+      : '';
+    state.syncConversionConfigMessage = `${conversionConfigStatsMessage('Сохранено и опубликовано')} Папка: ${conversionConfigFolderLabel()}.${runtime}${cacheMessage}`;
     state.syncConversionConfigError = '';
   } catch (error) {
     state.syncConversionConfigMessage = '';
@@ -1822,7 +1829,6 @@ function render() {
   renderZabbixSyncView();
   renderWebhooksSyncView();
   renderConversionConfigSyncView();
-  renderCurrentRulesApplyView();
   renderTemplateApplyView();
   renderTemplateAuditView();
   renderLinkRelationEditor();
@@ -7205,97 +7211,6 @@ function renderTemplateEditorStatus(layerKey) {
   config.status.classList.toggle('error', status.type === 'error');
 }
 
-async function applyCurrentRules(options = {}) {
-  const dryRun = Boolean(options.dryRun);
-  try {
-    state.applyingCurrentRules = true;
-    state.applyCurrentRulesError = '';
-    state.applyCurrentRulesMessage = dryRun
-      ? 'Проверка опубликованных правил на текущих карточках CMDBuild...'
-      : 'Публикация команд по текущим карточкам CMDBuild...';
-    renderCurrentRulesApplyView();
-
-    const response = await fetch('/api/rules/apply-current', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json'
-      },
-      body: JSON.stringify({
-        layers: ['service', 'suppression'],
-        dryRun
-      })
-    });
-    const result = await response.json();
-    if (!response.ok) {
-      throw new Error(result.detail || result.error || `применение текущих правил не выполнено: ${response.status}`);
-    }
-
-    state.applyCurrentRulesResult = result;
-    state.applyCurrentRulesMessage = dryRun
-      ? `Проверено карточек: ${result.cardsScanned ?? 0}; команд найдено: ${result.commandsBuilt ?? 0}.`
-      : `Опубликовано команд: ${result.commandsPublished ?? 0}; карточек проверено: ${result.cardsScanned ?? 0}; дублей: ${result.commandsSkippedAsDuplicates ?? 0}.`;
-    state.applyCurrentRulesError = '';
-  } catch (error) {
-    state.applyCurrentRulesError = error.message;
-    state.applyCurrentRulesMessage = '';
-  } finally {
-    state.applyingCurrentRules = false;
-    renderCurrentRulesApplyView();
-  }
-}
-
-function renderCurrentRulesApplyView() {
-  const applyButton = document.querySelector('#applyCurrentRulesButton');
-  const dryRunButton = document.querySelector('#dryRunCurrentRulesButton');
-  const status = document.querySelector('#applyCurrentRulesStatus');
-  const list = document.querySelector('#applyCurrentRulesList');
-  if (!applyButton || !dryRunButton || !status || !list) {
-    return;
-  }
-
-  applyButton.disabled = state.applyingCurrentRules;
-  dryRunButton.disabled = state.applyingCurrentRules;
-  applyButton.textContent = state.applyingCurrentRules
-    ? 'Применение...'
-    : 'Запросить применение текущих карточек';
-  status.textContent = state.applyCurrentRulesError || state.applyCurrentRulesMessage || 'Используются правила, уже опубликованные на сервере обработчика правил.';
-  status.classList.toggle('error', Boolean(state.applyCurrentRulesError));
-
-  const result = state.applyCurrentRulesResult;
-  if (!result) {
-    list.innerHTML = '<div class="empty-state">Результатов применения еще нет.</div>';
-    return;
-  }
-
-  const classes = Array.isArray(result.classes) ? result.classes : [];
-  const samples = Array.isArray(result.sampleCommands) ? result.sampleCommands : [];
-  list.innerHTML = `
-    <div class="rule-summary">
-      <span class="structure-mark">${result.dryRun ? 'проверка' : 'применение'}</span>
-      <strong>${escapeHtml(result.commandsPublished ?? 0)} опубликовано · ${escapeHtml(result.commandsBuilt ?? 0)} собрано</strong>
-      <span>правил ${escapeHtml(result.ruleCount ?? 0)} · классов-источников ${escapeHtml(result.sourceClassCount ?? 0)} · карточек ${escapeHtml(result.cardsScanned ?? 0)} · топик ${escapeHtml(result.topic || '-')}</span>
-      <span>по слоям: ${escapeHtml(Object.entries(result.commandsByLayer ?? {}).map(([key, value]) => `${key === 'service' ? 'сервис' : key === 'suppression' ? 'подавление' : key} ${value}`).join(', ') || '-')}</span>
-      ${Array.isArray(result.errors) && result.errors.length > 0 ? `<span>ошибки: ${escapeHtml(result.errors.join('; '))}</span>` : ''}
-    </div>
-    ${classes.map((item) => `
-      <div class="rule-summary">
-        <span class="structure-mark">${escapeHtml(item.sourceClass || '-')}</span>
-        <strong>${escapeHtml(item.cards ?? 0)} карточек</strong>
-        <span>собрано ${escapeHtml(item.commandsBuilt ?? 0)} · опубликовано ${escapeHtml(item.commandsPublished ?? 0)} · дубли ${escapeHtml(item.commandsSkippedAsDuplicates ?? 0)}</span>
-        ${item.error ? `<span>ошибка: ${escapeHtml(item.error)}</span>` : ''}
-      </div>
-    `).join('')}
-    ${samples.length > 0 ? `
-      <div class="rule-summary">
-        <span class="structure-mark">примеры</span>
-        <strong>${escapeHtml(samples.length)} команд</strong>
-        <span>${escapeHtml(samples.map((item) => `${item.layer}:${item.ruleId} ${item.sourceClass}/${item.sourceCardId} -> ${item.targetClass}:${item.targetKey}`).join('; '))}</span>
-      </div>
-    ` : ''}
-  `;
-}
-
 async function loadZabbixApplyStatus(layerKey) {
   const stateItem = zabbixApplyState(layerKey);
   try {
@@ -7324,13 +7239,27 @@ async function loadZabbixApplyStatus(layerKey) {
 async function applyZabbixLayer(layerKey, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const stateItem = zabbixApplyState(layerKey);
+  const operationId = createClientOperationId('zbx');
+  let progressTimer = null;
   try {
     stateItem.applying = true;
     stateItem.error = '';
+    stateItem.planPage = 1;
+    stateItem.progress = {
+      operationId,
+      status: 'starting',
+      stage: 'starting',
+      message: 'Операция отправлена на сервер.',
+      dryRun
+    };
     stateItem.message = dryRun
       ? `Dry-run ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`
       : `Публикация ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`;
     renderZabbixApplyView(layerKey);
+
+    progressTimer = window.setInterval(() => {
+      void loadZabbixApplyProgress(layerKey, operationId);
+    }, 1200);
 
     const response = await fetch('/api/zabbix/apply-current', {
       method: 'POST',
@@ -7339,6 +7268,7 @@ async function applyZabbixLayer(layerKey, options = {}) {
         accept: 'application/json'
       },
       body: JSON.stringify({
+        operationId,
         layer: layerKey,
         dryRun
       })
@@ -7349,15 +7279,55 @@ async function applyZabbixLayer(layerKey, options = {}) {
     }
 
     stateItem.result = result;
-    stateItem.message = dryRun
+    if (result.operationId && result.operationId !== operationId) {
+      await loadZabbixApplyProgress(layerKey, result.operationId);
+    } else {
+      await loadZabbixApplyProgress(layerKey, operationId);
+    }
+    const finalMessage = dryRun
       ? `Dry-run завершен: карточек ${result.cardsScanned ?? 0}, команд ${result.commandsBuilt ?? 0}.`
       : `Опубликовано в Zabbix-топик: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`;
     await loadZabbixApplyStatus(layerKey);
+    stateItem.message = finalMessage;
   } catch (error) {
     stateItem.error = error.message;
   } finally {
+    if (progressTimer) {
+      window.clearInterval(progressTimer);
+    }
     stateItem.applying = false;
     renderZabbixApplyView(layerKey);
+  }
+}
+
+async function loadZabbixApplyProgress(layerKey, operationId) {
+  if (!operationId) {
+    return;
+  }
+
+  const stateItem = zabbixApplyState(layerKey);
+  try {
+    const response = await fetch(`/api/zabbix/apply-current/progress/${encodeURIComponent(operationId)}`, {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (response.status === 404) {
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `статус операции не получен: ${response.status}`);
+    }
+
+    stateItem.progress = result;
+    if (stateItem.applying) {
+      stateItem.message = zabbixApplyProgressText(result);
+    }
+    renderZabbixApplyView(layerKey);
+  } catch (error) {
+    if (stateItem.applying) {
+      stateItem.message = `${stateItem.message || 'Операция выполняется.'} Статус операции временно недоступен: ${error.message}`;
+      renderZabbixApplyView(layerKey);
+    }
   }
 }
 
@@ -7403,8 +7373,16 @@ function renderZabbixApplyView(layerKey) {
       <strong>${escapeHtml(layerStatus.dryRunCommands ?? 0)}</strong>
     </div>
     <div>
-      <span class="metric-label">Принято</span>
-      <strong>${escapeHtml(layerStatus.acceptedCommands ?? 0)}</strong>
+      <span class="metric-label">Применено</span>
+      <strong>${escapeHtml(layerStatus.appliedCommands ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Частично</span>
+      <strong>${escapeHtml(layerStatus.partialCommands ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Пропущено</span>
+      <strong>${escapeHtml(layerStatus.skippedCommands ?? 0)}</strong>
     </div>
     <div>
       <span class="metric-label">Ожидает вручную</span>
@@ -7420,7 +7398,11 @@ function renderZabbixApplyView(layerKey) {
     </div>
   `;
 
+  const progressText = stateItem.applying && stateItem.progress
+    ? zabbixApplyProgressText(stateItem.progress)
+    : '';
   status.textContent = stateItem.error
+    || progressText
     || stateItem.message
     || 'Команды этого слоя публикуются в отдельный Zabbix-топик; статус ведется независимо от второго слоя.';
   status.classList.toggle('error', Boolean(stateItem.error));
@@ -7431,10 +7413,15 @@ function renderZabbixApplyView(layerKey) {
 function renderZabbixApplyDetails(layerKey, stateItem) {
   const result = stateItem.result;
   const layerStatus = stateItem.status ?? {};
+  const progress = stateItem.progress;
+  const zabbixPlan = progress?.zabbixPlan ?? result?.zabbixPlan;
   const samples = Array.isArray(result?.sampleCommands) ? result.sampleCommands : [];
   const classes = Array.isArray(result?.classes) ? result.classes : [];
   const errors = Array.isArray(layerStatus.errors) ? layerStatus.errors : [];
+  const warnings = Array.isArray(layerStatus.warnings) ? layerStatus.warnings : [];
   return `
+    ${progress ? renderZabbixApplyProgress(progress) : ''}
+    ${zabbixPlan ? renderZabbixObjectPlan(zabbixPlan, layerKey) : ''}
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
       <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : 'последняя публикация') : 'ожидание запуска')}</strong>
@@ -7446,7 +7433,7 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
       <div class="rule-summary">
         <span class="structure-mark">${escapeHtml(item.sourceClass || '-')}</span>
         <strong>${escapeHtml(item.cards ?? 0)} карточек</strong>
-        <span>собрано ${escapeHtml(item.commandsBuilt ?? 0)} · опубликовано ${escapeHtml(item.commandsPublished ?? 0)} · дубли ${escapeHtml(item.commandsSkippedAsDuplicates ?? 0)}</span>
+        <span>${escapeHtml(applyCommandCountersText(result, item))}</span>
         ${item.error ? `<span>ошибка: ${escapeHtml(item.error)}</span>` : ''}
       </div>
     `).join('')}
@@ -7464,7 +7451,176 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
         <span>${escapeHtml(errors.join('; '))}</span>
       </div>
     ` : ''}
+    ${warnings.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">предупреждения контура</span>
+        <strong>${escapeHtml(warnings.length)} последних предупреждений</strong>
+        <span>${escapeHtml(warnings.join('; '))}</span>
+      </div>
+    ` : ''}
   `;
+}
+
+function renderZabbixObjectPlan(plan, layerKey) {
+  const objects = Array.isArray(plan?.objects) ? plan.objects : [];
+  if (!plan || ((plan.objectCount ?? 0) === 0 && objects.length === 0)) {
+    return '';
+  }
+
+  const pageSize = 25;
+  const pageCount = Math.max(1, Math.ceil(objects.length / pageSize));
+  const stateItem = zabbixApplyState(layerKey);
+  const page = Math.min(Math.max(1, Number(stateItem.planPage) || 1), pageCount);
+  stateItem.planPage = page;
+  const start = (page - 1) * pageSize;
+  const visibleObjects = objects.slice(start, start + pageSize);
+  const shownFrom = objects.length === 0 ? 0 : start + 1;
+  const shownTo = start + visibleObjects.length;
+  const hasMore = Boolean(plan.hasMoreObjects);
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">план объектов Zabbix</span>
+      <strong>${escapeHtml(plan.objectCount ?? objects.length)} объектов · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
+      <span>${escapeHtml(`страница ${page} из ${pageCount}; показаны ${shownFrom}-${shownTo} из ${objects.length}`)}${hasMore ? escapeHtml(`; полный список ограничен первыми ${plan.objectSamplesLimit ?? objects.length}`) : ''}</span>
+      ${pageCount > 1 ? `
+        <div class="rule-summary-actions">
+          <button class="secondary-button" type="button" data-zabbix-plan-page="${escapeHtml(page - 1)}" ${page <= 1 ? 'disabled' : ''}>Назад</button>
+          <button class="secondary-button" type="button" data-zabbix-plan-page="${escapeHtml(page + 1)}" ${page >= pageCount ? 'disabled' : ''}>Вперед</button>
+        </div>
+      ` : ''}
+    </div>
+    ${visibleObjects.map(renderZabbixObjectPlanItem).join('')}
+  `;
+}
+
+function renderZabbixObjectPlanItem(item) {
+  const attributes = Object.entries(item?.attributes ?? {})
+    .slice(0, 8)
+    .map(([key, value]) => `${key}=${value}`);
+  const relations = Array.isArray(item?.relations) ? item.relations : [];
+  const relationText = relations
+    .slice(0, 6)
+    .map((relation) => `${relation.domainCode || '-'} -> ${relation.targetClassCode || '-'}:${relation.targetLookup || '-'}`);
+  const sources = Array.isArray(item?.sourceObjects) ? item.sourceObjects : [];
+  const ruleIds = Array.isArray(item?.ruleIds) ? item.ruleIds : [];
+  const ruleNames = Array.isArray(item?.ruleNames) ? item.ruleNames : [];
+  const title = item?.targetName || item?.targetKey || '-';
+  const target = `${item?.targetClass || '-'}:${item?.targetCardId || item?.targetKey || '-'}`;
+  return `
+    <details class="rule-summary zabbix-plan-object">
+      <summary>
+        <strong>${escapeHtml(title)}</strong>
+        <span>цель: ${escapeHtml(target)} · команд ${escapeHtml(item?.commandCount ?? 0)} · связей ${escapeHtml(item?.relationCount ?? 0)}</span>
+      </summary>
+      <span>действие: ${escapeHtml(item?.actionLabel || zabbixObjectActionLabel(item?.action))}</span>
+      <span>правила: ${escapeHtml(ruleNames.length > 0 ? ruleNames.join(', ') : ruleIds.join(', ') || '-')}</span>
+      <span>источники: ${escapeHtml(sources.join(', ') || '-')}</span>
+      ${attributes.length > 0 ? `<span>атрибуты: ${escapeHtml(attributes.join('; '))}</span>` : ''}
+      ${relationText.length > 0 ? `<span>связи: ${escapeHtml(relationText.join('; '))}</span>` : ''}
+    </details>
+  `;
+}
+
+function zabbixObjectActionLabel(action) {
+  const value = String(action ?? '').toLowerCase();
+  if (value === 'remove_membership') {
+    return 'удалить связь';
+  }
+
+  return 'создать при отсутствии / обновить';
+}
+
+function renderZabbixApplyProgress(progress) {
+  const completed = progress.sourceClassesCompleted ?? 0;
+  const total = progress.sourceClassCount ?? 0;
+  const currentClass = progress.currentSourceClass || '-';
+  const currentDone = progress.currentClassCardsProcessed ?? 0;
+  const currentTotal = progress.currentClassCardsTotal ?? 0;
+  const classesRemaining = progress.sourceClassesRemaining ?? Math.max(0, total - completed);
+  const currentRemaining = progress.currentClassCardsRemaining ?? Math.max(0, currentTotal - currentDone);
+  const completedClasses = Array.isArray(progress.completedClasses) ? progress.completedClasses.slice(-5) : [];
+  const progressLabel = zabbixApplyProgressStatusLabel(progress.status);
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">ход операции</span>
+      <strong>${escapeHtml(progressLabel)} · ${escapeHtml(progress.stage || '-')}</strong>
+      <span>${escapeHtml(progress.message || zabbixApplyProgressText(progress))}</span>
+      <span>классы: завершено ${escapeHtml(completed)} из ${escapeHtml(total || '?')} · осталось ${escapeHtml(classesRemaining)}</span>
+      <span>текущий класс: ${escapeHtml(currentClass)} · карточек ${escapeHtml(currentDone)} из ${escapeHtml(currentTotal || '?')} · осталось ${escapeHtml(currentRemaining)}</span>
+      <span>${escapeHtml(applyProgressCommandCountersText(progress))}</span>
+      <span>обновлено: ${escapeHtml(formatCacheTimestamp(progress.updatedAtUtc || progress.updatedAt))}</span>
+    </div>
+    ${completedClasses.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">завершенные классы</span>
+        <strong>${escapeHtml(completedClasses.length)} последних</strong>
+        <span>${escapeHtml(completedClasses.map((item) => `${item.sourceClass}: карточек ${item.cards ?? 0}, ${applyCommandCountersText(progress, item)}`).join('; '))}</span>
+      </div>
+    ` : ''}
+  `;
+}
+
+function zabbixApplyProgressText(progress) {
+  if (!progress) {
+    return '';
+  }
+
+  const completed = progress.sourceClassesCompleted ?? 0;
+  const total = progress.sourceClassCount ?? 0;
+  const currentClass = progress.currentSourceClass || 'подготовка';
+  const currentDone = progress.currentClassCardsProcessed ?? 0;
+  const currentTotal = progress.currentClassCardsTotal ?? 0;
+  const classesRemaining = progress.sourceClassesRemaining ?? Math.max(0, total - completed);
+  const currentRemaining = progress.currentClassCardsRemaining ?? Math.max(0, currentTotal - currentDone);
+  return [
+    progress.message || 'Операция выполняется.',
+    `Классы: ${completed}/${total || '?'}, осталось ${classesRemaining}.`,
+    `Сейчас: ${currentClass}, карточек ${currentDone}/${currentTotal || '?'}, осталось ${currentRemaining}.`,
+    `Команды: ${applyCommandCountersText(progress)}.`
+  ].join(' ');
+}
+
+function applyCommandCountersText(context, item = context) {
+  const dryRun = Boolean(context?.dryRun);
+  const built = item?.commandsBuilt ?? 0;
+  const published = item?.commandsPublished ?? 0;
+  const duplicates = item?.commandsSkippedAsDuplicates ?? 0;
+  return dryRun
+    ? `собрано ${built} · к публикации ${built} · дубли ${duplicates}`
+    : `собрано ${built} · опубликовано ${published} · дубли ${duplicates}`;
+}
+
+function applyProgressCommandCountersText(progress) {
+  return [
+    `всего карточек обработано ${progress?.cardsScanned ?? 0}`,
+    applyCommandCountersText(progress)
+  ].join(' · ');
+}
+
+function zabbixApplyProgressStatusLabel(status) {
+  const value = String(status ?? '').toLowerCase();
+  if (value === 'running') {
+    return 'выполняется';
+  }
+  if (value === 'completed') {
+    return 'завершено';
+  }
+  if (value === 'error') {
+    return 'ошибка';
+  }
+  if (value === 'starting') {
+    return 'запуск';
+  }
+
+  return status || '-';
+}
+
+function createClientOperationId(prefix = 'op') {
+  if (globalThis.crypto?.randomUUID) {
+    return `${prefix}-${globalThis.crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function zabbixApplyLayerStatusFromPayload(payload, layerKey) {
@@ -7493,6 +7649,15 @@ function zabbixApplyStatusLabel(status) {
   }
   if (value === 'accepted') {
     return 'принято';
+  }
+  if (value === 'applied') {
+    return 'применено';
+  }
+  if (value === 'partial') {
+    return 'частично';
+  }
+  if (value === 'skipped') {
+    return 'пропущено';
   }
   if (value === 'pending_manual') {
     return 'ожидает вручную';
@@ -8154,7 +8319,7 @@ async function applyTemplatesToRuleDocuments() {
       templateDeletionPlanMessage(serviceResult, suppressionResult),
       `Сформировано правил: сервис ${serviceResult.generatedRules.length}, подавление ${suppressionResult.generatedRules.length}.`,
       'Далее сохраните правила, шаблоны и связи в папку и перечитайте конфигурацию applier\'ов.',
-      'CMDBuild-карточки по этим правилам создаются после новых webhooks классов-источников или через "Верификация и применение -> Запросить применение текущих карточек".'
+      'CMDBuild-карточки по этим правилам создаются после новых webhooks классов-источников.'
     ].filter(Boolean).join(' ');
     state.templateApplyError = '';
     renderRulesPreviews();
@@ -12250,7 +12415,12 @@ function fallbackManagedRelationDomain(layerKey, sourceClassCode, targetClassCod
     'suppression|SuppressionResource|SuppressionStoragePool|depends_on': 'SuppressionResourceDependsOnStoragePool',
     'suppression|SuppressionResource|SuppressionProxyGroup|monitored_via': 'SuppressionResourceMonitoredViaProxyGroup',
     'suppression|SuppressionComputeCluster|SuppressionStoragePool|depends_on': 'SuppressionComputeDependsOnStoragePool',
-    'suppression|SuppressionNetworkAccessZone|SuppressionNetworkAccessZone|depends_on_network': 'SuppressionNetworkZoneDependsOnNetworkZone'
+    'suppression|SuppressionNetworkAccessZone|SuppressionNetworkAccessZone|depends_on_network': 'SuppressionNetworkZoneDependsOnNetworkZone',
+    'suppression|SuppressionResource|SuppressionResource|depends_on': 'SuppressionResourceSuppressesResource',
+    'suppression|SuppressionNetworkAccessZone|SuppressionResource|depends_on': 'SuppressionNetworkZoneSuppressesResource',
+    'suppression|SuppressionComputeCluster|SuppressionResource|depends_on': 'SuppressionComputeSuppressesResource',
+    'suppression|SuppressionStoragePool|SuppressionResource|depends_on': 'SuppressionStoragePoolSuppressesResource',
+    'suppression|SuppressionProxyGroup|SuppressionResource|depends_on': 'SuppressionProxyGroupSuppressesResource'
   }[`${layerKey}|${sourceBase}|${targetBase}|${relationType}`];
   if (!standardBase) {
     return null;

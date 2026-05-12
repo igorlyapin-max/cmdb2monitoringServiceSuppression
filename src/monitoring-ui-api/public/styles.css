@@ -1850,6 +1850,19 @@ textarea {
   box-shadow: 0 0 0 2px rgba(215, 146, 49, 0.18);
 }
 
+.zabbix-plan-object summary {
+  cursor: pointer;
+  display: grid;
+  gap: 3px;
+  list-style-position: inside;
+}
+
+.zabbix-plan-object[open] summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+}
+
 .rule-summary-actions {
   display: flex;
   flex-wrap: wrap;

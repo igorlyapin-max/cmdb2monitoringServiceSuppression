@@ -26,6 +26,7 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveZabbixApplyPlans("suppression")), "Zabbix suppression apply topic is required.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<ZabbixClient>();
+builder.Services.AddTransient<ZabbixAggregationApplier>();
 builder.Services.AddSingleton<ZabbixApplyStateStore>();
 builder.Services.AddHostedService<ZabbixServiceAggregationCommandWorker>();
 builder.Services.AddHostedService<ZabbixSuppressionAggregationCommandWorker>();
@@ -124,8 +125,9 @@ public sealed class ZabbixServiceAggregationCommandWorker(
     IOptionsMonitor<ApplyOptions> applyOptions,
     IOptions<DebugOptions> debugOptions,
     ZabbixApplyStateStore state,
+    ZabbixAggregationApplier applier,
     ILogger<ZabbixServiceAggregationCommandWorker> logger)
-    : ZabbixLayerAggregationCommandWorker("service", kafkaOptions, topicOptions, applyOptions, debugOptions, state, logger);
+    : ZabbixLayerAggregationCommandWorker("service", kafkaOptions, topicOptions, applyOptions, debugOptions, state, applier, logger);
 
 public sealed class ZabbixSuppressionAggregationCommandWorker(
     IOptions<KafkaOptions> kafkaOptions,
@@ -133,24 +135,47 @@ public sealed class ZabbixSuppressionAggregationCommandWorker(
     IOptionsMonitor<ApplyOptions> applyOptions,
     IOptions<DebugOptions> debugOptions,
     ZabbixApplyStateStore state,
+    ZabbixAggregationApplier applier,
     ILogger<ZabbixSuppressionAggregationCommandWorker> logger)
-    : ZabbixLayerAggregationCommandWorker("suppression", kafkaOptions, topicOptions, applyOptions, debugOptions, state, logger);
+    : ZabbixLayerAggregationCommandWorker("suppression", kafkaOptions, topicOptions, applyOptions, debugOptions, state, applier, logger);
 
-public abstract class ZabbixLayerAggregationCommandWorker(
-    string layer,
-    IOptions<KafkaOptions> kafkaOptions,
-    IOptions<KafkaTopicsOptions> topicOptions,
-    IOptionsMonitor<ApplyOptions> applyOptions,
-    IOptions<DebugOptions> debugOptions,
-    ZabbixApplyStateStore state,
-    ILogger logger)
-    : KafkaJsonConsumerWorker<AggregationCommand>(kafkaOptions, logger)
+public abstract class ZabbixLayerAggregationCommandWorker : KafkaJsonConsumerWorker<AggregationCommand>
 {
+    private readonly string layer;
+    private readonly IOptions<KafkaOptions> kafkaOptions;
+    private readonly IOptions<KafkaTopicsOptions> topicOptions;
+    private readonly IOptionsMonitor<ApplyOptions> applyOptions;
+    private readonly IOptions<DebugOptions> debugOptions;
+    private readonly ZabbixApplyStateStore state;
+    private readonly ZabbixAggregationApplier applier;
+    private readonly ILogger logger;
+
+    protected ZabbixLayerAggregationCommandWorker(
+        string layer,
+        IOptions<KafkaOptions> kafkaOptions,
+        IOptions<KafkaTopicsOptions> topicOptions,
+        IOptionsMonitor<ApplyOptions> applyOptions,
+        IOptions<DebugOptions> debugOptions,
+        ZabbixApplyStateStore state,
+        ZabbixAggregationApplier applier,
+        ILogger logger)
+        : base(kafkaOptions, logger)
+    {
+        this.layer = layer;
+        this.kafkaOptions = kafkaOptions;
+        this.topicOptions = topicOptions;
+        this.applyOptions = applyOptions;
+        this.debugOptions = debugOptions;
+        this.state = state;
+        this.applier = applier;
+        this.logger = logger;
+    }
+
     protected override string Topic => topicOptions.Value.EffectiveZabbixApplyPlans(layer);
 
     protected override string ConsumerGroupId => $"{kafkaOptions.Value.ConsumerGroupId}-{layer}";
 
-    protected override Task HandleMessageAsync(
+    protected override async Task HandleMessageAsync(
         AggregationCommand message,
         string key,
         CancellationToken cancellationToken)
@@ -166,10 +191,13 @@ public abstract class ZabbixLayerAggregationCommandWorker(
                 message.CommandId,
                 message.Layer,
                 Topic);
-            return Task.CompletedTask;
+            return;
         }
 
-        var result = ZabbixApplyPlanner.Plan(message, layer, Topic, applyOptions.CurrentValue, forceDryRun: false);
+        var plan = ZabbixApplyPlanner.Plan(message, layer, Topic, applyOptions.CurrentValue, forceDryRun: false);
+        var result = string.Equals(plan.Status, "accepted", StringComparison.OrdinalIgnoreCase)
+            ? await applier.ApplyAsync(message, layer, Topic, applyOptions.CurrentValue, cancellationToken)
+            : plan;
         state.Record(result);
 
         logger.LogDebugBasic(
@@ -193,8 +221,6 @@ public abstract class ZabbixLayerAggregationCommandWorker(
             message.CommandType,
             message.RuleId,
             Topic);
-
-        return Task.CompletedTask;
     }
 }
 
@@ -333,6 +359,18 @@ public sealed class ZabbixApplyStateStore
             {
                 status.AcceptedCommands++;
             }
+            else if (string.Equals(result.Status, "applied", StringComparison.OrdinalIgnoreCase))
+            {
+                status.AppliedCommands++;
+            }
+            else if (string.Equals(result.Status, "partial", StringComparison.OrdinalIgnoreCase))
+            {
+                status.PartialCommands++;
+            }
+            else if (string.Equals(result.Status, "skipped", StringComparison.OrdinalIgnoreCase))
+            {
+                status.SkippedCommands++;
+            }
             else if (string.Equals(result.Status, "pending_manual", StringComparison.OrdinalIgnoreCase))
             {
                 status.PendingManualCommands++;
@@ -348,6 +386,15 @@ public sealed class ZabbixApplyStateStore
                 if (status.Errors.Count > 20)
                 {
                     status.Errors.RemoveRange(20, status.Errors.Count - 20);
+                }
+            }
+
+            foreach (var warning in result.Warnings)
+            {
+                status.Warnings.Insert(0, $"{result.AppliedAtUtc:O}: {warning}");
+                if (status.Warnings.Count > 20)
+                {
+                    status.Warnings.RemoveRange(20, status.Warnings.Count - 20);
                 }
             }
         }
@@ -399,10 +446,14 @@ public sealed class ZabbixApplyStateStore
                 commandsReceived = status.CommandsReceived,
                 dryRunCommands = status.DryRunCommands,
                 acceptedCommands = status.AcceptedCommands,
+                appliedCommands = status.AppliedCommands,
+                partialCommands = status.PartialCommands,
+                skippedCommands = status.SkippedCommands,
                 pendingManualCommands = status.PendingManualCommands,
                 errorCommands = status.ErrorCommands,
                 reconcile = status.Reconcile,
-                errors = status.Errors.ToArray()
+                errors = status.Errors.ToArray(),
+                warnings = status.Warnings.ToArray()
             };
         }
     }
@@ -436,6 +487,12 @@ public sealed class ZabbixLayerApplyStatus
 
     public int AcceptedCommands { get; set; }
 
+    public int AppliedCommands { get; set; }
+
+    public int PartialCommands { get; set; }
+
+    public int SkippedCommands { get; set; }
+
     public int PendingManualCommands { get; set; }
 
     public int ErrorCommands { get; set; }
@@ -443,43 +500,55 @@ public sealed class ZabbixLayerApplyStatus
     public ZabbixReconcileCounters Reconcile { get; } = new();
 
     public List<string> Errors { get; } = [];
+
+    public List<string> Warnings { get; } = [];
 }
 
 public sealed class ZabbixCommandApplyResult
 {
-    public string Layer { get; init; } = "";
+    public string Layer { get; set; } = "";
 
-    public string Topic { get; init; } = "";
+    public string Topic { get; set; } = "";
 
-    public string Status { get; init; } = "";
+    public string Status { get; set; } = "";
 
-    public string Mode { get; init; } = "";
+    public string Mode { get; set; } = "";
 
-    public bool SafeApply { get; init; }
+    public bool SafeApply { get; set; }
 
-    public string CommandId { get; init; } = "";
+    public string CommandId { get; set; } = "";
 
-    public string RuleId { get; init; } = "";
+    public string RuleId { get; set; } = "";
 
-    public string RuleName { get; init; } = "";
+    public string RuleName { get; set; } = "";
 
-    public string CommandType { get; init; } = "";
+    public string CommandType { get; set; } = "";
 
-    public string TargetClass { get; init; } = "";
+    public string TargetClass { get; set; } = "";
 
-    public string TargetKey { get; init; } = "";
+    public string TargetKey { get; set; } = "";
 
-    public string SourceClass { get; init; } = "";
+    public string SourceClass { get; set; } = "";
 
-    public string SourceCardId { get; init; } = "";
+    public string SourceCardId { get; set; } = "";
 
-    public ZabbixReconcileCounters Reconcile { get; init; } = new();
+    public ZabbixReconcileCounters Reconcile { get; set; } = new();
 
-    public string Message { get; init; } = "";
+    public string Message { get; set; } = "";
 
-    public string Error { get; init; } = "";
+    public string Error { get; set; } = "";
 
-    public DateTimeOffset AppliedAtUtc { get; init; }
+    public string ZabbixServiceId { get; set; } = "";
+
+    public string ZabbixAction { get; set; } = "";
+
+    public int RelationsApplied { get; set; }
+
+    public int RelationsDeferred { get; set; }
+
+    public IReadOnlyList<string> Warnings { get; set; } = [];
+
+    public DateTimeOffset AppliedAtUtc { get; set; }
 }
 
 public sealed class ZabbixReconcileCounters

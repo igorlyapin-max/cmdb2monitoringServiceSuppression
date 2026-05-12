@@ -125,6 +125,7 @@ const server = http.createServer(async (request, response) => {
           accept: 'application/json'
         },
         body: JSON.stringify({
+          operationId: stringValue(body?.operationId),
           layers: [layer],
           targets: ['zabbix'],
           dryRun: Boolean(body?.dryRun),
@@ -133,6 +134,14 @@ const server = http.createServer(async (request, response) => {
           eventType: stringValue(body?.eventType) || 'UPDATE'
         })
       });
+    }
+
+    const zabbixApplyProgressMatch = url.pathname.match(/^\/api\/zabbix\/apply-current\/progress\/([^/]+)$/);
+    if (zabbixApplyProgressMatch && request.method === 'GET') {
+      return proxyJson(response, appendPath(
+        config.backend.rulesApplyCurrentUrl,
+        'progress',
+        decodeURIComponent(zabbixApplyProgressMatch[1])));
     }
 
     if (url.pathname === '/api/zabbix/apply/status' && request.method === 'GET') {

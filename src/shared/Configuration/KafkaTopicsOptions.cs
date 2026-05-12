@@ -16,6 +16,10 @@ public sealed class KafkaTopicsOptions
 
     public string ZabbixApplyPlans { get; init; } = "service-suppression.zabbix.apply-plans";
 
+    public string ZabbixServiceApplyPlans { get; init; } = "service-suppression.zabbix.service.apply-plans";
+
+    public string ZabbixSuppressionApplyPlans { get; init; } = "service-suppression.zabbix.suppression.apply-plans";
+
     public string DebugLogs { get; init; } = "service-suppression.logs";
 
     public string DerivedObjectCommands { get; init; } = "";
@@ -25,5 +29,24 @@ public sealed class KafkaTopicsOptions
         return !string.IsNullOrWhiteSpace(AggregationCommands)
             ? AggregationCommands
             : DerivedObjectCommands;
+    }
+
+    public string EffectiveZabbixApplyPlans(string layer)
+    {
+        if (string.Equals(layer, "service", StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(ZabbixServiceApplyPlans)
+                ? ZabbixServiceApplyPlans
+                : ZabbixApplyPlans;
+        }
+
+        if (string.Equals(layer, "suppression", StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(ZabbixSuppressionApplyPlans)
+                ? ZabbixSuppressionApplyPlans
+                : ZabbixApplyPlans;
+        }
+
+        return ZabbixApplyPlans;
     }
 }

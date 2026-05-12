@@ -140,10 +140,13 @@ app.MapPost("/rules/apply-current", async (
         var selectedRules = SelectRulesForCurrentApply(rules, request);
         var selectedDocument = rules with { Rules = selectedRules };
         var sourceClasses = SourceClassesForCurrentApply(selectedRules, request);
+        var publishTargets = ResolvePublishTargets(request.Targets);
+        var publishTopics = PublishTopicsForRequest(topicOptions.Value, publishTargets, selectedRules.Select(rule => rule.Layer));
         var result = new ApplyCurrentRulesResult
         {
             DryRun = request.DryRun,
-            Topic = topicOptions.Value.EffectiveAggregationCommands(),
+            Topic = string.Join(", ", publishTopics),
+            Topics = publishTopics,
             SourceClassCount = sourceClasses.Count,
             RuleCount = selectedRules.Count
         };
@@ -199,16 +202,19 @@ app.MapPost("/rules/apply-current", async (
                             continue;
                         }
 
-                        await producer.PublishAsync(
-                            topicOptions.Value.EffectiveAggregationCommands(),
-                            plan.Command.Target.CardId.Length > 0
-                                ? plan.Command.Target.CardId
-                                : plan.Command.Target.IdempotencyKey,
-                            plan.Command,
+                        var publishedTopics = await PublishAggregationPlanAsync(
+                            producer,
+                            topicOptions.Value,
+                            plan,
+                            publishTargets,
                             cancellationToken);
                         deduplicator.MarkPublished(plan);
                         classResult.CommandsPublished++;
                         result.CommandsPublished++;
+                        foreach (var topic in publishedTopics)
+                        {
+                            Increment(result.CommandsPublishedByTopic, topic);
+                        }
                     }
                 }
             }
@@ -369,13 +375,119 @@ static void Increment(IDictionary<string, int> values, string key)
         : 1;
 }
 
+static PublishTargets ResolvePublishTargets(IReadOnlyList<string> targets)
+{
+    if (targets.Count == 0)
+    {
+        return PublishTargets.AggregationOnly;
+    }
+
+    var normalized = targets
+        .Select(target => target.Trim().ToLowerInvariant())
+        .Where(target => !string.IsNullOrWhiteSpace(target))
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    if (normalized.Contains("all"))
+    {
+        return PublishTargets.All;
+    }
+
+    return new PublishTargets(
+        Aggregation: normalized.Contains("aggregation") || normalized.Contains("cmdbuild"),
+        Zabbix: normalized.Contains("zabbix"));
+}
+
+static IReadOnlyList<string> PublishTopicsForRequest(
+    KafkaTopicsOptions options,
+    PublishTargets targets,
+    IEnumerable<string> layers)
+{
+    var result = new List<string>();
+    if (targets.Aggregation)
+    {
+        result.Add(options.EffectiveAggregationCommands());
+    }
+
+    if (targets.Zabbix)
+    {
+        foreach (var layer in layers)
+        {
+            var topic = options.EffectiveZabbixApplyPlans(layer);
+            if (!string.IsNullOrWhiteSpace(topic))
+            {
+                result.Add(topic);
+            }
+        }
+    }
+
+    return result
+        .Where(topic => !string.IsNullOrWhiteSpace(topic))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+}
+
+static async Task<IReadOnlyList<string>> PublishAggregationPlanAsync(
+    KafkaJsonProducer producer,
+    KafkaTopicsOptions options,
+    AggregationCommandPlan plan,
+    PublishTargets targets,
+    CancellationToken cancellationToken)
+{
+    var topics = PublishTopicsForCommand(options, plan.Command, targets);
+    var key = CommandKafkaKey(plan.Command);
+    foreach (var topic in topics)
+    {
+        await producer.PublishAsync(topic, key, plan.Command, cancellationToken);
+    }
+
+    return topics;
+}
+
+static IReadOnlyList<string> PublishTopicsForCommand(
+    KafkaTopicsOptions options,
+    AggregationCommand command,
+    PublishTargets targets)
+{
+    var result = new List<string>();
+    if (targets.Aggregation)
+    {
+        result.Add(options.EffectiveAggregationCommands());
+    }
+
+    if (targets.Zabbix)
+    {
+        result.Add(options.EffectiveZabbixApplyPlans(command.Layer));
+    }
+
+    return result
+        .Where(topic => !string.IsNullOrWhiteSpace(topic))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+}
+
+static string CommandKafkaKey(AggregationCommand command)
+{
+    return command.Target.CardId.Length > 0
+        ? command.Target.CardId
+        : command.Target.IdempotencyKey;
+}
+
 app.Run();
+
+public sealed record PublishTargets(bool Aggregation, bool Zabbix)
+{
+    public static PublishTargets All { get; } = new(Aggregation: true, Zabbix: true);
+
+    public static PublishTargets AggregationOnly { get; } = new(Aggregation: true, Zabbix: false);
+}
 
 public sealed record ApplyCurrentRulesRequest
 {
     public IReadOnlyList<string> Layers { get; init; } = [];
 
     public IReadOnlyList<string> SourceClasses { get; init; } = [];
+
+    public IReadOnlyList<string> Targets { get; init; } = [];
 
     public int MaxCardsPerClass { get; init; }
 
@@ -390,6 +502,8 @@ public sealed class ApplyCurrentRulesResult
 
     public string Topic { get; init; } = "";
 
+    public IReadOnlyList<string> Topics { get; init; } = [];
+
     public int SourceClassCount { get; init; }
 
     public int RuleCount { get; init; }
@@ -403,6 +517,8 @@ public sealed class ApplyCurrentRulesResult
     public int CommandsSkippedAsDuplicates { get; set; }
 
     public Dictionary<string, int> CommandsByLayer { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Dictionary<string, int> CommandsPublishedByTopic { get; } = new(StringComparer.Ordinal);
 
     public List<ApplyCurrentRulesClassResult> Classes { get; } = [];
 
@@ -635,13 +751,53 @@ public sealed class RuleEngineWorker(
                 continue;
             }
 
-            await producer.PublishAsync(
-                topicOptions.Value.EffectiveAggregationCommands(),
-                plan.Command.Target.CardId.Length > 0 ? plan.Command.Target.CardId : plan.Command.Target.IdempotencyKey,
-                plan.Command,
+            await PublishAggregationPlanAsync(
+                producer,
+                topicOptions.Value,
+                plan,
+                PublishTargets.All,
                 cancellationToken);
             deduplicator.MarkPublished(plan);
         }
+    }
+
+    private static async Task PublishAggregationPlanAsync(
+        KafkaJsonProducer producer,
+        KafkaTopicsOptions options,
+        AggregationCommandPlan plan,
+        PublishTargets targets,
+        CancellationToken cancellationToken)
+    {
+        var topics = PublishTopicsForCommand(options, plan.Command, targets);
+        var key = plan.Command.Target.CardId.Length > 0
+            ? plan.Command.Target.CardId
+            : plan.Command.Target.IdempotencyKey;
+        foreach (var topic in topics)
+        {
+            await producer.PublishAsync(topic, key, plan.Command, cancellationToken);
+        }
+    }
+
+    private static IReadOnlyList<string> PublishTopicsForCommand(
+        KafkaTopicsOptions options,
+        AggregationCommand command,
+        PublishTargets targets)
+    {
+        var result = new List<string>();
+        if (targets.Aggregation)
+        {
+            result.Add(options.EffectiveAggregationCommands());
+        }
+
+        if (targets.Zabbix)
+        {
+            result.Add(options.EffectiveZabbixApplyPlans(command.Layer));
+        }
+
+        return result
+            .Where(topic => !string.IsNullOrWhiteSpace(topic))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private async Task<CmdbRawEvent> EnrichSourceFieldsAsync(
@@ -1059,6 +1215,8 @@ public sealed class KafkaTopicExplorer(
             new ManagedKafkaTopic(options.EffectiveAggregationCommands(), "aggregation_commands", "Canonical aggregation commands"),
             new ManagedKafkaTopic(options.ConfigBuildRequests, "config_build_requests", "Configuration build requests"),
             new ManagedKafkaTopic(options.ZabbixApplyPlans, "zabbix_apply_plans", "Zabbix apply plans"),
+            new ManagedKafkaTopic(options.ZabbixServiceApplyPlans, "zabbix_service_apply_plans", "Zabbix service apply plans"),
+            new ManagedKafkaTopic(options.ZabbixSuppressionApplyPlans, "zabbix_suppression_apply_plans", "Zabbix suppression apply plans"),
             new ManagedKafkaTopic(options.DebugLogs, "debug_logs", "Service debug and operational logs")
         };
         var result = new List<ManagedKafkaTopic>();

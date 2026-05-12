@@ -111,6 +111,39 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
+    if (url.pathname === '/api/zabbix/apply-current' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const layer = normalizeRuntimeLayer(body?.layer);
+      if (layer !== 'service' && layer !== 'suppression') {
+        return sendJson(response, 400, { error: 'layer must be service or suppression' });
+      }
+
+      return proxyJson(response, config.backend.rulesApplyCurrentUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json'
+        },
+        body: JSON.stringify({
+          layers: [layer],
+          targets: ['zabbix'],
+          dryRun: Boolean(body?.dryRun),
+          sourceClasses: Array.isArray(body?.sourceClasses) ? body.sourceClasses : [],
+          maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
+          eventType: stringValue(body?.eventType) || 'UPDATE'
+        })
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/apply/status' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixApplyStatusUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixApplyStatusUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
     if (url.pathname === '/api/cmdbuild/classes' && request.method === 'GET') {
       const backendUrl = new URL(config.backend.cmdbuildClassesUrl);
       if (url.searchParams.has('rootPath')) {

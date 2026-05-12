@@ -39,16 +39,19 @@ LIVE=1 ./scripts/test-diagnostics.sh
 
 The .NET services now use a single pipeline contract:
 
-`CMDBuild webhook -> cmdb.events.raw -> rule engine -> monitoring.aggregation.commands -> target appliers`.
+`CMDBuild webhook -> cmdb.events.raw -> rule engine -> layer-specific commands -> target appliers`.
 
 - `cmdbwebhooks2kafka` normalizes the incoming webhook into `CmdbRawEvent` and
   publishes it to `KafkaTopics:CmdbWebhookEvents`.
 - `cmdbconfigbuilder` reads raw events, loads the external
   `ConversionRules:FilePath`, evaluates service/suppression rules, and
   publishes canonical `AggregationCommand` messages to
-  `KafkaTopics:AggregationCommands`.
-- `zabbixconfig2api` reads the same canonical command topic and owns only the
-  Zabbix apply side.
+  `KafkaTopics:AggregationCommands` for CMDBuild reconciliation and to
+  `KafkaTopics:ZabbixServiceApplyPlans` /
+  `KafkaTopics:ZabbixSuppressionApplyPlans` for Zabbix.
+- `zabbixconfig2api` reads the service and suppression Zabbix topics
+  separately. Each contour has independent dry-run/status/reconcile counters
+  and errors.
 - `cmdbaggregation2cmdbuild` reads the same canonical command topic and owns
   only CMDBuild aggregation objects and relation reconciliation.
 
@@ -575,6 +578,12 @@ The top-level `Синхронизация с источниками данных
   on demand before template materialization.
 - `Zabbix` checks the configured Zabbix API through `zabbixconfig2api` and
   shows connection version, endpoint, and error details.
+- `Сервисный слой -> Применить в Zabbix` and
+  `Каскадное подавление -> Применить в Zabbix` run the same current-card
+  evaluation only for one layer and publish only to that layer's Zabbix topic.
+  Each screen has its own dry-run action, publication action, Zabbix status,
+  counters, errors, and reconcile summary. These actions do not publish to the
+  CMDBuild aggregation topic.
 - `Webhooks` checks the configured `cmdbwebhooks2kafka` health endpoint, reads
   CMDBuild `etl/webhook` inventory, and shows the webhook target route plus the
   raw event Kafka topic. `Перечитать из CMDBuild` reloads the current managed

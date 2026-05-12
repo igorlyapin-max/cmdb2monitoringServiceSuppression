@@ -185,6 +185,24 @@ const state = {
     layer: 'all',
     direction: 'effect'
   },
+  zabbixApply: {
+    service: {
+      applying: false,
+      loadingStatus: false,
+      message: '',
+      error: '',
+      result: null,
+      status: null
+    },
+    suppression: {
+      applying: false,
+      loadingStatus: false,
+      message: '',
+      error: '',
+      result: null,
+      status: null
+    }
+  },
   ruleEditorTargetValues: {
     service: {},
     suppression: {}
@@ -657,6 +675,19 @@ document.querySelector('#dryRunCurrentRulesButton')?.addEventListener('click', (
   void applyCurrentRules({ dryRun: true });
 });
 
+document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
+  const layerKey = panel.dataset.zabbixApplyLayer;
+  panel.querySelector('[data-zabbix-apply-refresh]')?.addEventListener('click', () => {
+    void loadZabbixApplyStatus(layerKey);
+  });
+  panel.querySelector('[data-zabbix-apply-dry-run]')?.addEventListener('click', () => {
+    void applyZabbixLayer(layerKey, { dryRun: true });
+  });
+  panel.querySelector('[data-zabbix-apply-publish]')?.addEventListener('click', () => {
+    void applyZabbixLayer(layerKey, { dryRun: false });
+  });
+});
+
 document.querySelector('#relationAddButton')?.addEventListener('click', () => {
   applyLinkRelationEditorChange();
 });
@@ -810,6 +841,16 @@ async function activateView(view, activeButton = null) {
     renderRelationsGraphView();
   } else if (view === 'zabbixPreflight') {
     renderZabbixPreflightView();
+  } else if (view === 'serviceZabbixApply') {
+    renderZabbixApplyView('service');
+    if (!state.zabbixApply.service.status && !state.zabbixApply.service.loadingStatus) {
+      void loadZabbixApplyStatus('service');
+    }
+  } else if (view === 'suppressionZabbixApply') {
+    renderZabbixApplyView('suppression');
+    if (!state.zabbixApply.suppression.status && !state.zabbixApply.suppression.loadingStatus) {
+      void loadZabbixApplyStatus('suppression');
+    }
   } else if (view === 'dashboard' && state.healthServices.length === 0 && !state.checkingHealth) {
     void checkHealthServices({ silent: true });
   } else if (view === 'events' && state.kafkaTopics.length === 0 && !state.loadingKafkaTopics) {
@@ -7253,6 +7294,223 @@ function renderCurrentRulesApplyView() {
       </div>
     ` : ''}
   `;
+}
+
+async function loadZabbixApplyStatus(layerKey) {
+  const stateItem = zabbixApplyState(layerKey);
+  try {
+    stateItem.loadingStatus = true;
+    stateItem.error = '';
+    renderZabbixApplyView(layerKey);
+
+    const response = await fetch('/api/zabbix/apply/status', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `статус применения Zabbix не получен: ${response.status}`);
+    }
+
+    stateItem.status = zabbixApplyLayerStatusFromPayload(result, layerKey);
+    stateItem.message = 'Статус применения Zabbix обновлен.';
+  } catch (error) {
+    stateItem.error = error.message;
+  } finally {
+    stateItem.loadingStatus = false;
+    renderZabbixApplyView(layerKey);
+  }
+}
+
+async function applyZabbixLayer(layerKey, options = {}) {
+  const dryRun = Boolean(options.dryRun);
+  const stateItem = zabbixApplyState(layerKey);
+  try {
+    stateItem.applying = true;
+    stateItem.error = '';
+    stateItem.message = dryRun
+      ? `Dry-run ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`
+      : `Публикация ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`;
+    renderZabbixApplyView(layerKey);
+
+    const response = await fetch('/api/zabbix/apply-current', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json'
+      },
+      body: JSON.stringify({
+        layer: layerKey,
+        dryRun
+      })
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `применение в Zabbix не выполнено: ${response.status}`);
+    }
+
+    stateItem.result = result;
+    stateItem.message = dryRun
+      ? `Dry-run завершен: карточек ${result.cardsScanned ?? 0}, команд ${result.commandsBuilt ?? 0}.`
+      : `Опубликовано в Zabbix-топик: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`;
+    await loadZabbixApplyStatus(layerKey);
+  } catch (error) {
+    stateItem.error = error.message;
+  } finally {
+    stateItem.applying = false;
+    renderZabbixApplyView(layerKey);
+  }
+}
+
+function renderZabbixApplyView(layerKey) {
+  const panel = document.querySelector(`[data-zabbix-apply-layer="${layerKey}"]`);
+  if (!panel) {
+    return;
+  }
+
+  const stateItem = zabbixApplyState(layerKey);
+  const summary = panel.querySelector('[data-zabbix-apply-summary]');
+  const status = panel.querySelector('[data-zabbix-apply-status]');
+  const list = panel.querySelector('[data-zabbix-apply-list]');
+  const refreshButton = panel.querySelector('[data-zabbix-apply-refresh]');
+  const dryRunButton = panel.querySelector('[data-zabbix-apply-dry-run]');
+  const publishButton = panel.querySelector('[data-zabbix-apply-publish]');
+  if (!summary || !status || !list || !refreshButton || !dryRunButton || !publishButton) {
+    return;
+  }
+
+  const busy = stateItem.applying || stateItem.loadingStatus;
+  refreshButton.disabled = busy;
+  dryRunButton.disabled = busy;
+  publishButton.disabled = busy;
+
+  const layerStatus = stateItem.status ?? {};
+  const reconcile = layerStatus.reconcile ?? {};
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Zabbix-топик</span>
+      <strong>${escapeHtml(layerStatus.topic || '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Статус</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(layerStatus.lastStatus || '-'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Получено команд</span>
+      <strong>${escapeHtml(layerStatus.commandsReceived ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Dry-run</span>
+      <strong>${escapeHtml(layerStatus.dryRunCommands ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Принято</span>
+      <strong>${escapeHtml(layerStatus.acceptedCommands ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Ожидает вручную</span>
+      <strong>${escapeHtml(layerStatus.pendingManualCommands ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Ошибки</span>
+      <strong>${escapeHtml(layerStatus.errorCommands ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Reconcile</span>
+      <strong>${escapeHtml(zabbixReconcileText(reconcile))}</strong>
+    </div>
+  `;
+
+  status.textContent = stateItem.error
+    || stateItem.message
+    || 'Команды этого слоя публикуются в отдельный Zabbix-топик; статус ведется независимо от второго слоя.';
+  status.classList.toggle('error', Boolean(stateItem.error));
+
+  list.innerHTML = renderZabbixApplyDetails(layerKey, stateItem);
+}
+
+function renderZabbixApplyDetails(layerKey, stateItem) {
+  const result = stateItem.result;
+  const layerStatus = stateItem.status ?? {};
+  const samples = Array.isArray(result?.sampleCommands) ? result.sampleCommands : [];
+  const classes = Array.isArray(result?.classes) ? result.classes : [];
+  const errors = Array.isArray(layerStatus.errors) ? layerStatus.errors : [];
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
+      <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : 'последняя публикация') : 'ожидание запуска')}</strong>
+      <span>правил ${escapeHtml(result?.ruleCount ?? 0)} · классов-источников ${escapeHtml(result?.sourceClassCount ?? 0)} · карточек ${escapeHtml(result?.cardsScanned ?? 0)} · команд ${escapeHtml(result?.commandsBuilt ?? 0)}</span>
+      <span>топики: ${escapeHtml((result?.topics ?? (result?.topic ? [result.topic] : [])).join(', ') || '-')}</span>
+      <span>последняя команда: ${escapeHtml(layerStatus.lastRuleName || layerStatus.lastRuleId || '-')} -> ${escapeHtml(layerStatus.lastTargetClass || '-')}:${escapeHtml(layerStatus.lastTargetKey || '-')}</span>
+    </div>
+    ${classes.map((item) => `
+      <div class="rule-summary">
+        <span class="structure-mark">${escapeHtml(item.sourceClass || '-')}</span>
+        <strong>${escapeHtml(item.cards ?? 0)} карточек</strong>
+        <span>собрано ${escapeHtml(item.commandsBuilt ?? 0)} · опубликовано ${escapeHtml(item.commandsPublished ?? 0)} · дубли ${escapeHtml(item.commandsSkippedAsDuplicates ?? 0)}</span>
+        ${item.error ? `<span>ошибка: ${escapeHtml(item.error)}</span>` : ''}
+      </div>
+    `).join('')}
+    ${samples.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">примеры команд</span>
+        <strong>${escapeHtml(samples.length)} примеров</strong>
+        <span>${escapeHtml(samples.map((item) => `${item.ruleId} ${item.sourceClass}/${item.sourceCardId} -> ${item.targetClass}:${item.targetKey}`).join('; '))}</span>
+      </div>
+    ` : ''}
+    ${errors.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">ошибки контура</span>
+        <strong>${escapeHtml(errors.length)} последних ошибок</strong>
+        <span>${escapeHtml(errors.join('; '))}</span>
+      </div>
+    ` : ''}
+  `;
+}
+
+function zabbixApplyLayerStatusFromPayload(payload, layerKey) {
+  const layers = Array.isArray(payload?.layers) ? payload.layers : [];
+  return layers.find((item) => String(item.layer).toLowerCase() === layerKey)
+    ?? (String(payload?.layer ?? '').toLowerCase() === layerKey ? payload : null)
+    ?? null;
+}
+
+function zabbixApplyState(layerKey) {
+  return state.zabbixApply[layerKey === 'suppression' ? 'suppression' : 'service'];
+}
+
+function zabbixLayerTitle(layerKey, form = 'nominative') {
+  if (layerKey === 'suppression') {
+    return form === 'genitive' ? 'модели подавления' : 'Каскадное подавление';
+  }
+
+  return form === 'genitive' ? 'сервисной модели' : 'Сервис';
+}
+
+function zabbixApplyStatusLabel(status) {
+  const value = String(status ?? '').toLowerCase();
+  if (value === 'dry-run') {
+    return 'dry-run';
+  }
+  if (value === 'accepted') {
+    return 'принято';
+  }
+  if (value === 'pending_manual') {
+    return 'ожидает вручную';
+  }
+  if (value === 'error') {
+    return 'ошибка';
+  }
+
+  return status || '-';
+}
+
+function zabbixReconcileText(reconcile) {
+  return [
+    `объекты +${reconcile.ensureObjects ?? 0}`,
+    `связи +${reconcile.ensureRelations ?? 0}`,
+    `объекты -${reconcile.removeObjects ?? 0}`,
+    `связи -${reconcile.removeRelations ?? 0}`
+  ].join(', ');
 }
 
 function renderZabbixPreflightView() {

@@ -29,6 +29,7 @@
                 </div>
               </div>
               <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
+              <button class="nav-item" data-view="serviceZabbixApply">Применить в Zabbix</button>
             </div>
           </div>
           <div class="nav-group">
@@ -47,6 +48,7 @@
                 </div>
               </div>
               <button class="nav-item" data-view="templateAudit">Аудит шаблонов</button>
+              <button class="nav-item" data-view="suppressionZabbixApply">Применить в Zabbix</button>
             </div>
           </div>
           <div class="nav-group">
@@ -865,6 +867,40 @@
             <div id="zabbixPreflightSummary" class="relation-graph-summary"></div>
             <p id="zabbixPreflightStatus" class="status-line"></p>
             <div id="zabbixPreflightList" class="zabbix-preflight-list"></div>
+          </section>
+        </section>
+
+        <section id="serviceZabbixApplyView" class="view hidden" data-zabbix-apply-layer="service">
+          <div class="section-heading">
+            <h2>Применить сервисную модель в Zabbix</h2>
+            <p>Проверка и публикация команд сервисного слоя в отдельный Zabbix-топик. Контур сервиса имеет собственный dry-run, статус, счетчики, ошибки и reconcile-сводку.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid" data-zabbix-apply-summary></div>
+            <div class="sync-actions">
+              <button class="secondary-button" type="button" data-zabbix-apply-refresh>Обновить статус Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Dry-run сервиса</button>
+              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать сервис в Zabbix</button>
+            </div>
+            <p class="status-line" data-zabbix-apply-status></p>
+            <div class="preview-list" data-zabbix-apply-list></div>
+          </section>
+        </section>
+
+        <section id="suppressionZabbixApplyView" class="view hidden" data-zabbix-apply-layer="suppression">
+          <div class="section-heading">
+            <h2>Применить модель подавления в Zabbix</h2>
+            <p>Проверка и публикация команд каскадного подавления в отдельный Zabbix-топик. Контур подавления имеет собственный dry-run, статус, счетчики, ошибки и reconcile-сводку.</p>
+          </div>
+          <section class="panel">
+            <div class="sync-grid" data-zabbix-apply-summary></div>
+            <div class="sync-actions">
+              <button class="secondary-button" type="button" data-zabbix-apply-refresh>Обновить статус Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Dry-run подавления</button>
+              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать подавление в Zabbix</button>
+            </div>
+            <p class="status-line" data-zabbix-apply-status></p>
+            <div class="preview-list" data-zabbix-apply-list></div>
           </section>
         </section>
 

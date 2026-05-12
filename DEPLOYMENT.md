@@ -39,7 +39,9 @@ that prefix; foreign customer topics are ignored.
 | Topic setting | Default | Producer | Consumers |
 | --- | --- | --- | --- |
 | `KafkaTopics:CmdbWebhookEvents` | `service-suppression.cmdb.events.raw` | `cmdbwebhooks2kafka` | `cmdbconfigbuilder` |
-| `KafkaTopics:AggregationCommands` | `service-suppression.monitoring.aggregation.commands` | `cmdbconfigbuilder` | `zabbixconfig2api`, `cmdbaggregation2cmdbuild` |
+| `KafkaTopics:AggregationCommands` | `service-suppression.monitoring.aggregation.commands` | `cmdbconfigbuilder` | `cmdbaggregation2cmdbuild` |
+| `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` | `cmdbconfigbuilder` | `zabbixconfig2api` service contour |
+| `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` | `cmdbconfigbuilder` | `zabbixconfig2api` suppression contour |
 | `KafkaTopics:DebugLogs` / `KafkaLogging:Topic` | `service-suppression.logs` | any service with `KafkaLogging:Enabled=true` | ELK/log collector |
 
 Minimal ACLs:
@@ -47,8 +49,8 @@ Minimal ACLs:
 | Service | Write | Read |
 | --- | --- | --- |
 | `cmdbwebhooks2kafka` | raw event topic, optional log topic | none |
-| `cmdbconfigbuilder` | aggregation command topic, optional log topic | raw event topic |
-| `zabbixconfig2api` | optional log topic | aggregation command topic |
+| `cmdbconfigbuilder` | aggregation command topic, Zabbix service/suppression apply topics, optional log topic | raw event topic |
+| `zabbixconfig2api` | optional log topic | Zabbix service/suppression apply topics |
 | `cmdbaggregation2cmdbuild` | optional log topic | aggregation command topic |
 
 ## External Configuration
@@ -75,6 +77,8 @@ Common sections:
   "ManagedPrefix": "service-suppression.",
   "CmdbWebhookEvents": "service-suppression.cmdb.events.raw",
   "AggregationCommands": "service-suppression.monitoring.aggregation.commands",
+  "ZabbixServiceApplyPlans": "service-suppression.zabbix.service.apply-plans",
+  "ZabbixSuppressionApplyPlans": "service-suppression.zabbix.suppression.apply-plans",
   "DebugLogs": "service-suppression.logs"
 },
 "Debug": {
@@ -93,6 +97,8 @@ Kafka__Enabled=true
 Kafka__BootstrapServers=kafka:29092
 KafkaTopics__CmdbWebhookEvents=service-suppression.cmdb.events.raw
 KafkaTopics__AggregationCommands=service-suppression.monitoring.aggregation.commands
+KafkaTopics__ZabbixServiceApplyPlans=service-suppression.zabbix.service.apply-plans
+KafkaTopics__ZabbixSuppressionApplyPlans=service-suppression.zabbix.suppression.apply-plans
 Readiness__ZabbixHostIdAttribute=zabbix_hostid
 Debug__Enabled=false
 Debug__Level=Basic

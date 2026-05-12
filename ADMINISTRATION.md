@@ -10,8 +10,8 @@ pipeline:
 | Service | Responsibility |
 | --- | --- |
 | `cmdbwebhooks2kafka` | Accepts CMDBuild webhooks, normalizes payloads, and publishes `CmdbRawEvent` messages. |
-| `cmdbconfigbuilder` | Reads raw events, evaluates conversion rules, and publishes canonical `AggregationCommand` messages. |
-| `zabbixconfig2api` | Reads canonical aggregation commands and applies the Zabbix side. |
+| `cmdbconfigbuilder` | Reads raw events, evaluates conversion rules, and publishes canonical `AggregationCommand` messages to CMDBuild and layer-specific Zabbix topics. |
+| `zabbixconfig2api` | Reads separate service/suppression Zabbix topics and applies the Zabbix side with independent status and counters. |
 | `cmdbaggregation2cmdbuild` | Reads canonical aggregation commands and applies CMDBuild aggregation objects and relations. |
 | `monitoring-ui-api` | Provides schema management, rule editing, source synchronization, and operator UI. |
 
@@ -90,6 +90,25 @@ This prevents a race with a neighboring monitoring application that receives the
 same CMDBuild webhooks and creates or modifies the real Zabbix host. The service
 must not add a source object into the service model or suppression dependencies
 until the CMDBuild card contains `zabbix_hostid`.
+
+## Zabbix Apply Contours
+
+Zabbix application is split by layer:
+
+| Layer | UI menu | Kafka topic setting | Default topic |
+| --- | --- | --- | --- |
+| Service | `Сервисный слой -> Применить в Zabbix` | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` |
+| Suppression | `Каскадное подавление -> Применить в Zabbix` | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` |
+
+The UI dry-run action evaluates current CMDBuild cards and rules for one layer
+without publishing. The publish action writes only to that layer's Zabbix topic;
+it does not write to `KafkaTopics:AggregationCommands`, so CMDBuild aggregation
+objects are not touched by these layer-specific Zabbix actions.
+
+`zabbixconfig2api` exposes `/apply/status` with separate service and suppression
+status blocks. Each block reports the topic, last command, dry-run/accepted/manual
+pending/error counters, recent errors, and reconcile counters for objects and
+relations.
 
 ## CMDBuild Webhook Feedback Control
 

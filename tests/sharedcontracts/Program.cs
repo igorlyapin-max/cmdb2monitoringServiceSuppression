@@ -8,6 +8,14 @@ using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 using Microsoft.Extensions.Options;
 
 var factory = new CmdbuildSchemaFactory();
+var topics = new KafkaTopicsOptions();
+Assert(topics.EffectiveZabbixApplyPlans("service").Contains(".zabbix.service.", StringComparison.Ordinal),
+    "service Zabbix apply topic must be layer-specific");
+Assert(topics.EffectiveZabbixApplyPlans("suppression").Contains(".zabbix.suppression.", StringComparison.Ordinal),
+    "suppression Zabbix apply topic must be layer-specific");
+Assert(topics.EffectiveZabbixApplyPlans("service") != topics.EffectiveZabbixApplyPlans("suppression"),
+    "service and suppression Zabbix apply topics must be different");
+
 var schema = factory.Build(new CmdbuildSchemaOptions
 {
     Prefix = "C2M_",

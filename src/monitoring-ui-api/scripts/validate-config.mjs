@@ -34,7 +34,7 @@ if (!config.readiness?.zabbixHostIdAttribute) {
   errors.push('readiness.zabbixHostIdAttribute is required');
 }
 
-for (const key of ['rulesValidateUrl', 'rulesApplyCurrentUrl']) {
+for (const key of ['rulesValidateUrl', 'rulesApplyCurrentUrl', 'zabbixApplyStatusUrl']) {
   try {
     new URL(config.backend?.[key] ?? '');
   } catch {

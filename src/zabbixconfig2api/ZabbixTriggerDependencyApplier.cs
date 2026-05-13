@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 using Microsoft.Extensions.Options;
 
@@ -45,7 +46,7 @@ public sealed class ZabbixTriggerDependencyApplier(
             if (dryRun)
             {
                 result.Status = "dry-run";
-                result.Message = "Dry-run trigger dependencies и aggregate triggers завершен без изменения Zabbix.";
+                result.Message = "Dry-run конфигурации trigger dependencies и calculated aggregate triggers завершен без изменения Zabbix.";
                 return Complete(result);
             }
 
@@ -70,7 +71,7 @@ public sealed class ZabbixTriggerDependencyApplier(
                 Layer,
                 result.DesiredDependencies.Select(item => item.ToManaged(Layer)).ToArray());
             result.Status = "applied";
-            result.Message = $"Trigger dependencies применены: обновлено триггеров {result.TriggersUpdated}, добавлено зависимостей {result.DependenciesAdded}, удалено устаревших {result.DependenciesRemoved}.";
+            result.Message = $"Конфигурация trigger dependencies применена: обновлено триггеров {result.TriggersUpdated}, добавлено зависимостей {result.DependenciesAdded}, удалено устаревших {result.DependenciesRemoved}.";
             return Complete(result);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
@@ -135,7 +136,6 @@ public sealed class ZabbixTriggerDependencyApplier(
                 aggregate.HostAction = apply.HostAction;
                 aggregate.ItemAction = apply.ItemAction;
                 aggregate.TriggerAction = apply.TriggerAction;
-                aggregate.StatePushed = apply.StatePushed;
                 if (string.Equals(apply.HostAction, "created", StringComparison.OrdinalIgnoreCase))
                 {
                     result.AggregateHostsCreated++;
@@ -157,11 +157,6 @@ public sealed class ZabbixTriggerDependencyApplier(
                 else
                 {
                     result.AggregateTriggersUpdated++;
-                }
-
-                if (apply.StatePushed)
-                {
-                    result.AggregateStatesPushed++;
                 }
             }
 
@@ -359,6 +354,9 @@ public sealed class ZabbixTriggerDependencyApplier(
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        var hostProblemExpressions = new List<string>();
+        var selectedSourceTriggers = new List<ZabbixAggregateSourceTriggerPlanItem>();
+        var skippedSourceTriggers = new List<ZabbixAggregateSkippedTriggerPlanItem>();
         var problemHosts = 0;
         var healthyHosts = 0;
         var unknownHosts = 0;
@@ -367,10 +365,49 @@ public sealed class ZabbixTriggerDependencyApplier(
             if (!triggersByHost.TryGetValue(hostId, out var hostTriggers) || hostTriggers.Count == 0)
             {
                 unknownHosts++;
+                result.HostsWithoutSelectedSourceTriggers++;
+                result.Warnings.Add(
+                    $"{target.TargetName}: для source-host {hostId} не найдены triggers для расчета aggregate.");
                 continue;
             }
 
-            if (hostTriggers.Any(trigger => string.Equals(trigger.Value, "1", StringComparison.Ordinal)))
+            var hostSelectedExpressions = new List<string>();
+            var hostSelectedProblem = false;
+            foreach (var trigger in hostTriggers)
+            {
+                if (!TrySelectAggregateTrigger(trigger, currentOptions, out var selectionReason))
+                {
+                    AddSkippedSourceTrigger(skippedSourceTriggers, trigger, "не соответствует selector");
+                    result.SkippedSourceTriggerCount++;
+                    continue;
+                }
+
+                result.SelectedSourceTriggerCount++;
+                if (!TryBuildCalculatedProblemExpression(trigger, out var problemExpression, out var unsupportedReason))
+                {
+                    AddSkippedSourceTrigger(skippedSourceTriggers, trigger, unsupportedReason);
+                    result.UnsupportedTriggerExpressionCount++;
+                    result.Warnings.Add(
+                        $"{target.TargetName}: trigger {TriggerDisplayName(trigger)} не включен в aggregate formula: {unsupportedReason}.");
+                    continue;
+                }
+
+                hostSelectedExpressions.Add(problemExpression);
+                hostSelectedProblem |= string.Equals(trigger.Value, "1", StringComparison.Ordinal);
+                AddSelectedSourceTrigger(selectedSourceTriggers, trigger, problemExpression, selectionReason);
+            }
+
+            if (hostSelectedExpressions.Count == 0)
+            {
+                unknownHosts++;
+                result.HostsWithoutSelectedSourceTriggers++;
+                result.Warnings.Add(
+                    $"{target.TargetName}: для source-host {hostId} selector не выбрал ни одного поддержанного trigger.");
+                continue;
+            }
+
+            hostProblemExpressions.Add(JoinProblemExpressions(hostSelectedExpressions));
+            if (hostSelectedProblem)
             {
                 problemHosts++;
             }
@@ -381,16 +418,20 @@ public sealed class ZabbixTriggerDependencyApplier(
         }
 
         var aggregationType = NormalizeAggregationType(target.AggregationType);
-        var stateValue = CalculateAggregateState(
+        var requiredHealthyHosts = CalculateRequiredHealthyHosts(
             aggregationType,
             hostIds.Length,
-            problemHosts,
             target.Threshold,
             target.N,
             result,
             target.TargetName);
+        var stateValue = hostIds.Length <= 0 || healthyHosts >= requiredHealthyHosts ? 0 : 1;
         var itemHash = StableHash(target.TargetManagedKey);
         var itemKey = $"{currentOptions.AggregateItemKeyPrefix}[{itemHash}]";
+        var formula = BuildHealthyHostFormula(hostProblemExpressions);
+        var triggerExpression = hostIds.Length <= 0
+            ? $"last(/{currentOptions.AggregateHostName}/{itemKey})<0"
+            : $"last(/{currentOptions.AggregateHostName}/{itemKey})<{requiredHealthyHosts.ToString(CultureInfo.InvariantCulture)}";
         var targetName = string.IsNullOrWhiteSpace(target.TargetName)
             ? target.TargetManagedKey
             : target.TargetName;
@@ -408,21 +449,26 @@ public sealed class ZabbixTriggerDependencyApplier(
             HostVisibleName = currentOptions.AggregateHostVisibleName,
             ItemKey = itemKey,
             ItemName = $"CMDB2M suppression state: {targetName}",
+            CalculationFormula = formula,
             TriggerName = triggerName,
+            TriggerExpression = triggerExpression,
             TriggerPriority = currentOptions.AggregateTriggerPriority,
             TriggerId = $"planned:{itemHash}",
             StateValue = stateValue,
+            RequiredHealthyHostCount = requiredHealthyHosts,
+            TriggerSelectorSummary = currentOptions.TriggerSelectorSummary(),
             HostCount = hostIds.Length,
             HealthyHostCount = healthyHosts,
             ProblemHostCount = problemHosts,
-            UnknownHostCount = unknownHosts
+            UnknownHostCount = unknownHosts,
+            SelectedSourceTriggers = selectedSourceTriggers.Take(currentOptions.SampleSourceTriggersPerAggregate).ToArray(),
+            SkippedSourceTriggers = skippedSourceTriggers.Take(currentOptions.SampleSourceTriggersPerAggregate).ToArray()
         };
     }
 
-    private static int CalculateAggregateState(
+    private static int CalculateRequiredHealthyHosts(
         string aggregationType,
         int hostCount,
-        int problemHostCount,
         string threshold,
         string n,
         ZabbixTriggerDependencyRunResult result,
@@ -430,22 +476,21 @@ public sealed class ZabbixTriggerDependencyApplier(
     {
         if (hostCount <= 0)
         {
-            result.Warnings.Add($"{targetName}: aggregate trigger будет OK, потому что нет source-host с zabbix_main_hostid.");
+            result.Warnings.Add($"{targetName}: calculated aggregate trigger будет OK, потому что нет source-host с zabbix_main_hostid.");
             return 0;
         }
 
         return aggregationType switch
         {
-            "any" => problemHostCount >= hostCount ? 1 : 0,
-            "threshold" => CalculateThresholdState(hostCount, problemHostCount, threshold, result, targetName),
-            "n_of_m" => CalculateNOfMState(hostCount, problemHostCount, n, result, targetName),
-            _ => problemHostCount > 0 ? 1 : 0
+            "any" => 1,
+            "threshold" => CalculateThresholdRequiredHealthy(hostCount, threshold, result, targetName),
+            "n_of_m" => CalculateNOfMRequiredHealthy(hostCount, n, result, targetName),
+            _ => hostCount
         };
     }
 
-    private static int CalculateThresholdState(
+    private static int CalculateThresholdRequiredHealthy(
         int hostCount,
-        int problemHostCount,
         string threshold,
         ZabbixTriggerDependencyRunResult result,
         string targetName)
@@ -457,14 +502,11 @@ public sealed class ZabbixTriggerDependencyApplier(
         }
 
         thresholdValue = Math.Clamp(thresholdValue, 0m, 100m);
-        var requiredHealthy = (int)Math.Ceiling(hostCount * (double)thresholdValue / 100d);
-        var maxHealthy = hostCount - problemHostCount;
-        return maxHealthy < requiredHealthy ? 1 : 0;
+        return (int)Math.Ceiling(hostCount * (double)thresholdValue / 100d);
     }
 
-    private static int CalculateNOfMState(
+    private static int CalculateNOfMRequiredHealthy(
         int hostCount,
-        int problemHostCount,
         string n,
         ZabbixTriggerDependencyRunResult result,
         string targetName)
@@ -476,8 +518,7 @@ public sealed class ZabbixTriggerDependencyApplier(
         }
 
         requiredHealthy = Math.Clamp(requiredHealthy, 0, hostCount);
-        var maxHealthy = hostCount - problemHostCount;
-        return maxHealthy < requiredHealthy ? 1 : 0;
+        return requiredHealthy;
     }
 
     private static bool TryParseDecimal(string value, out decimal parsed)
@@ -506,6 +547,197 @@ public sealed class ZabbixTriggerDependencyApplier(
                     .OrderBy(trigger => trigger.Description, StringComparer.OrdinalIgnoreCase)
                     .ToArray(),
                 StringComparer.Ordinal);
+    }
+
+    private static bool TrySelectAggregateTrigger(
+        ZabbixTriggerInfo trigger,
+        ZabbixTriggerDependenciesOptions currentOptions,
+        out string reason)
+    {
+        reason = "";
+        if (int.TryParse(trigger.Priority, NumberStyles.Integer, CultureInfo.InvariantCulture, out var priority)
+            && priority < currentOptions.AggregateTriggerMinPriority)
+        {
+            return false;
+        }
+
+        var includeTags = DistinctTagSelectors(currentOptions.AggregateTriggerIncludeTags);
+        var excludeTags = DistinctTagSelectors(currentOptions.AggregateTriggerExcludeTags);
+
+        if (MatchesAnyTag(trigger, excludeTags)
+            || MatchesRegex(trigger.Description, currentOptions.AggregateTriggerExcludeNameRegex))
+        {
+            return false;
+        }
+
+        var hasIncludeSelector = includeTags.Count > 0
+            || !string.IsNullOrWhiteSpace(currentOptions.AggregateTriggerIncludeNameRegex);
+        if (!hasIncludeSelector)
+        {
+            reason = "selector: all";
+            return true;
+        }
+
+        if (MatchesAnyTag(trigger, includeTags))
+        {
+            reason = "selector: tag";
+            return true;
+        }
+
+        if (MatchesRegex(trigger.Description, currentOptions.AggregateTriggerIncludeNameRegex))
+        {
+            reason = "selector: name regex";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryBuildCalculatedProblemExpression(
+        ZabbixTriggerInfo trigger,
+        out string expression,
+        out string reason)
+    {
+        expression = "";
+        reason = "";
+        var source = trigger.Expression.Trim();
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            reason = "пустое expression";
+            return false;
+        }
+
+        if (source.Contains('{', StringComparison.Ordinal) || source.Contains('}', StringComparison.Ordinal))
+        {
+            reason = "expression содержит нераскрытые Zabbix-макросы/старый синтаксис";
+            return false;
+        }
+
+        if (source.Contains("//", StringComparison.Ordinal))
+        {
+            reason = "expression содержит ссылку на текущий host //, в aggregate host это будет неоднозначно";
+            return false;
+        }
+
+        if (!source.Contains("(/", StringComparison.Ordinal))
+        {
+            reason = "expression не содержит явной ссылки на item вида /host/key";
+            return false;
+        }
+
+        expression = $"({source})";
+        return true;
+    }
+
+    private static string BuildHealthyHostFormula(IReadOnlyList<string> hostProblemExpressions)
+    {
+        var terms = hostProblemExpressions
+            .Where(expression => !string.IsNullOrWhiteSpace(expression))
+            .Select(expression => $"(1-({expression}))")
+            .ToArray();
+        return terms.Length == 0
+            ? "0"
+            : string.Join("+", terms);
+    }
+
+    private static string JoinProblemExpressions(IReadOnlyList<string> expressions)
+    {
+        return expressions.Count == 1
+            ? expressions[0]
+            : $"({string.Join(" or ", expressions)})";
+    }
+
+    private static bool MatchesAnyTag(
+        ZabbixTriggerInfo trigger,
+        IReadOnlyList<ZabbixTriggerTagSelector> selectors)
+    {
+        if (selectors.Count == 0)
+        {
+            return false;
+        }
+
+        return selectors.Any(selector => trigger.Tags.Any(tag =>
+            tag.Tag.Equals(selector.Tag, StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrWhiteSpace(selector.Value)
+                || (tag.Value ?? "").Equals(selector.Value ?? "", StringComparison.OrdinalIgnoreCase))));
+    }
+
+    private static IReadOnlyList<ZabbixTriggerTagSelector> DistinctTagSelectors(
+        IReadOnlyList<ZabbixTriggerTagSelector> selectors)
+    {
+        return selectors
+            .Where(selector => !string.IsNullOrWhiteSpace(selector.Tag))
+            .GroupBy(
+                selector => $"{selector.Tag.Trim()}\u001f{(selector.Value ?? "").Trim()}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private static bool MatchesRegex(string value, string pattern)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            return false;
+        }
+
+        try
+        {
+            return Regex.IsMatch(value ?? "", pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static void AddSelectedSourceTrigger(
+        List<ZabbixAggregateSourceTriggerPlanItem> target,
+        ZabbixTriggerInfo trigger,
+        string problemExpression,
+        string selectionReason)
+    {
+        var host = trigger.Hosts.FirstOrDefault();
+        target.Add(new ZabbixAggregateSourceTriggerPlanItem
+        {
+            HostId = host?.HostId ?? "",
+            Host = host?.Host ?? "",
+            TriggerId = trigger.TriggerId,
+            Name = trigger.Description,
+            Priority = trigger.Priority,
+            Value = trigger.Value,
+            Expression = trigger.Expression,
+            ProblemExpression = problemExpression,
+            SelectionReason = selectionReason,
+            Tags = trigger.Tags.ToArray()
+        });
+    }
+
+    private static void AddSkippedSourceTrigger(
+        List<ZabbixAggregateSkippedTriggerPlanItem> target,
+        ZabbixTriggerInfo trigger,
+        string reason)
+    {
+        var host = trigger.Hosts.FirstOrDefault();
+        target.Add(new ZabbixAggregateSkippedTriggerPlanItem
+        {
+            HostId = host?.HostId ?? "",
+            Host = host?.Host ?? "",
+            TriggerId = trigger.TriggerId,
+            Name = trigger.Description,
+            Priority = trigger.Priority,
+            Value = trigger.Value,
+            Expression = trigger.Expression,
+            Reason = reason
+        });
+    }
+
+    private static string TriggerDisplayName(ZabbixTriggerInfo trigger)
+    {
+        var host = trigger.Hosts.FirstOrDefault()?.Host;
+        return string.IsNullOrWhiteSpace(host)
+            ? $"{trigger.TriggerId} {trigger.Description}"
+            : $"{host}/{trigger.TriggerId} {trigger.Description}";
     }
 
     private static ZabbixTargetMembershipSnapshot? ResolveMembership(
@@ -657,6 +889,10 @@ public sealed class ZabbixTriggerDependenciesOptions
 
     public bool IncludeDisabledTriggers { get; init; }
 
+    public bool AutoReconcileOnMembershipChange { get; init; } = true;
+
+    public int AutoReconcileDebounceSeconds { get; init; } = 10;
+
     public int MaxDependenciesPerRun { get; init; } = 10000;
 
     public int SampleLimit { get; init; } = 100;
@@ -669,7 +905,60 @@ public sealed class ZabbixTriggerDependenciesOptions
 
     public string AggregateItemKeyPrefix { get; init; } = "cmdb2monitoring.suppression.aggregate";
 
+    public List<ZabbixTriggerTagSelector> AggregateTriggerIncludeTags { get; init; } =
+    [
+        new() { Tag = "scope", Value = "availability" },
+        new() { Tag = "component", Value = "health" }
+    ];
+
+    public List<ZabbixTriggerTagSelector> AggregateTriggerExcludeTags { get; init; } = [];
+
+    public string AggregateTriggerIncludeNameRegex { get; init; } = "";
+
+    public string AggregateTriggerExcludeNameRegex { get; init; } = "";
+
+    public int AggregateTriggerMinPriority { get; init; }
+
+    public int SampleSourceTriggersPerAggregate { get; init; } = 20;
+
     public int AggregateTriggerPriority { get; init; } = 3;
+
+    public string TriggerSelectorSummary()
+    {
+        var includeSelectors = DistinctTagSelectors(AggregateTriggerIncludeTags);
+        var excludeSelectors = DistinctTagSelectors(AggregateTriggerExcludeTags);
+        var includeTags = includeSelectors.Count == 0
+            ? "нет"
+            : string.Join(", ", includeSelectors.Select(tag => $"{tag.Tag}={tag.Value}"));
+        var excludeTags = excludeSelectors.Count == 0
+            ? "нет"
+            : string.Join(", ", excludeSelectors.Select(tag => $"{tag.Tag}={tag.Value}"));
+        return $"include tags: {includeTags}; exclude tags: {excludeTags}; include name regex: {EmptyAsDash(AggregateTriggerIncludeNameRegex)}; exclude name regex: {EmptyAsDash(AggregateTriggerExcludeNameRegex)}; min priority: {AggregateTriggerMinPriority}";
+    }
+
+    private static string EmptyAsDash(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "-" : value;
+    }
+
+    private static IReadOnlyList<ZabbixTriggerTagSelector> DistinctTagSelectors(
+        IReadOnlyList<ZabbixTriggerTagSelector> selectors)
+    {
+        return selectors
+            .Where(selector => !string.IsNullOrWhiteSpace(selector.Tag))
+            .GroupBy(
+                selector => $"{selector.Tag.Trim()}\u001f{(selector.Value ?? "").Trim()}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+    }
+}
+
+public sealed class ZabbixTriggerTagSelector
+{
+    public string Tag { get; init; } = "";
+
+    public string Value { get; init; } = "";
 }
 
 public sealed class ZabbixTriggerDependencyRunResult
@@ -710,8 +999,6 @@ public sealed class ZabbixTriggerDependencyRunResult
 
     public int AggregateTriggersUpdated { get; set; }
 
-    public int AggregateStatesPushed { get; set; }
-
     public int ManagedDependencyCountBefore { get; set; }
 
     public int TriggersToUpdate { get; set; }
@@ -723,6 +1010,14 @@ public sealed class ZabbixTriggerDependencyRunResult
     public int DependenciesRemoved { get; set; }
 
     public int PreservedManualDependencies { get; set; }
+
+    public int SelectedSourceTriggerCount { get; set; }
+
+    public int SkippedSourceTriggerCount { get; set; }
+
+    public int UnsupportedTriggerExpressionCount { get; set; }
+
+    public int HostsWithoutSelectedSourceTriggers { get; set; }
 
     public bool HasMoreSamples { get; set; }
 
@@ -775,15 +1070,23 @@ public sealed class ZabbixSuppressionAggregatePlanItem
 
     public string ItemName { get; init; } = "";
 
+    public string CalculationFormula { get; init; } = "";
+
     public string ItemId { get; set; } = "";
 
     public string TriggerName { get; init; } = "";
+
+    public string TriggerExpression { get; init; } = "";
 
     public int TriggerPriority { get; init; }
 
     public string TriggerId { get; set; } = "";
 
     public int StateValue { get; init; }
+
+    public int RequiredHealthyHostCount { get; init; }
+
+    public string TriggerSelectorSummary { get; init; } = "";
 
     public int HostCount { get; init; }
 
@@ -799,7 +1102,9 @@ public sealed class ZabbixSuppressionAggregatePlanItem
 
     public string TriggerAction { get; set; } = "planned";
 
-    public bool StatePushed { get; set; }
+    public IReadOnlyList<ZabbixAggregateSourceTriggerPlanItem> SelectedSourceTriggers { get; init; } = [];
+
+    public IReadOnlyList<ZabbixAggregateSkippedTriggerPlanItem> SkippedSourceTriggers { get; init; } = [];
 
     public ZabbixSuppressionAggregateDefinition ToDefinition()
     {
@@ -816,9 +1121,10 @@ public sealed class ZabbixSuppressionAggregatePlanItem
             HostVisibleName = HostVisibleName,
             ItemKey = ItemKey,
             ItemName = ItemName,
+            CalculationFormula = CalculationFormula,
             TriggerName = TriggerName,
-            TriggerPriority = TriggerPriority,
-            StateValue = StateValue
+            TriggerExpression = TriggerExpression,
+            TriggerPriority = TriggerPriority
         };
     }
 
@@ -840,6 +1146,48 @@ public sealed class ZabbixSuppressionAggregatePlanItem
             ]
         };
     }
+}
+
+public sealed class ZabbixAggregateSourceTriggerPlanItem
+{
+    public string HostId { get; init; } = "";
+
+    public string Host { get; init; } = "";
+
+    public string TriggerId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string Priority { get; init; } = "";
+
+    public string Value { get; init; } = "";
+
+    public string Expression { get; init; } = "";
+
+    public string ProblemExpression { get; init; } = "";
+
+    public string SelectionReason { get; init; } = "";
+
+    public IReadOnlyList<ZabbixServiceTag> Tags { get; init; } = [];
+}
+
+public sealed class ZabbixAggregateSkippedTriggerPlanItem
+{
+    public string HostId { get; init; } = "";
+
+    public string Host { get; init; } = "";
+
+    public string TriggerId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string Priority { get; init; } = "";
+
+    public string Value { get; init; } = "";
+
+    public string Expression { get; init; } = "";
+
+    public string Reason { get; init; } = "";
 }
 
 public sealed class ZabbixTriggerDependencyPlanItem

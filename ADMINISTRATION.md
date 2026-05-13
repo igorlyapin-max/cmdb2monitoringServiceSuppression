@@ -81,8 +81,8 @@ Operational rule:
 | --- | --- | --- |
 | `CREATE` | empty | Do not create service/suppression membership yet. Keep the object pending/unready. |
 | `CREATE` | present | Treat as ready and produce normal ensure/upsert commands. |
-| `UPDATE` | empty, no previous managed membership | No-op. |
-| `UPDATE` | empty, previous managed membership exists | Remove this source object from managed Zabbix structures. |
+| `UPDATE` | empty, no previous managed membership | Keep pending/unready diagnostics; do not create active membership. |
+| `UPDATE` | empty, previous managed membership exists | Remove this source object from managed Zabbix structures and keep pending diagnostics. |
 | `UPDATE` | present | Recalculate desired state and apply idempotently. |
 | `DELETE` | any | Remove only previously recorded managed memberships; if none exist, no-op. |
 
@@ -153,7 +153,23 @@ The membership set is stored by `zabbixconfig2api` in
 target service do not overwrite each other during repeated applies or service
 restarts. If a source object has no `zabbix_main_hostid`, it is treated as unready:
 dry-run reports the missing binding, and publish removes any previous source
-membership for that card instead of adding a source leaf.
+membership for that card instead of adding a source leaf. The same source card
+remains visible in the membership snapshot as `pendingSources`; this is a
+diagnostic state, not a Zabbix service child. When a later `UPDATE` or
+current-card reconcile sees `zabbix_main_hostid`, the source is moved from
+pending into active membership and source leaf/problem tags are created.
+
+Webhook payloads may omit `zabbix_main_hostid`. `cmdbconfigbuilder` resolves the
+configured readiness attribute (`Readiness:ZabbixHostIdAttribute`, default
+`zabbix_main_hostid`) from the current CMDBuild card before rule evaluation and
+adds it to the source attributes used by commands. Legacy fields such as
+`zabbix_hostid` are still accepted by the shared rule engine as fallback values,
+but they do not replace the configured readiness attribute.
+
+The semantic deduplication fingerprint includes the resolved readiness value.
+This means repeated CMDBuild noise is still suppressed, but a transition from an
+unready card to a card with `zabbix_main_hostid` always produces a new desired
+Zabbix command.
 
 This binding builds the Zabbix service impact model. Automatic hiding,
 acknowledging, or closing of dependent problem events is not performed by a
@@ -171,13 +187,17 @@ membership and relation graph after the suppression model has been published:
   There may be several independent suppression chains, several top-level causes,
   branches that split or converge, and chains that do not share any common root.
   The required invariant is causal direction plus no cycles;
-- every suppression object gets one managed aggregate trigger on the technical
-  Zabbix host `cmdb2monitoring-suppression-aggregates`;
-- `aggregation_type` controls the state written to that aggregate trigger:
-  `all` fails when any source host is in problem, `any` fails only when all
-  source hosts are in problem, `threshold` fails when the maximum possible
-  healthy percentage is below `threshold`, and `n_of_m` fails when the maximum
-  possible healthy count is below `n`;
+- every suppression object gets one managed calculated item and one managed
+  aggregate trigger on the technical Zabbix host
+  `cmdb2monitoring-suppression-aggregates`;
+- `aggregation_type` controls the trigger expression over the calculated
+  healthy-host count: `all` fails when not all source hosts are healthy, `any`
+  fails only when none of the source hosts is healthy, `threshold` fails when
+  healthy percentage is below `threshold`, and `n_of_m` fails when healthy count
+  is below `n`. The healthy count is calculated from selected source-host
+  triggers. By default the selector takes triggers tagged `scope=availability`
+  or `component=health`, so the aggregate follows the same Zabbix expression
+  that creates the source host Problem;
 - active triggers of dependent source hosts, and the dependent object's own
   aggregate trigger, get dependencies on the aggregate trigger of the
   cause object;
@@ -191,8 +211,19 @@ membership and relation graph after the suppression model has been published:
 Operators should run dry-run first. Blocking errors include dependency cycles,
 missing membership for related targets, or a dependency count above
 `ZabbixTriggerDependencies:MaxDependenciesPerRun`. The same screen reports
-aggregate host/item/trigger creation and the last state pushed through
-`history.push`.
+aggregate host, calculated item, trigger creation, generated formulas, and
+trigger dependency changes. Runtime state is not written through `history.push`;
+after reconcile Zabbix recalculates aggregate items and trigger states itself.
+When a suppression membership command is applied from Kafka, `zabbixconfig2api`
+automatically requests the same reconcile with debounce
+`ZabbixTriggerDependencies:AutoReconcileDebounceSeconds`. The manual action
+remains the operator control for dry-run, forced reconcile after relation/schema
+changes, and diagnostics.
+`Show suppressed problems` should not be expected to list trigger-dependency
+children that never entered Problem state: Zabbix trigger dependencies block the
+dependent trigger state change while the parent trigger is in Problem, then
+reevaluate the dependent trigger only after the parent clears and a new metric
+arrives.
 
 For managed relations the command target is treated as the parent service and
 the related target as a child service. If a referenced child service is not
@@ -385,16 +416,20 @@ Administrative constraints for that workflow:
   the CMDBuild domain relation after the rule-owned target card is ensured. If
   the related target card is not found by card id or lookup/Code, the relation
   is skipped and will be retried when the source object is processed again.
-  For service-layer links between two `ServiceNetworkAccessZone` objects, use
-  the standard `ServiceNetworkZoneDependsOnNetworkZone` domain.
-  For suppression chains where a suppression aggregate must sit above a
-  resource, for example `МаршрутизаторыSupp / City04 -> Рабочие места / City04`,
-  use the relation role `Подавляет`. Standard schema domains allow
-  `SuppressionResource`, `SuppressionNetworkAccessZone`,
-  `SuppressionComputeCluster`, `SuppressionStoragePool`, and
-  `SuppressionProxyGroup` to point to `SuppressionResource` with internal
-  `relationType=depends_on`. Custom suppression classes get a suggested
-  `<Custom>SuppressesSuppressionResource` domain for the same pattern.
+  Service dependency links use internal `relationType=service_depends_on`; the
+  standard schema creates a full dependency-domain matrix between concrete
+  managed service classes, including custom managed service classes. Explicit
+  `member_of` and `aggregates_to` service domains remain for containment
+  semantics. For suppression chains where a suppression aggregate must sit above
+  another aggregate or resource, for example `МаршрутизаторыSupp / City04 ->
+  Рабочие места / City04`, use the relation role `Подавляет`. The standard
+  schema creates a full suppression-domain matrix between concrete suppression
+  classes, including custom managed suppression classes. Targets of
+  `SuppressionNetworkAccessZone` use internal `relationType=depends_on_network`;
+  other suppression targets use `relationType=depends_on`. This means pairs
+  such as `SuppressionComputeCluster -> SuppressionNetworkAccessZone` and
+  `SuppressionProxyGroup -> SuppressionStoragePool` are valid without manual
+  one-off domains.
 - For template-to-template links, operators can filter generated rules on both
   sides before variable matching. The left and right filter blocks use the same
   include/exclude regex semantics as template selection filters: include rows

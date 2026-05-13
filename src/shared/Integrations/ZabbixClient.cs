@@ -234,12 +234,18 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
                 $"Zabbix suppression aggregate definition is incomplete for '{definition.TargetManagedKey}'.");
         }
 
+        if (string.IsNullOrWhiteSpace(definition.CalculationFormula)
+            || string.IsNullOrWhiteSpace(definition.TriggerExpression))
+        {
+            throw new InvalidOperationException(
+                $"Zabbix suppression aggregate formula is empty for '{definition.TargetManagedKey}'.");
+        }
+
         var tags = AggregateTags(definition);
         var group = await EnsureHostGroupAsync(definition.HostGroupName, cancellationToken);
         var host = await EnsureAggregateHostAsync(definition, group.Id, cancellationToken);
         var item = await EnsureAggregateItemAsync(definition, host.Id, tags, cancellationToken);
         var trigger = await EnsureAggregateTriggerAsync(definition, host.Id, tags, cancellationToken);
-        await PushHistoryValueAsync(item.Id, definition.StateValue, cancellationToken);
 
         return new ZabbixSuppressionAggregateApplyResult
         {
@@ -248,8 +254,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             TriggerId = trigger.Id,
             HostAction = host.Action,
             ItemAction = item.Action,
-            TriggerAction = trigger.Action,
-            StatePushed = true
+            TriggerAction = trigger.Action
         };
     }
 
@@ -415,9 +420,10 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             ["name"] = definition.ItemName,
             ["key_"] = definition.ItemKey,
             ["hostid"] = hostId,
-            ["type"] = 2,
+            ["type"] = 15,
             ["value_type"] = 3,
-            ["delay"] = "0",
+            ["params"] = definition.CalculationFormula,
+            ["delay"] = "1m",
             ["status"] = 0,
             ["tags"] = ServiceTags(tags)
         };
@@ -431,8 +437,10 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         if (existing.Count == 1 && existing[0] is JsonObject item)
         {
             var itemId = JsonString(item["itemid"]);
-            payload["itemid"] = itemId;
-            await SendZabbixMethodAsync("item.update", payload, cancellationToken);
+            var updatePayload = CloneJsonObject(payload);
+            updatePayload.Remove("hostid");
+            updatePayload["itemid"] = itemId;
+            await SendZabbixMethodAsync("item.update", updatePayload, cancellationToken);
             return new ZabbixObjectAction(itemId, "updated");
         }
 
@@ -446,7 +454,6 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         IReadOnlyDictionary<string, string> tags,
         CancellationToken cancellationToken)
     {
-        var expression = $"last(/{definition.HostName}/{definition.ItemKey})=1";
         var parameters = new JsonObject
         {
             ["output"] = new JsonArray("triggerid", "description", "expression", "priority"),
@@ -460,7 +467,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         var payload = new JsonObject
         {
             ["description"] = definition.TriggerName,
-            ["expression"] = expression,
+            ["expression"] = definition.TriggerExpression,
             ["priority"] = definition.TriggerPriority,
             ["tags"] = ServiceTags(tags)
         };
@@ -481,25 +488,6 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
         var create = await SendZabbixMethodAsync("trigger.create", payload, cancellationToken);
         return new ZabbixObjectAction(ReadFirstId(create, "triggerids", "trigger.create"), "created");
-    }
-
-    private async Task PushHistoryValueAsync(
-        string itemId,
-        int value,
-        CancellationToken cancellationToken)
-    {
-        await SendZabbixMethodAsync(
-            "history.push",
-            new JsonArray
-            {
-                new JsonObject
-                {
-                    ["itemid"] = itemId,
-                    ["value"] = value.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    ["clock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-                }
-            },
-            cancellationToken);
     }
 
     private async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersAsync(
@@ -924,9 +912,12 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
     {
         var parameters = new JsonObject
         {
-            ["output"] = new JsonArray("triggerid", "description", "status", "priority", "value"),
+            ["output"] = new JsonArray("triggerid", "description", "status", "priority", "value", "expression", "recovery_expression"),
             ["selectHosts"] = new JsonArray("hostid", "host", "name"),
             ["selectDependencies"] = new JsonArray("triggerid", "description"),
+            ["selectTags"] = new JsonArray("tag", "value"),
+            ["expandExpression"] = true,
+            ["expandRecoveryExpression"] = true,
             ["expandDescription"] = true
         };
         if (!includeDisabled)
@@ -965,6 +956,11 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         return result;
     }
 
+    private static JsonObject CloneJsonObject(JsonObject source)
+    {
+        return source.Deserialize<JsonObject>(JsonOptions) ?? new JsonObject();
+    }
+
     private static ZabbixServiceInfo ReadService(JsonObject service)
     {
         return new ZabbixServiceInfo
@@ -986,6 +982,9 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             Status = JsonString(trigger["status"]),
             Priority = JsonString(trigger["priority"]),
             Value = JsonString(trigger["value"]),
+            Expression = JsonString(trigger["expression"]),
+            RecoveryExpression = JsonString(trigger["recovery_expression"]),
+            Tags = ReadTagList(trigger["tags"] as JsonArray),
             Hosts = ReadTriggerHosts(trigger["hosts"] as JsonArray),
             Dependencies = ReadTriggerDependencies(trigger["dependencies"] as JsonArray)
         };

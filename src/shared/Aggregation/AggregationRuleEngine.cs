@@ -294,6 +294,7 @@ public sealed class AggregationRuleEngine
             sourceClass = rawEvent.ClassCode,
             sourceCard = rawEvent.CardId,
             sourceKey = command.Source.KeyValue,
+            sourceZabbixHostId = command.Source.ZabbixHostId,
             fields,
             command.CommandType,
             command.Layer,

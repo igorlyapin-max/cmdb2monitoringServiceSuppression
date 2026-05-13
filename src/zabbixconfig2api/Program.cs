@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
@@ -28,6 +29,8 @@ builder.Services.AddOptions<ZabbixTriggerDependenciesOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.AggregateHostGroupName), "ZabbixTriggerDependencies:AggregateHostGroupName is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.AggregateHostName), "ZabbixTriggerDependencies:AggregateHostName is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.AggregateItemKeyPrefix), "ZabbixTriggerDependencies:AggregateItemKeyPrefix is required.")
+    .Validate(options => options.SampleSourceTriggersPerAggregate > 0, "ZabbixTriggerDependencies:SampleSourceTriggersPerAggregate must be greater than zero.")
+    .Validate(options => options.AutoReconcileDebounceSeconds >= 0, "ZabbixTriggerDependencies:AutoReconcileDebounceSeconds must not be negative.")
     .ValidateOnStart();
 builder.Services.AddOptions<ZabbixOptions>()
     .Bind(builder.Configuration.GetSection(ZabbixOptions.SectionName))
@@ -43,6 +46,8 @@ builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddTransient<ZabbixAggregationApplier>();
 builder.Services.AddTransient<ZabbixTriggerDependencyApplier>();
 builder.Services.AddSingleton<ZabbixApplyStateStore>();
+builder.Services.AddSingleton<ZabbixTriggerDependencyReconcileScheduler>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<ZabbixTriggerDependencyReconcileScheduler>());
 builder.Services.AddHostedService<ZabbixServiceAggregationCommandWorker>();
 builder.Services.AddHostedService<ZabbixSuppressionAggregationCommandWorker>();
 
@@ -379,9 +384,12 @@ public static class ZabbixApplyPlanner
             SourceKeyAttribute = command.Source.KeyAttribute,
             SourceKeyValue = command.Source.KeyValue,
             ZabbixHostId = command.Source.ZabbixHostId,
-            SourceLeafManagedKey = ZabbixManagedServiceMapper.SourceLeafManagedKey(layer, command.Source),
+            SourceLeafManagedKey = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId)
+                ? ""
+                : ZabbixManagedServiceMapper.SourceLeafManagedKey(layer, command.Source),
             UpdatedAtUtc = DateTimeOffset.UtcNow
         };
+        var hasHostBinding = !string.IsNullOrWhiteSpace(command.Source.ZabbixHostId);
 
         return new ZabbixTargetMembershipSnapshot
         {
@@ -393,11 +401,13 @@ public static class ZabbixApplyPlanner
             AggregationType = TargetAttribute(command.Target.Attributes, "aggregation_type"),
             Threshold = TargetAttribute(command.Target.Attributes, "threshold"),
             N = TargetAttribute(command.Target.Attributes, "n"),
-            SourceCount = 1,
-            HostBindingCount = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 0 : 1,
-            MissingHostBindingCount = string.IsNullOrWhiteSpace(command.Source.ZabbixHostId) ? 1 : 0,
-            SourceLeafManagedKeys = [source.SourceLeafManagedKey],
-            Sources = [source],
+            SourceCount = hasHostBinding ? 1 : 0,
+            HostBindingCount = hasHostBinding ? 1 : 0,
+            MissingHostBindingCount = hasHostBinding ? 0 : 1,
+            PendingSourceCount = hasHostBinding ? 0 : 1,
+            SourceLeafManagedKeys = hasHostBinding ? [source.SourceLeafManagedKey] : [],
+            Sources = hasHostBinding ? [source] : [],
+            PendingSources = hasHostBinding ? [] : [source],
             Relations = command.Target.Relations
                 .Select(relation => new ZabbixMembershipRelation
                 {
@@ -518,13 +528,25 @@ public sealed class ZabbixApplyStateStore
                 if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveMembership, StringComparison.OrdinalIgnoreCase))
                 {
                     membership.Sources.Remove(sourceKey);
+                    membership.PendingSources.Remove(sourceKey);
                 }
                 else if (string.IsNullOrWhiteSpace(command.Source.ZabbixHostId))
                 {
                     membership.Sources.Remove(sourceKey);
+                    membership.PendingSources[sourceKey] = new ZabbixSourceMembership
+                    {
+                        SourceClass = command.Source.ClassCode,
+                        SourceCardId = command.Source.CardId,
+                        SourceKeyAttribute = command.Source.KeyAttribute,
+                        SourceKeyValue = command.Source.KeyValue,
+                        ZabbixHostId = "",
+                        SourceLeafManagedKey = "",
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    };
                 }
                 else
                 {
+                    membership.PendingSources.Remove(sourceKey);
                     membership.Sources[sourceKey] = new ZabbixSourceMembership
                     {
                         SourceClass = command.Source.ClassCode,
@@ -751,12 +773,15 @@ public sealed class ZabbixApplyStateStore
             status.AggregateItemsUpdated = result.AggregateItemsUpdated;
             status.AggregateTriggersCreated = result.AggregateTriggersCreated;
             status.AggregateTriggersUpdated = result.AggregateTriggersUpdated;
-            status.AggregateStatesPushed = result.AggregateStatesPushed;
             status.TriggersToUpdate = result.TriggersToUpdate;
             status.TriggersUpdated = result.TriggersUpdated;
             status.DependenciesAdded = result.DependenciesAdded;
             status.DependenciesRemoved = result.DependenciesRemoved;
             status.PreservedManualDependencies = result.PreservedManualDependencies;
+            status.SelectedSourceTriggerCount = result.SelectedSourceTriggerCount;
+            status.SkippedSourceTriggerCount = result.SkippedSourceTriggerCount;
+            status.UnsupportedTriggerExpressionCount = result.UnsupportedTriggerExpressionCount;
+            status.HostsWithoutSelectedSourceTriggers = result.HostsWithoutSelectedSourceTriggers;
             status.ManagedDependencyCount = ListManagedTriggerDependencies(result.Layer).Count;
             status.Errors.Clear();
             status.Errors.AddRange(result.Errors.Take(20));
@@ -799,12 +824,15 @@ public sealed class ZabbixApplyStateStore
                 aggregateItemsUpdated = status.AggregateItemsUpdated,
                 aggregateTriggersCreated = status.AggregateTriggersCreated,
                 aggregateTriggersUpdated = status.AggregateTriggersUpdated,
-                aggregateStatesPushed = status.AggregateStatesPushed,
                 triggersToUpdate = status.TriggersToUpdate,
                 triggersUpdated = status.TriggersUpdated,
                 dependenciesAdded = status.DependenciesAdded,
                 dependenciesRemoved = status.DependenciesRemoved,
                 preservedManualDependencies = status.PreservedManualDependencies,
+                selectedSourceTriggerCount = status.SelectedSourceTriggerCount,
+                skippedSourceTriggerCount = status.SkippedSourceTriggerCount,
+                unsupportedTriggerExpressionCount = status.UnsupportedTriggerExpressionCount,
+                hostsWithoutSelectedSourceTriggers = status.HostsWithoutSelectedSourceTriggers,
                 managedDependencyCount = ListManagedTriggerDependencies(status.Layer).Count,
                 errors = status.Errors.ToArray(),
                 warnings = status.Warnings.ToArray(),
@@ -1060,11 +1088,18 @@ public sealed class ZabbixTargetMembership
 
     public Dictionary<string, ZabbixSourceMembership> Sources { get; set; } = new(StringComparer.Ordinal);
 
+    public Dictionary<string, ZabbixSourceMembership> PendingSources { get; set; } = new(StringComparer.Ordinal);
+
     public List<ZabbixMembershipRelation> Relations { get; set; } = [];
 
     public ZabbixTargetMembershipSnapshot ToSnapshot()
     {
         var sources = Sources.Values
+            .OrderBy(item => item.SourceClass, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.SourceKeyValue, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.SourceCardId, StringComparer.Ordinal)
+            .ToArray();
+        var pendingSources = PendingSources.Values
             .OrderBy(item => item.SourceClass, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.SourceKeyValue, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.SourceCardId, StringComparer.Ordinal)
@@ -1081,13 +1116,15 @@ public sealed class ZabbixTargetMembership
             N = N,
             SourceCount = sources.Length,
             HostBindingCount = sources.Count(item => !string.IsNullOrWhiteSpace(item.ZabbixHostId)),
-            MissingHostBindingCount = sources.Count(item => string.IsNullOrWhiteSpace(item.ZabbixHostId)),
+            MissingHostBindingCount = sources.Count(item => string.IsNullOrWhiteSpace(item.ZabbixHostId)) + pendingSources.Length,
+            PendingSourceCount = pendingSources.Length,
             SourceLeafManagedKeys = sources
                 .Select(item => item.SourceLeafManagedKey)
                 .Where(item => !string.IsNullOrWhiteSpace(item))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray(),
             Sources = sources,
+            PendingSources = pendingSources,
             Relations = Relations.ToArray(),
             UpdatedAtUtc = UpdatedAtUtc
         };
@@ -1118,9 +1155,13 @@ public sealed class ZabbixTargetMembershipSnapshot
 
     public int MissingHostBindingCount { get; init; }
 
+    public int PendingSourceCount { get; init; }
+
     public IReadOnlyList<string> SourceLeafManagedKeys { get; init; } = [];
 
     public IReadOnlyList<ZabbixSourceMembership> Sources { get; init; } = [];
+
+    public IReadOnlyList<ZabbixSourceMembership> PendingSources { get; init; } = [];
 
     public IReadOnlyList<ZabbixMembershipRelation> Relations { get; init; } = [];
 
@@ -1212,8 +1253,6 @@ public sealed class ZabbixTriggerDependencyLayerStatus
 
     public int AggregateTriggersUpdated { get; set; }
 
-    public int AggregateStatesPushed { get; set; }
-
     public int TriggersToUpdate { get; set; }
 
     public int TriggersUpdated { get; set; }
@@ -1224,6 +1263,14 @@ public sealed class ZabbixTriggerDependencyLayerStatus
 
     public int PreservedManualDependencies { get; set; }
 
+    public int SelectedSourceTriggerCount { get; set; }
+
+    public int SkippedSourceTriggerCount { get; set; }
+
+    public int UnsupportedTriggerExpressionCount { get; set; }
+
+    public int HostsWithoutSelectedSourceTriggers { get; set; }
+
     public int ManagedDependencyCount { get; set; }
 
     public List<string> Errors { get; } = [];
@@ -1233,6 +1280,79 @@ public sealed class ZabbixTriggerDependencyLayerStatus
     public List<ZabbixTriggerDependencyPlanItem> Samples { get; } = [];
 
     public List<ZabbixSuppressionAggregatePlanItem> AggregateSamples { get; } = [];
+}
+
+public sealed class ZabbixTriggerDependencyReconcileScheduler(
+    IServiceScopeFactory scopeFactory,
+    IOptionsMonitor<ZabbixTriggerDependenciesOptions> options,
+    ILogger<ZabbixTriggerDependencyReconcileScheduler> logger)
+    : BackgroundService
+{
+    private readonly Channel<string> requests = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+    {
+        SingleReader = true,
+        SingleWriter = false
+    });
+
+    public void Request(string reason)
+    {
+        var currentOptions = options.CurrentValue;
+        if (!currentOptions.Enabled || !currentOptions.AutoReconcileOnMembershipChange)
+        {
+            return;
+        }
+
+        requests.Writer.TryWrite(string.IsNullOrWhiteSpace(reason) ? "suppression membership changed" : reason);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (await requests.Reader.WaitToReadAsync(stoppingToken))
+        {
+            var reasons = DrainReasons();
+            var delay = TimeSpan.FromSeconds(Math.Max(0, options.CurrentValue.AutoReconcileDebounceSeconds));
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, stoppingToken);
+                reasons.AddRange(DrainReasons());
+            }
+
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var applier = scope.ServiceProvider.GetRequiredService<ZabbixTriggerDependencyApplier>();
+                var result = await applier.RunAsync(dryRun: false, stoppingToken);
+                logger.LogInformation(
+                    "Automatic suppression trigger dependency reconcile completed: status={Status}, aggregates={AggregateCount}, updatedTriggers={UpdatedTriggers}, reasons={Reasons}",
+                    result.Status,
+                    result.AggregateCount,
+                    result.TriggersUpdated,
+                    string.Join("; ", reasons.Distinct(StringComparer.Ordinal).Take(10)));
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+            {
+                logger.LogError(
+                    ex,
+                    "Automatic suppression trigger dependency reconcile failed; reasons={Reasons}",
+                    string.Join("; ", reasons.Distinct(StringComparer.Ordinal).Take(10)));
+            }
+        }
+    }
+
+    private List<string> DrainReasons()
+    {
+        var result = new List<string>();
+        while (requests.Reader.TryRead(out var reason))
+        {
+            result.Add(reason);
+        }
+
+        return result;
+    }
 }
 
 public sealed class ZabbixCommandApplyResult

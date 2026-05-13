@@ -15,18 +15,32 @@ const TARGET_CARD_IDENTITY_ATTRIBUTES = [
   'name'
 ];
 const SERVICE_USER_RESPONSIBILITY_ATTRIBUTES = [
-  'description',
   'is_critical',
   'aggregation_type',
   'threshold',
   'n'
 ];
 const SUPPRESSION_USER_RESPONSIBILITY_ATTRIBUTES = [
-  'description',
   'is_critical',
   'aggregation_type',
   'threshold',
   'n'
+];
+const TARGET_CARD_SYSTEM_ATTRIBUTES = [
+  {
+    code: 'Code',
+    type: 'string',
+    displayName: 'Code',
+    description: 'Системный код карточки CMDBuild',
+    help: 'Стабильный Code создаваемого целевого объекта. Используется для поиска уже созданной карточки и безопасного повторного применения правила.'
+  },
+  {
+    code: 'Description',
+    type: 'string',
+    displayName: 'Description',
+    description: 'Системное описание карточки CMDBuild',
+    help: 'Отображаемое Description создаваемого целевого объекта CMDBuild.'
+  }
 ];
 const TEMPLATE_DELETE_MODES = {
   detachRulesKeepObjects: 'detach_rules_keep_objects',
@@ -4458,7 +4472,9 @@ function renderRuleEditor(layerKey) {
   const suggestedTarget = action === 'add'
     ? ruleTargetClassCode(state.ruleEditorSuggestions[layerKey])
     : '';
-  setSelectOptions(config.targetClass, targetClassOptions(layerKey, suggestedTarget), selectedTarget);
+  setSelectOptions(config.targetClass, targetClassOptions(layerKey, suggestedTarget, {
+    filterTemplateTargets: filterTemplateRules
+  }), selectedTarget);
 
   const editDisabled = action === 'delete';
   [
@@ -7304,8 +7320,8 @@ async function runZabbixTriggerDependencies(options = {}) {
     stateItem.applying = true;
     stateItem.error = '';
     stateItem.message = dryRun
-      ? 'Dry-run trigger dependencies...'
-      : 'Публикация trigger dependencies в Zabbix...';
+      ? 'Dry-run конфигурации trigger dependencies...'
+      : 'Публикация конфигурации trigger dependencies в Zabbix...';
     renderZabbixTriggerDependenciesView();
 
     const response = await fetch(
@@ -7320,7 +7336,7 @@ async function runZabbixTriggerDependencies(options = {}) {
     }
 
     stateItem.result = result;
-    const finalMessage = result.message || (dryRun ? 'Dry-run dependencies завершен.' : 'Dependencies опубликованы в Zabbix.');
+    const finalMessage = result.message || (dryRun ? 'Dry-run конфигурации dependencies завершен.' : 'Конфигурация dependencies опубликована в Zabbix.');
     stateItem.message = finalMessage;
     await loadZabbixTriggerDependenciesStatus();
     stateItem.message = finalMessage;
@@ -7617,10 +7633,6 @@ function renderZabbixTriggerDependenciesView() {
       <strong>${escapeHtml((payload.aggregateItemsCreated ?? 0) + (payload.aggregateTriggersCreated ?? 0))}</strong>
     </div>
     <div>
-      <span class="metric-label">Состояний записано</span>
-      <strong>${escapeHtml(payload.aggregateStatesPushed ?? 0)}</strong>
-    </div>
-    <div>
       <span class="metric-label">К обновлению</span>
       <strong>${escapeHtml(payload.triggersToUpdate ?? 0)}</strong>
     </div>
@@ -7644,6 +7656,22 @@ function renderZabbixTriggerDependenciesView() {
       <span class="metric-label">Managed-зависимостей</span>
       <strong>${escapeHtml(payload.managedDependencyCount ?? payload.managedDependencyCountBefore ?? 0)}</strong>
     </div>
+    <div>
+      <span class="metric-label">Выбрано trigger-ов</span>
+      <strong>${escapeHtml(payload.selectedSourceTriggerCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Пропущено trigger-ов</span>
+      <strong>${escapeHtml(payload.skippedSourceTriggerCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Expression не приняты</span>
+      <strong>${escapeHtml(payload.unsupportedTriggerExpressionCount ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Hosts без выбранных trigger-ов</span>
+      <strong>${escapeHtml(payload.hostsWithoutSelectedSourceTriggers ?? 0)}</strong>
+    </div>
   `;
 
   status.textContent = stateItem.error
@@ -7665,7 +7693,7 @@ function renderZabbixTriggerDependenciesDetails(payload) {
       <div class="rule-summary">
         <span class="structure-mark">aggregate triggers</span>
         <strong>${escapeHtml(aggregates.length)} примеров</strong>
-        <span>Каждый suppression-объект получает единый управляемый trigger причины; downstream triggers зависят от него.</span>
+        <span>Каждый suppression-объект получает calculated item и trigger причины; текущее состояние считает Zabbix.</span>
       </div>
       ${aggregates.slice(0, 100).map(renderZabbixSuppressionAggregateSample).join('')}
     ` : ''}
@@ -7703,10 +7731,49 @@ function renderZabbixSuppressionAggregateSample(item) {
         <span>${escapeHtml(stateText)} · ${escapeHtml(item?.aggregationType || 'all')} · hosts ${escapeHtml(item?.hostCount ?? 0)}</span>
       </summary>
       <span>trigger: ${escapeHtml(item?.triggerId || '-')} ${escapeHtml(item?.triggerName || '')}</span>
-      <span>item: ${escapeHtml(item?.itemId || '-')} ${escapeHtml(item?.itemKey || '-')}</span>
+      <span>calculated item: ${escapeHtml(item?.itemId || '-')} ${escapeHtml(item?.itemKey || '-')}</span>
+      <span>формула calculated item: ${escapeHtml(item?.calculationFormula || '-')}</span>
+      <span>expression trigger-а: ${escapeHtml(item?.triggerExpression || '-')}</span>
       <span>host: ${escapeHtml(item?.hostId || '-')} ${escapeHtml(item?.hostName || '-')}</span>
-      <span>source-hosts: healthy=${escapeHtml(item?.healthyHostCount ?? 0)} problem=${escapeHtml(item?.problemHostCount ?? 0)} unknown=${escapeHtml(item?.unknownHostCount ?? 0)}</span>
-      <span>actions: host=${escapeHtml(item?.hostAction || 'planned')} item=${escapeHtml(item?.itemAction || 'planned')} trigger=${escapeHtml(item?.triggerAction || 'planned')} push=${escapeHtml(item?.statePushed ? 'yes' : 'no')}</span>
+      <span>source-hosts: healthy=${escapeHtml(item?.healthyHostCount ?? 0)} problem=${escapeHtml(item?.problemHostCount ?? 0)} unknown=${escapeHtml(item?.unknownHostCount ?? 0)} required=${escapeHtml(item?.requiredHealthyHostCount ?? 0)}</span>
+      <span>selector: ${escapeHtml(item?.triggerSelectorSummary || '-')}</span>
+      ${renderZabbixAggregateSourceTriggers(item?.selectedSourceTriggers)}
+      ${renderZabbixAggregateSkippedTriggers(item?.skippedSourceTriggers)}
+      <span>actions: host=${escapeHtml(item?.hostAction || 'planned')} item=${escapeHtml(item?.itemAction || 'planned')} trigger=${escapeHtml(item?.triggerAction || 'planned')}</span>
+    </details>
+  `;
+}
+
+function renderZabbixAggregateSourceTriggers(triggers) {
+  const items = Array.isArray(triggers) ? triggers : [];
+  if (items.length === 0) {
+    return '<span>source trigger-ы: -</span>';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object nested">
+      <summary>source trigger-ы: ${escapeHtml(items.length)}</summary>
+      ${items.map(trigger => `
+        <span>${escapeHtml(trigger?.host || trigger?.hostId || '-')} / ${escapeHtml(trigger?.triggerId || '-')} · P${escapeHtml(trigger?.priority || '-')} · value=${escapeHtml(trigger?.value ?? '-')} · ${escapeHtml(trigger?.name || '')}</span>
+        <span>expression: ${escapeHtml(trigger?.expression || '-')}</span>
+      `).join('')}
+    </details>
+  `;
+}
+
+function renderZabbixAggregateSkippedTriggers(triggers) {
+  const items = Array.isArray(triggers) ? triggers : [];
+  if (items.length === 0) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object nested">
+      <summary>пропущенные trigger-ы: ${escapeHtml(items.length)}</summary>
+      ${items.map(trigger => `
+        <span>${escapeHtml(trigger?.host || trigger?.hostId || '-')} / ${escapeHtml(trigger?.triggerId || '-')} · ${escapeHtml(trigger?.name || '')}</span>
+        <span>причина: ${escapeHtml(trigger?.reason || '-')}</span>
+      `).join('')}
     </details>
   `;
 }
@@ -7736,17 +7803,20 @@ function renderZabbixMembershipTargets(targets) {
     </div>
     ${targets.slice(0, 10).map((target) => {
       const sources = Array.isArray(target?.sources) ? target.sources : [];
+      const pendingSources = Array.isArray(target?.pendingSources) ? target.pendingSources : [];
       const sourceText = sources.slice(0, 6).map(zabbixMembershipSourceText);
+      const pendingText = pendingSources.slice(0, 6).map(zabbixMembershipSourceText);
       return `
         <details class="rule-summary zabbix-plan-object">
           <summary>
             <strong>${escapeHtml(target?.targetName || target?.targetManagedKey || '-')}</strong>
-            <span>source ${escapeHtml(target?.sourceCount ?? 0)} · с ${escapeHtml(hostAttr)} ${escapeHtml(target?.hostBindingCount ?? 0)} · без ${escapeHtml(hostAttr)} ${escapeHtml(target?.missingHostBindingCount ?? 0)}</span>
+            <span>готовых source ${escapeHtml(target?.sourceCount ?? 0)} · с ${escapeHtml(hostAttr)} ${escapeHtml(target?.hostBindingCount ?? 0)} · ожидают ${escapeHtml(hostAttr)} ${escapeHtml(target?.pendingSourceCount ?? target?.missingHostBindingCount ?? 0)}</span>
           </summary>
           <span>ключ: ${escapeHtml(target?.targetManagedKey || '-')}</span>
           <span>агрегация: ${escapeHtml(zabbixMembershipAggregationText(target))}</span>
           <span>leaf children: ${escapeHtml((target?.sourceLeafManagedKeys ?? []).join(', ') || '-')}</span>
-          <span>source: ${escapeHtml(sourceText.join('; ') || '-')}</span>
+          <span>готовые source: ${escapeHtml(sourceText.join('; ') || '-')}</span>
+          <span>ожидают ${escapeHtml(hostAttr)}: ${escapeHtml(pendingText.join('; ') || '-')}</span>
         </details>
       `;
     }).join('')}
@@ -13245,17 +13315,84 @@ function fallbackManagedRelationDomain(layerKey, sourceClassCode, targetClassCod
     'suppression|SuppressionStoragePool|SuppressionResource|depends_on': 'SuppressionStoragePoolSuppressesResource',
     'suppression|SuppressionProxyGroup|SuppressionResource|depends_on': 'SuppressionProxyGroupSuppressesResource'
   }[`${layerKey}|${sourceBase}|${targetBase}|${relationType}`];
-  if (!standardBase) {
+  const fallbackBase = standardBase
+    || fallbackServiceDependencyDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType)
+    || fallbackSuppressionSuppressDomainBase(
+      layerKey,
+      sourceClassCode,
+      targetClassCode,
+      sourceBase,
+      targetBase,
+      relationType);
+  if (!fallbackBase) {
     return null;
   }
 
   return {
-    code: `${prefix}${standardBase}`,
+    code: `${prefix}${fallbackBase}`,
     sourceClassCode,
     targetClassCode,
     relationType,
     attributes: [{ code: 'is_active' }]
   };
+}
+
+function fallbackServiceDependencyDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType) {
+  if (layerKey !== 'service' || relationType !== 'service_depends_on') {
+    return '';
+  }
+
+  if (!isServiceManagedClassCode(sourceClassCode) || !isServiceManagedClassCode(targetClassCode)) {
+    return '';
+  }
+
+  const sourcePart = domainCodePart(sourceBase);
+  const targetPart = domainCodePart(targetBase);
+  if (!sourcePart || !targetPart) {
+    return '';
+  }
+
+  return `${sourcePart}DependsOn${targetPart}`;
+}
+
+function fallbackSuppressionSuppressDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType) {
+  if (layerKey !== 'suppression' || !['depends_on', 'depends_on_network'].includes(relationType)) {
+    return '';
+  }
+
+  if (!isSuppressionManagedClassCode(sourceClassCode) || !isSuppressionManagedClassCode(targetClassCode)) {
+    return '';
+  }
+
+  const sourcePart = domainCodePart(sourceBase);
+  const targetPart = domainCodePart(targetBase);
+  if (!sourcePart || !targetPart) {
+    return '';
+  }
+
+  return `${sourcePart}Suppresses${targetPart}`;
+}
+
+function isServiceManagedClassCode(classCode) {
+  const item = state.classes.find((classItem) => sameClassCode(classItem.code, classCode));
+  if (item) {
+    return item.layer === 'Service' && !item.isSuperclass;
+  }
+
+  return /^C2M_Service|^Service/i.test(String(classCode ?? '').trim());
+}
+
+function isSuppressionManagedClassCode(classCode) {
+  const item = state.classes.find((classItem) => sameClassCode(classItem.code, classCode));
+  if (item) {
+    return item.layer === 'Suppression' && !item.isSuperclass;
+  }
+
+  return /^C2M_Suppression|^Suppression/i.test(String(classCode ?? '').trim());
+}
+
+function domainCodePart(value) {
+  return String(value ?? '').replaceAll(/[^A-Za-z0-9]+/g, '');
 }
 
 function stripManagedPrefix(classCode, prefix) {
@@ -15504,21 +15641,31 @@ function targetClassAttributes(classCode) {
     }
   }
 
-  const plannedAttributes = [...byAttributeCode.values()];
+  const plannedAttributes = withTargetCardSystemAttributes([...byAttributeCode.values()]);
   if (plannedAttributes.length > 0) {
     return sortedUniqueTargetAttributes(plannedAttributes);
   }
 
   const instanceClass = state.cmdbClassInstances.find((item) =>
     canonicalToken(item.classCode) === token);
-  const instanceAttributes = sortedUniqueTargetAttributes(instanceClass?.attributes ?? []);
+  const instanceAttributes = sortedUniqueTargetAttributes(withTargetCardSystemAttributes(instanceClass?.attributes ?? []));
   if (instanceAttributes.length > 0) {
     return instanceAttributes;
   }
 
   const cmdbSchemaClass = state.cmdbClassSchemas.find((item) =>
     canonicalToken(item.code || item.name) === token);
-  return sortedUniqueTargetAttributes(cmdbSchemaClass?.attributes ?? []);
+  return sortedUniqueTargetAttributes(withTargetCardSystemAttributes(cmdbSchemaClass?.attributes ?? []));
+}
+
+function withTargetCardSystemAttributes(attributes) {
+  const byToken = new Set((attributes ?? [])
+    .map((attribute) => canonicalToken(attributeCode(attribute)))
+    .filter(Boolean));
+  return [
+    ...(attributes ?? []),
+    ...TARGET_CARD_SYSTEM_ATTRIBUTES.filter((attribute) => !byToken.has(canonicalToken(attribute.code)))
+  ];
 }
 
 function sortedUniqueTargetAttributes(attributes) {
@@ -15893,12 +16040,15 @@ function templateTargetClassOptions(layerKey) {
 
 function targetClassOptions(layerKey, suggestedCode = '', options = {}) {
   const includeInstances = options.includeInstances !== false;
+  const filterTemplateTargets = options.filterTemplateTargets === true;
   const layer = layerKey === 'service' ? 'Service' : 'Suppression';
   const hierarchyClasses = schemaClassesForLayer(layer);
   const classes = sortSchemaClassesByInheritance(
     hierarchyClasses.filter((item) => !item.isSuperclass && item.origin !== 'model_root_superclass'),
     hierarchyClasses);
-  const instancesByClass = includeInstances ? targetInstanceOptionsByClass(layerKey) : new Map();
+  const instancesByClass = includeInstances
+    ? targetInstanceOptionsByClass(layerKey, { filterTemplateTargets })
+    : new Map();
   const instanceCount = [...instancesByClass.values()].reduce((sum, items) => sum + items.length, 0);
   if (classes.length === 0 && instanceCount === 0) {
     return [{ value: '', label: 'Целевые классы не загружены', disabled: true }];
@@ -15947,28 +16097,36 @@ function targetClassOptions(layerKey, suggestedCode = '', options = {}) {
   ];
 }
 
-function targetInstanceOptionsByClass(layerKey) {
+function targetInstanceOptionsByClass(layerKey, options = {}) {
   const layer = layerKey === 'service' ? 'Service' : 'Suppression';
   const classOrder = schemaClassOrderMap(layer);
   const result = new Map();
+  const hiddenTemplateTargets = options.filterTemplateTargets === true
+    ? generatedTemplateTargetRefs(layerKey)
+    : null;
   const classItems = state.cmdbClassInstances
     .filter((item) => String(item.layer).toLowerCase() === layer.toLowerCase())
     .sort((left, right) => compareTargetInstanceClasses(left, right, classOrder));
   for (const classItem of classItems) {
     result.set(canonicalToken(classItem.classCode), (classItem.cards ?? [])
       .slice()
+      .filter((card) => !isTemplateGeneratedTargetCard(hiddenTemplateTargets, classItem.classCode, card))
       .sort((left, right) =>
         targetCardDisplayLabel(left, classItem.classCode)
           .localeCompare(targetCardDisplayLabel(right, classItem.classCode), undefined, { sensitivity: 'base' }))
       .map((card) => ({ ...card, classCode: classItem.classCode })));
   }
 
-  addRuleTargetInstanceOptions(result, layerKey);
+  addRuleTargetInstanceOptions(result, layerKey, { hiddenTemplateTargets });
   return result;
 }
 
-function addRuleTargetInstanceOptions(result, layerKey) {
+function addRuleTargetInstanceOptions(result, layerKey, options = {}) {
   for (const rule of state.ruleExamples[layerKey] ?? []) {
+    if (options.hiddenTemplateTargets && isGeneratedTemplateRule(rule)) {
+      continue;
+    }
+
     const targetClass = ruleTargetClassCode(rule);
     const cardId = String(rule?.target?.card_id ?? '').trim();
     if (!targetClass || !cardId) {
@@ -15985,6 +16143,59 @@ function addRuleTargetInstanceOptions(result, layerKey) {
       targetCardDisplayLabel(left, left.classCode)
         .localeCompare(targetCardDisplayLabel(right, right.classCode), undefined, { sensitivity: 'base' })));
   }
+}
+
+function generatedTemplateTargetRefs(layerKey) {
+  const refs = {
+    cardKeys: new Set(),
+    populationRuleIds: new Set(),
+    populationKeys: new Set()
+  };
+  for (const rule of state.ruleExamples[layerKey] ?? []) {
+    if (!isGeneratedTemplateRule(rule)) {
+      continue;
+    }
+
+    const classToken = canonicalToken(ruleTargetClassCode(rule));
+    const ruleId = String(rule.rule_id ?? '').trim();
+    const cardId = String(rule?.target?.card_id ?? '').trim();
+    const idempotencyKey = String(rule?.target?.idempotency_key ?? '').trim();
+    const populationSourceKey = String(rule?.target?.attribute_mappings?.[POPULATION_SOURCE_KEY_ATTRIBUTE] ?? '').trim();
+    if (ruleId) {
+      refs.populationRuleIds.add(canonicalToken(ruleId));
+    }
+    if (classToken && cardId) {
+      refs.cardKeys.add(`${classToken}\u0000${cardId}`);
+    }
+    if (classToken && idempotencyKey) {
+      refs.populationKeys.add(`${classToken}\u0000${idempotencyKey}`);
+    }
+    if (classToken && populationSourceKey) {
+      refs.populationKeys.add(`${classToken}\u0000${populationSourceKey}`);
+    }
+  }
+
+  return refs;
+}
+
+function isTemplateGeneratedTargetCard(refs, classCode, card) {
+  if (!refs) {
+    return false;
+  }
+
+  const classToken = canonicalToken(classCode || card?.classCode);
+  const cardId = String(card?.id ?? '').trim();
+  if (classToken && cardId && refs.cardKeys.has(`${classToken}\u0000${cardId}`)) {
+    return true;
+  }
+
+  const populationRuleId = String(cardAttributeValue(card, 'population_rule_id') ?? '').trim();
+  if (populationRuleId && refs.populationRuleIds.has(canonicalToken(populationRuleId))) {
+    return true;
+  }
+
+  const populationKey = String(cardAttributeValue(card, POPULATION_SOURCE_KEY_ATTRIBUTE) ?? '').trim();
+  return Boolean(classToken && populationKey && refs.populationKeys.has(`${classToken}\u0000${populationKey}`));
 }
 
 function compareTargetInstanceClasses(left, right, classOrder = new Map()) {

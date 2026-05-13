@@ -178,6 +178,43 @@ foreach (var (domainCode, sourceClassCode) in new[]
             && domain.RelationType == "depends_on"),
         $"{sourceClassCode} must be able to point to suppressed resources.");
 }
+var serviceConcreteClasses = schema.Classes
+    .Where(classDefinition => classDefinition.Layer == BuilderLayer.Service && !classDefinition.IsSuperclass)
+    .Select(classDefinition => classDefinition.Code)
+    .OrderBy(code => code, StringComparer.Ordinal)
+    .ToArray();
+foreach (var sourceClassCode in serviceConcreteClasses)
+{
+    foreach (var targetClassCode in serviceConcreteClasses)
+    {
+        Assert(schema.Domains.Any(domain =>
+                domain.SourceClassCode == sourceClassCode
+                && domain.TargetClassCode == targetClassCode
+                && domain.RelationType == "service_depends_on"),
+            $"{sourceClassCode} must be able to depend on {targetClassCode} through relationType=service_depends_on.");
+    }
+}
+var suppressionConcreteClasses = schema.Classes
+    .Where(classDefinition => classDefinition.Layer == BuilderLayer.Suppression && !classDefinition.IsSuperclass)
+    .Select(classDefinition => classDefinition.Code)
+    .OrderBy(code => code, StringComparer.Ordinal)
+    .ToArray();
+foreach (var sourceClassCode in suppressionConcreteClasses)
+{
+    foreach (var targetClassCode in suppressionConcreteClasses)
+    {
+        var relationType = targetClassCode.Contains("NetworkAccessZone", StringComparison.OrdinalIgnoreCase)
+            ? "depends_on_network"
+            : "depends_on";
+        Assert(schema.Domains.Any(domain =>
+                domain.SourceClassCode == sourceClassCode
+                && domain.TargetClassCode == targetClassCode
+                && domain.RelationType == relationType),
+            $"{sourceClassCode} must be able to suppress {targetClassCode} through relationType={relationType}.");
+    }
+}
+Assert(schema.Domains.Select(domain => domain.Code).Distinct(StringComparer.Ordinal).Count() == schema.Domains.Count,
+    "domain codes must be unique.");
 AssertDomainAttributes(
     schema,
     "C2M_ServicePlatformDependsOnDatabase",
@@ -304,6 +341,7 @@ AssertApplyModeContract();
 AssertRouterCoreAggregationContract();
 AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
+AssertSemanticFingerprintChangesWhenHostIdAppears();
 await AssertZabbixManagedServiceClientCreatesTaggedServiceAsync();
 await AssertZabbixManagedServiceClientClearsChildrenAsync();
 await AssertZabbixSourceLeafServiceCreatesProblemTagsAsync();
@@ -623,6 +661,11 @@ static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
     Assert(triggers.Count == 2, "Zabbix trigger.get must return diagnostic triggers.");
     Assert(triggers.Any(trigger => trigger.TriggerId == "60001" && trigger.Hosts.Any(host => host.HostId == "30011")),
         "Zabbix trigger.get must read trigger host binding.");
+    Assert(triggers.Single(trigger => trigger.TriggerId == "60001").Expression.Contains("icmpping", StringComparison.Ordinal),
+        "Zabbix trigger.get must read expanded trigger expression.");
+    Assert(triggers.Single(trigger => trigger.TriggerId == "60001").Tags.Any(tag =>
+            tag.Tag == "scope" && tag.Value == "availability"),
+        "Zabbix trigger.get must read trigger tags.");
     Assert(triggers.Single(trigger => trigger.TriggerId == "60002").Dependencies.Single().TriggerId == "77777",
         "Zabbix trigger.get must read existing dependencies.");
 
@@ -635,6 +678,12 @@ static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
         "Zabbix trigger.get must filter enabled triggers by default.");
     Assert(getParameters.GetProperty("selectDependencies").EnumerateArray().Any(),
         "Zabbix trigger.get must request existing dependencies.");
+    Assert(getParameters.GetProperty("selectTags").EnumerateArray().Any(),
+        "Zabbix trigger.get must request trigger tags.");
+    Assert(getParameters.GetProperty("expandExpression").GetBoolean(),
+        "Zabbix trigger.get must request expanded trigger expressions.");
+    Assert(getParameters.GetProperty("output").EnumerateArray().Any(item => item.GetString() == "expression"),
+        "Zabbix trigger.get must request trigger expressions.");
 
     var applied = await client.UpdateTriggerDependenciesAsync(
         "60002",
@@ -680,29 +729,32 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
             HostVisibleName = "CMDB2Monitoring suppression aggregates",
             ItemKey = "cmdb2monitoring.suppression.aggregate[abc]",
             ItemName = "CMDB2M suppression state: ВПН Хабы / City04",
+            CalculationFormula = "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
             TriggerName = "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
-            TriggerPriority = 3,
-            StateValue = 1
+            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])<1",
+            TriggerPriority = 3
         },
         CancellationToken.None);
 
     Assert(result.HostId == "43001", "Zabbix aggregate host id is invalid.");
     Assert(result.ItemId == "44001", "Zabbix aggregate item id is invalid.");
     Assert(result.TriggerId == "45001", "Zabbix aggregate trigger id is invalid.");
-    Assert(result.StatePushed, "Zabbix aggregate state must be pushed through history.push.");
+    Assert(handler.HistoryPushPayload is null, "Zabbix aggregate state must not be pushed through history.push.");
 
     using var itemDocument = JsonDocument.Parse(handler.ItemCreatePayload
         ?? throw new InvalidOperationException("Zabbix item.create payload was not captured."));
     var itemParameters = itemDocument.RootElement.GetProperty("params");
     Assert(JsonString(itemParameters, "key_") == "cmdb2monitoring.suppression.aggregate[abc]",
         "Zabbix aggregate item key is invalid.");
-    Assert(itemParameters.GetProperty("type").GetInt32() == 2, "Zabbix aggregate item must be a trapper item.");
+    Assert(itemParameters.GetProperty("type").GetInt32() == 15, "Zabbix aggregate item must be a calculated item.");
     Assert(itemParameters.GetProperty("value_type").GetInt32() == 3, "Zabbix aggregate item must be numeric unsigned.");
+    Assert(JsonString(itemParameters, "params") == "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
+        "Zabbix aggregate item formula is invalid.");
 
     using var triggerDocument = JsonDocument.Parse(handler.TriggerCreatePayload
         ?? throw new InvalidOperationException("Zabbix trigger.create payload was not captured."));
     var triggerParameters = triggerDocument.RootElement.GetProperty("params");
-    Assert(JsonString(triggerParameters, "expression") == "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])=1",
+    Assert(JsonString(triggerParameters, "expression") == "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])<1",
         "Zabbix aggregate trigger expression is invalid.");
     var tags = triggerParameters.GetProperty("tags")
         .EnumerateArray()
@@ -711,11 +763,48 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
     Assert(tags[ZabbixManagedServiceTags.Key] == "suppression:vpn-hubs:city04",
         "Zabbix aggregate trigger target key tag is invalid.");
 
-    using var historyDocument = JsonDocument.Parse(handler.HistoryPushPayload
-        ?? throw new InvalidOperationException("Zabbix history.push payload was not captured."));
-    var historyItem = historyDocument.RootElement.GetProperty("params").EnumerateArray().Single();
-    Assert(JsonString(historyItem, "itemid") == "44001", "Zabbix history.push itemid is invalid.");
-    Assert(JsonString(historyItem, "value") == "1", "Zabbix history.push value is invalid.");
+    var updateHandler = new DiagnosticZabbixHandler
+    {
+        ExistingAggregateHost = true,
+        ExistingAggregateItem = true
+    };
+    var updateClient = new ZabbixClient(
+        new HttpClient(updateHandler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+    await updateClient.ApplySuppressionAggregateAsync(
+        new ZabbixSuppressionAggregateDefinition
+        {
+            TargetManagedKey = "suppression:vpn-hubs:city04",
+            TargetClass = "C2M_SuppressionNetworkAccessZone",
+            TargetCardId = "611269",
+            TargetName = "ВПН Хабы / City04",
+            AggregationType = "any",
+            HostGroupName = "CMDB2Monitoring",
+            HostName = "cmdb2monitoring-suppression-aggregates",
+            HostVisibleName = "CMDB2Monitoring suppression aggregates",
+            ItemKey = "cmdb2monitoring.suppression.aggregate[abc]",
+            ItemName = "CMDB2M suppression state: ВПН Хабы / City04",
+            CalculationFormula = "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
+            TriggerName = "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
+            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])<1",
+            TriggerPriority = 3
+        },
+        CancellationToken.None);
+    using var itemUpdateDocument = JsonDocument.Parse(updateHandler.ItemUpdatePayload
+        ?? throw new InvalidOperationException("Zabbix item.update payload was not captured."));
+    var itemUpdateParameters = itemUpdateDocument.RootElement.GetProperty("params");
+    Assert(JsonString(itemUpdateParameters, "itemid") == "44001", "Zabbix aggregate item.update itemid is invalid.");
+    Assert(!itemUpdateParameters.TryGetProperty("hostid", out _),
+        "Zabbix aggregate item.update must not send immutable hostid.");
+    Assert(JsonString(itemUpdateParameters, "params") == "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
+        "Zabbix aggregate item.update formula is invalid.");
 }
 
 static void AssertSemanticFingerprintIncludesDimensionField()
@@ -729,6 +818,24 @@ static void AssertSemanticFingerprintIncludesDimensionField()
         "semantic key must include the generated city rule id so different city targets are not deduplicated together.");
     Assert(city04Plan.SemanticFingerprint != city29Plan.SemanticFingerprint,
         "semantic fingerprint must change when the population dimension field changes.");
+}
+
+static void AssertSemanticFingerprintChangesWhenHostIdAppears()
+{
+    var withoutHostId = BuildHostReadinessPlan(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Code"] = "host-001"
+    });
+    var withHostId = BuildHostReadinessPlan(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Code"] = "host-001",
+        ["zabbix_main_hostid"] = "main-30011"
+    });
+
+    Assert(withoutHostId.SemanticKey == withHostId.SemanticKey,
+        "semantic key must stay stable when the same source card becomes ready.");
+    Assert(withoutHostId.SemanticFingerprint != withHostId.SemanticFingerprint,
+        "semantic fingerprint must change when zabbix_main_hostid appears so dedup cannot suppress readiness.");
 }
 
 static async Task AssertCmdbuildApplyCreatesSourceLinkAsync()
@@ -786,6 +893,13 @@ static AggregationCommand BuildHostReadinessCommand(
     IReadOnlyDictionary<string, string> attributes,
     AggregationRuleEngine? engine = null)
 {
+    return BuildHostReadinessPlan(attributes, engine).Command;
+}
+
+static AggregationCommandPlan BuildHostReadinessPlan(
+    IReadOnlyDictionary<string, string> attributes,
+    AggregationRuleEngine? engine = null)
+{
     var rawEvent = new CmdbRawEvent
     {
         EventId = "readiness-test",
@@ -796,7 +910,7 @@ static AggregationCommand BuildHostReadinessCommand(
         Attributes = attributes
     };
 
-    return (engine ?? new AggregationRuleEngine()).BuildCommands(rawEvent, new ConversionRulesDocument
+    return (engine ?? new AggregationRuleEngine()).BuildCommandPlans(rawEvent, new ConversionRulesDocument
     {
         Version = "test",
         Rules = [MinimalRule("host-readiness")]
@@ -1392,6 +1506,10 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 {
     public bool ExistingManagedService { get; init; }
 
+    public bool ExistingAggregateHost { get; init; }
+
+    public bool ExistingAggregateItem { get; init; }
+
     public string? CreatePayload { get; private set; }
 
     public string? UpdatePayload { get; private set; }
@@ -1401,6 +1519,8 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
     public string? HostCreatePayload { get; private set; }
 
     public string? ItemCreatePayload { get; private set; }
+
+    public string? ItemUpdatePayload { get; private set; }
 
     public string? TriggerGetPayload { get; private set; }
 
@@ -1453,8 +1573,9 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             "host.get" => CaptureHostGet(body),
             "host.create" => CaptureHostCreate(body),
             "host.update" => CaptureHostUpdate(body),
-            "item.get" => EmptyArrayResponse(),
+            "item.get" => CaptureItemGet(),
             "item.create" => CaptureItemCreate(body),
+            "item.update" => CaptureItemUpdate(body),
             "trigger.get" => CaptureTriggerGet(body),
             "trigger.create" => CaptureTriggerCreate(body),
             "trigger.update" => CaptureTriggerUpdate(body),
@@ -1525,9 +1646,26 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     private HttpResponseMessage CaptureHostGet(string body)
     {
-        return body.Contains("cmdb2monitoring-suppression-aggregates", StringComparison.Ordinal)
-            ? EmptyArrayResponse()
-            : HostGetResponse();
+        if (!body.Contains("cmdb2monitoring-suppression-aggregates", StringComparison.Ordinal))
+        {
+            return HostGetResponse();
+        }
+
+        return ExistingAggregateHost
+            ? Json(HttpStatusCode.OK, """
+            {
+              "jsonrpc": "2.0",
+              "result": [
+                {
+                  "hostid": "43001",
+                  "host": "cmdb2monitoring-suppression-aggregates",
+                  "name": "CMDB2Monitoring suppression aggregates"
+                }
+              ],
+              "id": 21
+            }
+            """)
+            : EmptyArrayResponse();
     }
 
     private HttpResponseMessage CaptureHostCreate(string body)
@@ -1549,6 +1687,44 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
     private HttpResponseMessage CaptureItemCreate(string body)
     {
         ItemCreatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "itemids": [
+              "44001"
+            ]
+          },
+          "id": 22
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureItemGet()
+    {
+        return ExistingAggregateItem
+            ? Json(HttpStatusCode.OK, """
+            {
+              "jsonrpc": "2.0",
+              "result": [
+                {
+                  "itemid": "44001",
+                  "name": "CMDB2M suppression state: ВПН Хабы / City04",
+                  "key_": "cmdb2monitoring.suppression.aggregate[abc]",
+                  "type": "15",
+                  "value_type": "3",
+                  "status": "0"
+                }
+              ],
+              "id": 22
+            }
+            """)
+            : EmptyArrayResponse();
+    }
+
+    private HttpResponseMessage CaptureItemUpdate(string body)
+    {
+        ItemUpdatePayload = body;
         return Json(HttpStatusCode.OK, """
         {
           "jsonrpc": "2.0",
@@ -1603,6 +1779,14 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
               "status": "0",
               "priority": "4",
               "value": "1",
+              "expression": "max(/ctest2-routerCore-002/icmpping,#3)=0",
+              "recovery_expression": "",
+              "tags": [
+                {
+                  "tag": "scope",
+                  "value": "availability"
+                }
+              ],
               "hosts": [
                 {
                   "hostid": "30011",
@@ -1618,6 +1802,14 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
               "status": "0",
               "priority": "4",
               "value": "0",
+              "expression": "max(/ctest2-vpnhub-001/icmpping,#3)=0",
+              "recovery_expression": "",
+              "tags": [
+                {
+                  "tag": "component",
+                  "value": "health"
+                }
+              ],
               "hosts": [
                 {
                   "hostid": "30012",

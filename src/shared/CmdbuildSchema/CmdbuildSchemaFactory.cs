@@ -270,8 +270,8 @@ public sealed class CmdbuildSchemaFactory
         SchemaLanguage language,
         IReadOnlyDictionary<string, CmdbuildClassDefinition> classes)
     {
-        return
-        [
+        var domains = new List<CmdbuildDomainDefinition>
+        {
             Domain(prefix, language, BuilderLayer.Service, "ServiceResourceMemberOfFleet", "member_of", classes["ServiceResource"], classes["ServiceUserEndpointFleet"]),
             Domain(prefix, language, BuilderLayer.Service, "ServiceFleetAggregatesToWorkplaceGroup", "aggregates_to", classes["ServiceUserEndpointFleet"], classes["ServiceWorkplaceGroup"]),
             Domain(prefix, language, BuilderLayer.Service, "ServiceWorkplaceGroupAggregatesToPlatformService", "aggregates_to", classes["ServiceWorkplaceGroup"], classes["ServicePlatformService"]),
@@ -293,7 +293,134 @@ public sealed class CmdbuildSchemaFactory
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionComputeSuppressesResource", "depends_on", classes["SuppressionComputeCluster"], classes["SuppressionResource"]),
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionStoragePoolSuppressesResource", "depends_on", classes["SuppressionStoragePool"], classes["SuppressionResource"]),
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionProxyGroupSuppressesResource", "depends_on", classes["SuppressionProxyGroup"], classes["SuppressionResource"])
-        ];
+        };
+
+        AddUniversalServiceDependencyDomains(prefix, language, classes, domains);
+        AddUniversalSuppressionSuppressDomains(prefix, language, classes, domains);
+        return domains;
+    }
+
+    private static void AddUniversalServiceDependencyDomains(
+        string prefix,
+        SchemaLanguage language,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
+        List<CmdbuildDomainDefinition> domains)
+    {
+        var serviceClasses = classes.Values
+            .Where(definition => definition.Layer == BuilderLayer.Service && !definition.IsSuperclass)
+            .OrderBy(definition => definition.Code, StringComparer.Ordinal)
+            .ToArray();
+        var existingPairs = domains
+            .Select(domain => DomainPairKey(domain.SourceClassCode, domain.TargetClassCode, domain.RelationType))
+            .ToHashSet(StringComparer.Ordinal);
+        var existingDomainCodes = domains
+            .Select(domain => domain.Code)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var source in serviceClasses)
+        {
+            foreach (var target in serviceClasses)
+            {
+                const string relationType = "service_depends_on";
+                var pairKey = DomainPairKey(source.Code, target.Code, relationType);
+                if (existingPairs.Contains(pairKey))
+                {
+                    continue;
+                }
+
+                var sourcePart = NormalizeDomainPart(RemoveManagedPrefix(prefix, source.Code));
+                var targetPart = NormalizeDomainPart(RemoveManagedPrefix(prefix, target.Code));
+                if (string.IsNullOrWhiteSpace(sourcePart) || string.IsNullOrWhiteSpace(targetPart))
+                {
+                    continue;
+                }
+
+                var baseCode = UniqueDomainBaseCode(
+                    prefix,
+                    $"{sourcePart}DependsOn{targetPart}",
+                    existingDomainCodes);
+                domains.Add(Domain(prefix, language, BuilderLayer.Service, baseCode, relationType, source, target));
+                existingPairs.Add(pairKey);
+            }
+        }
+    }
+
+    private static void AddUniversalSuppressionSuppressDomains(
+        string prefix,
+        SchemaLanguage language,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
+        List<CmdbuildDomainDefinition> domains)
+    {
+        var suppressionClasses = classes.Values
+            .Where(definition => definition.Layer == BuilderLayer.Suppression && !definition.IsSuperclass)
+            .OrderBy(definition => definition.Code, StringComparer.Ordinal)
+            .ToArray();
+        var existingPairs = domains
+            .Select(domain => DomainPairKey(domain.SourceClassCode, domain.TargetClassCode, domain.RelationType))
+            .ToHashSet(StringComparer.Ordinal);
+        var existingDomainCodes = domains
+            .Select(domain => domain.Code)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var source in suppressionClasses)
+        {
+            foreach (var target in suppressionClasses)
+            {
+                var relationType = SuppressionSuppressRelationType(prefix, target);
+                var pairKey = DomainPairKey(source.Code, target.Code, relationType);
+                if (existingPairs.Contains(pairKey))
+                {
+                    continue;
+                }
+
+                var sourcePart = NormalizeDomainPart(RemoveManagedPrefix(prefix, source.Code));
+                var targetPart = NormalizeDomainPart(RemoveManagedPrefix(prefix, target.Code));
+                if (string.IsNullOrWhiteSpace(sourcePart) || string.IsNullOrWhiteSpace(targetPart))
+                {
+                    continue;
+                }
+
+                var baseCode = UniqueDomainBaseCode(
+                    prefix,
+                    $"{sourcePart}Suppresses{targetPart}",
+                    existingDomainCodes);
+                domains.Add(Domain(prefix, language, BuilderLayer.Suppression, baseCode, relationType, source, target));
+                existingPairs.Add(pairKey);
+            }
+        }
+    }
+
+    private static string DomainPairKey(string sourceClassCode, string targetClassCode, string relationType)
+    {
+        return $"{sourceClassCode}\u0000{targetClassCode}\u0000{relationType}";
+    }
+
+    private static string SuppressionSuppressRelationType(string prefix, CmdbuildClassDefinition target)
+    {
+        var targetBaseCode = RemoveManagedPrefix(prefix, target.Code);
+        return targetBaseCode.Contains("NetworkAccessZone", StringComparison.OrdinalIgnoreCase)
+            ? "depends_on_network"
+            : "depends_on";
+    }
+
+    private static string UniqueDomainBaseCode(string prefix, string baseCode, ISet<string> existingDomainCodes)
+    {
+        var normalized = NormalizeDomainPart(baseCode);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            normalized = "SuppressionSuppressesRelation";
+        }
+
+        for (var suffix = 0; ; suffix++)
+        {
+            var candidateBase = suffix == 0
+                ? normalized
+                : $"{normalized}{suffix + 1}";
+            if (existingDomainCodes.Add(prefix + candidateBase))
+            {
+                return candidateBase;
+            }
+        }
     }
 
     private static IReadOnlyList<CmdbuildDomainDefinition> BuildSuggestedDomains(

@@ -278,9 +278,9 @@
           <section class="panel rule-editor-panel" data-rule-editor-layer="service">
             <h2>Статические правила сервиса</h2>
             <div class="rule-editor-grid">
-              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает в списке выбора правила, созданные из шаблонов. Снимите галочку, чтобы выбрать такое правило.">
+              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает правила и целевые экземпляры, созданные из шаблонов. Снимите галочку, чтобы выбрать такой объект вручную.">
                 <input id="serviceRuleFilterTemplateRules" data-rule-filter-template-rules type="checkbox" checked>
-                <span>Фильтровать правила из шаблонов</span>
+                <span>Фильтровать правила и классы из шаблонов</span>
               </label>
               <label class="select-field">
                 <span>Действие с правилом</span>
@@ -368,9 +368,9 @@
           <section class="panel rule-editor-panel" data-rule-editor-layer="suppression">
             <h2>Статические правила подавления</h2>
             <div class="rule-editor-grid">
-              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает в списке выбора правила, созданные из шаблонов. Снимите галочку, чтобы выбрать такое правило.">
+              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает правила и целевые экземпляры, созданные из шаблонов. Снимите галочку, чтобы выбрать такой объект вручную.">
                 <input id="suppressionRuleFilterTemplateRules" data-rule-filter-template-rules type="checkbox" checked>
-                <span>Фильтровать правила из шаблонов</span>
+                <span>Фильтровать правила и классы из шаблонов</span>
               </label>
               <label class="select-field">
                 <span>Действие с правилом</span>
@@ -869,7 +869,6 @@
               <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать подавление в Zabbix</button>
             </div>
             <p class="status-line" data-zabbix-apply-status></p>
-            <div class="preview-list" data-zabbix-apply-list></div>
           </section>
           <section class="panel">
             <div class="section-heading">
@@ -884,6 +883,13 @@
             </div>
             <p id="zabbixTriggerDependenciesStatus" class="status-line"></p>
             <div id="zabbixTriggerDependenciesList" class="preview-list"></div>
+          </section>
+          <section class="panel">
+            <div class="section-heading">
+              <h2>Детали применения подавления</h2>
+              <p>План команд и результаты dry-run/publish для объектов модели подавления.</p>
+            </div>
+            <div class="preview-list" data-zabbix-apply-list></div>
           </section>
         </section>
 
@@ -1143,6 +1149,7 @@
                 <li><code>aggregation_type</code> является lookup: <code>all</code>, <code>any</code>, <code>threshold</code>, <code>n_of_m</code>.</li>
                 <li>JS-проверки CMDBuild сохраняются в поле <code>validationRules</code> самих атрибутов, а не отдельными объектами схемы.</li>
                 <li><code>threshold</code> и <code>sla_target</code> задаются процентами от 0 до 100; запятая и точка должны нормализоваться перед отправкой в Zabbix.</li>
+                <li>Связи зависимости между конкретными service-классами строятся через матрицу доменов <code>service_depends_on</code>; <code>member_of</code> и <code>aggregates_to</code> остаются для состава и агрегации.</li>
               </ul>
             </section>
 
@@ -1176,7 +1183,7 @@
                 <li>Для source-карточки с <code>zabbix_main_hostid</code> applier создает source leaf service и добавляет его child-узлом к целевому managed service.</li>
                 <li>На source leaf service выставляется <code>problem_tags</code> по <code>cmdb2monitoring:source_hostid=&lt;zabbix_main_hostid&gt;</code>, а такой же tag добавляется на Zabbix host с сохранением уже существующих host tags.</li>
                 <li>После этого реальные проблемы Zabbix host наследуют tag и могут попадать в source leaf, а статус поднимается вверх по дереву service/suppression.</li>
-                <li>Если <code>zabbix_main_hostid</code> пустой, карточка считается неготовой: dry-run покажет отсутствующую привязку, а publish не создаст source leaf и уберет прежнее membership этой карточки.</li>
+                <li>Если <code>zabbix_main_hostid</code> пустой, карточка считается неготовой: dry-run покажет отсутствующую привязку, а publish не создаст source leaf, уберет прежнее активное membership этой карточки и оставит ее в pending-диагностике до следующего UPDATE с hostid.</li>
                 <li>Это строит модель влияния в Zabbix Services. Реальное штатное каскадное подавление должно строиться отдельной публикацией <code>trigger dependencies</code>; разовое подавление активных событий в UI не используется.</li>
               </ul>
             </section>

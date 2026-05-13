@@ -71,9 +71,11 @@ The pipeline reduces feedback loops from its own CMDBuild writes without
 requiring extra origin data from CMDBuild webhooks. `cmdbwebhooks2kafka` still
 publishes every accepted raw webhook for auditability. `cmdbconfigbuilder`
 computes a semantic fingerprint per `rule_id + source class + source card` from
-the fields that the matched rule actually uses; repeated CREATE/UPDATE events
-with the same semantic input do not publish another aggregation command within
-the configured deduplication window. `cmdbaggregation2cmdbuild` also reads an
+the fields that the matched rule actually uses plus the current
+`zabbix_main_hostid` readiness value; repeated CREATE/UPDATE events with the
+same semantic input do not publish another aggregation command within the
+configured deduplication window, but the transition from "no hostid" to "hostid
+present" is never hidden by deduplication. `cmdbaggregation2cmdbuild` also reads an
 existing managed target card before updating it and skips the CMDBuild `PUT`
 when all managed values already match. This prevents relation updates,
 idempotent target-card ensures, and neighboring `zabbix_main_hostid` updates from
@@ -191,10 +193,15 @@ links:
   `aggregation_type`, `threshold`, or `n`.
 - For suppression `trigger dependencies`, every managed suppression object uses
   the same approach: `zabbixconfig2api` creates one managed aggregate trigger
-  for the object and writes the calculated group state to a trapper item.
+  for the object and one managed calculated item on the technical aggregate
+  host. Zabbix calculates the current group state itself from selected
+  source-host triggers. By default the selector includes triggers tagged
+  `scope=availability` or `component=health`; their expanded Zabbix expressions
+  are embedded into the calculated item formula, so ICMP and non-ICMP host
+  checks use the same condition that creates the source host Problem.
   Downstream triggers depend on that aggregate trigger, never directly on
   individual source-host triggers. `aggregation_type=all|any|threshold|n_of_m`
-  controls only how that aggregate state is calculated.
+  controls the trigger expression over the calculated healthy-host count.
 - `ServicePlatformService.service_type` is a `ServiceType` lookup, not a free
   string. Planned values are `business`, `application`, `platform`,
   `integration`, and `infrastructure`; the field is used for grouping and
@@ -482,17 +489,20 @@ Suppression schema is intentionally uniform:
   the CMDBuild domain relation after ensuring the rule-owned target card. The
   related target object is resolved by card id first and then by generated
   lookup/Code; if it does not exist yet, the relation is skipped until the
-  source object is processed again. Service-layer links between two
-  `ServiceNetworkAccessZone` objects use the standard
-  `ServiceNetworkZoneDependsOnNetworkZone` domain. Suppression chains where a
-  suppression aggregate must suppress generated resources, for example
-  `МаршрутизаторыSupp / City04 -> Рабочие места / City04`, use the
-  `Подавляет` role. Standard schema domains allow `SuppressionResource`,
-  `SuppressionNetworkAccessZone`, `SuppressionComputeCluster`,
-  `SuppressionStoragePool`, and `SuppressionProxyGroup` to point to
-  `SuppressionResource` with internal `relationType=depends_on`. Custom
-  suppression classes get a suggested `<Custom>SuppressesSuppressionResource`
-  domain for the same pattern.
+  source object is processed again. Service-layer dependency links use
+  `relationType=service_depends_on`. The service schema creates a full matrix
+  of dependency domains between concrete managed service classes, including
+  custom managed service classes; explicit `member_of` and `aggregates_to`
+  domains remain for containment semantics. Suppression chains where one
+  suppression aggregate must suppress another aggregate or generated resources,
+  for example `МаршрутизаторыSupp / City04 -> Рабочие места / City04`, use the
+  `Подавляет` role. The suppression schema creates a full matrix of domains
+  between concrete suppression classes, including custom managed suppression
+  classes. Targets of `SuppressionNetworkAccessZone` use
+  `relationType=depends_on_network`; other suppression targets use
+  `relationType=depends_on`. This lets `SuppressionComputeCluster ->
+  SuppressionNetworkAccessZone`, `SuppressionStoragePool -> SuppressionResource`
+  and similar pairs be represented without adding one-off domains.
 - Template-to-template relation editing has two optional generated-rule filter
   blocks, one for the source template and one for the target template. Include
   rows are AND, exclude rows subtract matches, and the filtered candidate sets
@@ -619,17 +629,39 @@ The top-level `Синхронизация с источниками данных
   `problem_tags` for `cmdb2monitoring:source_hostid=<zabbix_main_hostid>`, and the
   applier adds the same tag to the Zabbix host while preserving existing host
   tags. This is how Zabbix Services can associate real host problems with
-  managed objects such as `ВПН филиалов`.
+  managed objects such as `ВПН филиалов`. A source card that still has no
+  `zabbix_main_hostid` is stored in the membership snapshot as pending
+  diagnostics only: it is not counted as an active source leaf, and any previous
+  active membership for that same card is removed until the readiness update
+  arrives.
+- Webhook payloads do not have to carry `zabbix_main_hostid`. Before building a
+  command, `cmdbconfigbuilder` reads the configured readiness attribute
+  (`Readiness:ZabbixHostIdAttribute`, default `zabbix_main_hostid`) from the
+  current CMDBuild card and injects it into the source event. Legacy payload
+  fields such as `zabbix_hostid` remain only a compatibility fallback in the rule
+  engine.
 - The service tree and problem-tag binding do not by themselves close or hide
   dependent problem events. Active event suppression from our side is not used:
   the suppression model must be reflected in Zabbix through service topology
   and trigger dependencies. In `Каскадное подавление -> Применить в Zabbix`,
   the `Зависимости триггеров` block first ensures managed aggregate triggers
-  for suppression objects, then builds dependencies from persisted membership:
+  and calculated items for suppression objects, then builds dependencies from
+  persisted membership:
   triggers of child/dependent source hosts and the child's own aggregate trigger
   depend on the aggregate trigger of the parent/cause object. Reconcile
   preserves manual Zabbix dependencies and removes only edges that were
-  previously managed by this service.
+  previously managed by this service. Runtime state is not pushed by
+  cmdb2monitoring; after reconcile Zabbix reevaluates calculated items and
+  aggregate triggers by its normal schedule. The aggregate calculated item is
+  built from selected source trigger expressions, not from a hardcoded item key.
+  After a suppression membership command is applied from Kafka, `zabbixconfig2api`
+  starts the same trigger-dependency reconcile automatically with a short debounce
+  (`ZabbixTriggerDependencies:AutoReconcileDebounceSeconds`). The manual button is
+  still useful after schema/rule relation changes or for operator-controlled
+  dry-run.
+  Zabbix trigger dependencies do not create a separate "suppressed problem"
+  event while the parent trigger is in Problem state; the dependent trigger is
+  not switched to Problem until the dependency clears and a new metric arrives.
 - `Webhooks` checks the configured `cmdbwebhooks2kafka` health endpoint, reads
   CMDBuild `etl/webhook` inventory, and shows the webhook target route plus the
   raw event Kafka topic. `Перечитать из CMDBuild` reloads the current managed

@@ -1361,26 +1361,58 @@ public sealed class ApplyCurrentRulesZabbixRelationPlan
 
 public sealed class SourceEventEnricher(CmdbuildClient cmdbuild, ILogger<SourceEventEnricher> logger)
 {
+    private readonly string zabbixHostIdAttribute = "zabbix_main_hostid";
+
+    public SourceEventEnricher(
+        CmdbuildClient cmdbuild,
+        IOptions<ReadinessOptions> readinessOptions,
+        ILogger<SourceEventEnricher> logger)
+        : this(cmdbuild, logger)
+    {
+        zabbixHostIdAttribute = string.IsNullOrWhiteSpace(readinessOptions.Value.ZabbixHostIdAttribute)
+            ? "zabbix_main_hostid"
+            : readinessOptions.Value.ZabbixHostIdAttribute.Trim();
+    }
+
     public async Task<CmdbRawEvent> EnrichAsync(
         CmdbRawEvent message,
         ConversionRulesDocument rules,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(message.ClassCode)
-            || string.IsNullOrWhiteSpace(message.CardId)
-            || rules.Source.Fields.Count == 0)
-        {
-            return message;
-        }
-
-        var referencedFields = ReferencedFieldsForClass(rules, message.ClassCode);
-        if (referencedFields.Count == 0)
+            || string.IsNullOrWhiteSpace(message.CardId))
         {
             return message;
         }
 
         var attributes = new Dictionary<string, string>(message.Attributes, StringComparer.OrdinalIgnoreCase);
         var resolvedCount = 0;
+        if (await SourceHostIdEnrichment.TryResolveAsync(
+                message,
+                attributes,
+                zabbixHostIdAttribute,
+                cmdbuild,
+                logger,
+                cancellationToken))
+        {
+            resolvedCount++;
+        }
+
+        if (rules.Source.Fields.Count == 0)
+        {
+            return resolvedCount == 0
+                ? message
+                : message with { Attributes = attributes };
+        }
+
+        var referencedFields = ReferencedFieldsForClass(rules, message.ClassCode);
+        if (referencedFields.Count == 0)
+        {
+            return resolvedCount == 0
+                ? message
+                : message with { Attributes = attributes };
+        }
+
         foreach (var (fieldName, definition) in rules.Source.Fields)
         {
             if (!referencedFields.Contains(fieldName)
@@ -1501,6 +1533,7 @@ public sealed class SourceEventEnricher(CmdbuildClient cmdbuild, ILogger<SourceE
 public sealed class RuleEngineWorker(
     IOptions<KafkaOptions> kafkaOptions,
     IOptions<KafkaTopicsOptions> topicOptions,
+    IOptions<ReadinessOptions> readinessOptions,
     IOptions<DebugOptions> debugOptions,
     ConversionRulesFileLoader loader,
     ConversionRulesValidator validator,
@@ -1608,20 +1641,39 @@ public sealed class RuleEngineWorker(
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(message.ClassCode)
-            || string.IsNullOrWhiteSpace(message.CardId)
-            || rules.Source.Fields.Count == 0)
-        {
-            return message;
-        }
-
-        var referencedFields = ReferencedFieldsForClass(rules, message.ClassCode);
-        if (referencedFields.Count == 0)
+            || string.IsNullOrWhiteSpace(message.CardId))
         {
             return message;
         }
 
         var attributes = new Dictionary<string, string>(message.Attributes, StringComparer.OrdinalIgnoreCase);
         var resolvedCount = 0;
+        if (await SourceHostIdEnrichment.TryResolveAsync(
+                message,
+                attributes,
+                readinessOptions.Value.ZabbixHostIdAttribute,
+                cmdbuild,
+                logger,
+                cancellationToken))
+        {
+            resolvedCount++;
+        }
+
+        if (rules.Source.Fields.Count == 0)
+        {
+            return resolvedCount == 0
+                ? message
+                : message with { Attributes = attributes };
+        }
+
+        var referencedFields = ReferencedFieldsForClass(rules, message.ClassCode);
+        if (referencedFields.Count == 0)
+        {
+            return resolvedCount == 0
+                ? message
+                : message with { Attributes = attributes };
+        }
+
         foreach (var (fieldName, definition) in rules.Source.Fields)
         {
             if (!referencedFields.Contains(fieldName)
@@ -1746,6 +1798,52 @@ public sealed class RuleEngineWorker(
         foreach (Match match in Regex.Matches(template, "\\$\\{\\s*source\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\}", RegexOptions.IgnoreCase))
         {
             fields.Add(match.Groups[1].Value);
+        }
+    }
+}
+
+public static class SourceHostIdEnrichment
+{
+    public static async Task<bool> TryResolveAsync(
+        CmdbRawEvent message,
+        IDictionary<string, string> attributes,
+        string configuredAttribute,
+        CmdbuildClient cmdbuild,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var attribute = string.IsNullOrWhiteSpace(configuredAttribute)
+            ? "zabbix_main_hostid"
+            : configuredAttribute.Trim();
+        if (attributes.TryGetValue(attribute, out var existing) && !string.IsNullOrWhiteSpace(existing))
+        {
+            return false;
+        }
+
+        try
+        {
+            var value = await cmdbuild.ResolveCardPathValueAsync(
+                message.ClassCode,
+                message.CardId,
+                $"{message.ClassCode}.{attribute}",
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            attributes[attribute] = value;
+            return true;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to resolve CMDBuild source host id {AttributeName} for {ClassCode}/{CardId}.",
+                attribute,
+                message.ClassCode,
+                message.CardId);
+            return false;
         }
     }
 }

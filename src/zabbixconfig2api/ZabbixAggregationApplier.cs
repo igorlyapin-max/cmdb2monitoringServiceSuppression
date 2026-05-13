@@ -5,6 +5,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 public sealed class ZabbixAggregationApplier(
     ZabbixClient zabbix,
     ZabbixApplyStateStore state,
+    ZabbixTriggerDependencyReconcileScheduler triggerDependencyScheduler,
     ILogger<ZabbixAggregationApplier> logger)
 {
     public async Task<ZabbixCommandApplyResult> ApplyAsync(
@@ -26,6 +27,7 @@ public sealed class ZabbixAggregationApplier(
                     ? "Удаление managed service из Zabbix пропущено: включен safe apply. Объекты не удаляются автоматически."
                     : "Удаление managed service из Zabbix пока не применяется автоматически; требуется отдельная reconcile-операция.";
                 result.AppliedAtUtc = DateTimeOffset.UtcNow;
+                RequestSuppressionTriggerDependencyReconcile(command, layer);
                 return result;
             }
 
@@ -47,6 +49,7 @@ public sealed class ZabbixAggregationApplier(
             result.HostTagsApplied = sourceLeafApply.HostTagsApplied + apply.HostTagsApplied;
             result.Warnings = warnings.Concat(apply.Warnings).ToArray();
             result.AppliedAtUtc = DateTimeOffset.UtcNow;
+            RequestSuppressionTriggerDependencyReconcile(command, layer);
             return result;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
@@ -68,6 +71,17 @@ public sealed class ZabbixAggregationApplier(
             result.AppliedAtUtc = DateTimeOffset.UtcNow;
             return result;
         }
+    }
+
+    private void RequestSuppressionTriggerDependencyReconcile(AggregationCommand command, string layer)
+    {
+        if (!string.Equals(layer, "suppression", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        triggerDependencyScheduler.Request(
+            $"membership {command.Source.ClassCode}/{command.Source.CardId} -> {command.Target.ClassCode}/{command.Target.CardId}");
     }
 
     private async Task<ZabbixManagedServiceApplyResult> EnsureCurrentSourceLeafAsync(

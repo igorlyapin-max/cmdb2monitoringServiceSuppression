@@ -97,6 +97,12 @@ public sealed record ZabbixTriggerInfo
 
     public string Value { get; init; } = "";
 
+    public string Expression { get; init; } = "";
+
+    public string RecoveryExpression { get; init; } = "";
+
+    public IReadOnlyList<ZabbixServiceTag> Tags { get; init; } = [];
+
     public IReadOnlyList<ZabbixHostInfo> Hosts { get; init; } = [];
 
     public IReadOnlyList<ZabbixTriggerDependencyInfo> Dependencies { get; init; } = [];
@@ -133,11 +139,13 @@ public sealed record ZabbixSuppressionAggregateDefinition
 
     public string ItemName { get; init; } = "";
 
+    public string CalculationFormula { get; init; } = "";
+
     public string TriggerName { get; init; } = "";
 
-    public int TriggerPriority { get; init; }
+    public string TriggerExpression { get; init; } = "";
 
-    public int StateValue { get; init; }
+    public int TriggerPriority { get; init; }
 }
 
 public sealed record ZabbixSuppressionAggregateApplyResult
@@ -153,8 +161,6 @@ public sealed record ZabbixSuppressionAggregateApplyResult
     public string ItemAction { get; init; } = "";
 
     public string TriggerAction { get; init; } = "";
-
-    public bool StatePushed { get; init; }
 }
 
 public sealed record ZabbixManagedServiceApplyResult

@@ -8,7 +8,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(root, '..', '..');
 const publicRoot = path.join(root, 'public');
 const baseConfig = JSON.parse(await readFile(path.join(root, 'config', 'appsettings.json'), 'utf8'));
-const config = await resolveSecretReferences(baseConfig, 'monitoring-ui-api');
+const config = applyRuntimeServerOverrides(await resolveSecretReferences(baseConfig, 'monitoring-ui-api'));
 
 const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -315,6 +315,23 @@ const server = http.createServer(async (request, response) => {
 server.listen(config.server.port, config.server.host, () => {
   console.log(`monitoring-ui-api listening on http://${config.server.host}:${config.server.port}`);
 });
+
+function applyRuntimeServerOverrides(configValue) {
+  const serverConfig = configValue.server ?? {};
+  const host = process.env.MONITORING_UI_HOST ?? process.env.HOST ?? serverConfig.host;
+  const portRaw = process.env.MONITORING_UI_PORT ?? process.env.PORT;
+  const port = portRaw == null || portRaw === ''
+    ? serverConfig.port
+    : Number.parseInt(portRaw, 10);
+  return {
+    ...configValue,
+    server: {
+      ...serverConfig,
+      host,
+      port: Number.isInteger(port) && port > 0 ? port : serverConfig.port
+    }
+  };
+}
 
 function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });

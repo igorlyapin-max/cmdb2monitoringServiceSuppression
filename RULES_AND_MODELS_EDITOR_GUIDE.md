@@ -411,9 +411,18 @@ runtime-связи на matching generated rules выбранного шабло
 `Маршрутизаторы ядра` подавляет generated-зоны `City04` и `City14`.
 Целевое правило может указывать на существующую CMDBuild-карточку; в таком
 случае runtime-связь использует `target.card_id`, а не служебный
-`idempotency_key`. Связи service network-zone -> network-zone создаются через
-стандартный domain `C2M_ServiceNetworkZoneDependsOnNetworkZone`; self-link
+`idempotency_key`. Связи зависимости в service используют `relationType =
+service_depends_on`; схема создает матрицу таких доменов между конкретными
+управляемыми service-классами, включая custom-классы. Домены `member_of` и
+`aggregates_to` остаются отдельной семантикой для состава/агрегации; self-link
 generated rule с самим собой пропускается.
+В слое подавления роль `Подавляет` можно использовать между любыми конкретными
+suppression-классами. Схема создает матрицу доменов между такими классами:
+если цель `SuppressionNetworkAccessZone`, используется `relationType =
+depends_on_network`, для остальных целей `relationType = depends_on`. Поэтому
+связи вроде `SuppressionComputeCluster -> SuppressionNetworkAccessZone` или
+`SuppressionProxyGroup -> SuppressionStoragePool` не требуют ручного домена,
+если актуальная схема уже применена в CMDBuild.
 Если связать нужно не все generated-правила шаблона, заполните блок отбора на
 той стороне, где выбран шаблон. Он работает так же, как `Условия выборки
 объектов` в шаблоне: каждая строка `Включить` задает переменную шаблона и
@@ -488,7 +497,22 @@ Zabbix Services может сопоставить реальные пробле�
 
 Если `zabbix_main_hostid` пустой, карточка считается неготовой к Zabbix membership:
 dry-run покажет отсутствующую привязку, а publish не создаст source leaf и
-удалит прежнее membership этой source-карточки, если оно уже было записано.
+удалит прежнее активное membership этой source-карточки, если оно уже было
+записано. Карточка остается в статусе ожидания `zabbix_main_hostid` в
+membership-диагностике, чтобы оператор видел, что правило совпало, но Zabbix
+host еще не готов для source leaf/problem tags.
+
+Webhook может не содержать `zabbix_main_hostid`, даже если значение уже есть в
+карточке. Перед сопоставлением правил `cmdbconfigbuilder` догружает из CMDBuild
+настроенный readiness-атрибут (`Readiness:ZabbixHostIdAttribute`, обычно
+`zabbix_main_hostid`) и добавляет его в source attributes. Поэтому новое
+membership может появиться после обычного UPDATE карточки, если карточка
+проходит условия правила. Если правило фильтрует по другому обязательному полю
+например `Critical`, карточка без этого поля не попадет в группу независимо от
+наличия `zabbix_main_hostid`.
+Переход от пустого `zabbix_main_hostid` к заполненному входит в semantic
+fingerprint, поэтому dedup не должен скрывать штатный второй UPDATE после
+создания host в Zabbix.
 
 Эта логика строит service impact model. Она не закрывает и не скрывает зависимые
 problem events сама по себе, и отдельный разовый контур подавления активных
@@ -511,23 +535,36 @@ dependencies, чтобы подавление работало штатными 
    не обязаны сходиться к одному элементу; обязательны только правильное
    причинное направление и отсутствие циклов.
 4. Для каждого suppression-объекта создается единый managed aggregate trigger
-   на техническом host `cmdb2monitoring-suppression-aggregates`. Сервис пишет в
-   его trapper item состояние группы: `0 = OK`, `1 = PROBLEM`.
-5. `aggregation_type` управляет расчетом этого состояния: `all` срабатывает от
-   любого проблемного source-host, `any` - только когда проблемны все
-   source-host, `threshold` - когда даже при оптимистичной оценке здоровых
-   хостов меньше заданного процента, `n_of_m` - когда даже при оптимистичной
-   оценке здоровых меньше `n`.
+   на техническом host `cmdb2monitoring-suppression-aggregates` и managed
+   calculated item. Сервис публикует формулу, а текущее состояние рассчитывает
+   Zabbix по выбранным triggers source-host. По умолчанию выбираются triggers с
+   тегами `scope=availability` или `component=health`; в формулу попадает их
+   раскрытое Zabbix expression. Поэтому ICMP, HTTP, agent-проверки и другие
+   проверки используют то же условие, по которому source-host дает Problem.
+5. `aggregation_type` управляет выражением trigger над healthy-count calculated
+   item: `all` срабатывает, если здоровы не все source-host, `any` - только если
+   нет ни одного здорового source-host, `threshold` - если здоровых меньше
+   заданного процента, `n_of_m` - если здоровых меньше `n`.
 6. Triggers source-хостов дочернего объекта и aggregate trigger самого
    дочернего объекта получают dependencies на aggregate trigger родительского
    объекта. Прямые dependencies на отдельные triggers source-хостов причины не
    создаются.
+   В Zabbix это не создает отдельную запись `Show suppressed problems`: пока
+   родительский trigger находится в Problem, dependent trigger не переходит в
+   Problem и будет переоценен только после восстановления родителя и прихода
+   новой метрики.
 7. При публикации сохраняются ручные Zabbix dependencies; удаляются только
    устаревшие зависимости, которые ранее были записаны этим сервисом как
    managed.
 8. Если у source-карточки нет `zabbix_main_hostid`, нет membership или нет активных
    triggers, dry-run покажет предупреждение и по этому участку зависимость не
    будет создана.
+
+После применения suppression membership из Kafka сервис автоматически запускает
+тот же пересчет aggregate triggers и dependencies с небольшой задержкой
+`ZabbixTriggerDependencies:AutoReconcileDebounceSeconds`. Отдельную кнопку
+`Опубликовать зависимости триггеров` используйте для dry-run, ручного контроля и
+повторного применения после изменения связей правил или схемы.
 
 Пример: `ВПН Хабы` обычно имеют `aggregation_type=any`, потому что один живой
 VPN-хаб еще сохраняет связность. Downstream-объекты не зависят от triggers

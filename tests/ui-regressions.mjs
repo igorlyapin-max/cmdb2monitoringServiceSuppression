@@ -4,21 +4,32 @@ import vm from 'node:vm';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const appPath = path.join(repoRoot, 'src/monitoring-ui-api/public/app.js');
+const serverPath = path.join(repoRoot, 'src/monitoring-ui-api/server.mjs');
 const indexPath = path.join(repoRoot, 'src/monitoring-ui-api/public/index.html');
 const stylesPath = path.join(repoRoot, 'src/monitoring-ui-api/public/styles.css');
 const uiConfigPath = path.join(repoRoot, 'src/monitoring-ui-api/config/appsettings.json');
 const builderConfigPath = path.join(repoRoot, 'src/cmdbconfigbuilder/appsettings.json');
+const zabbixConfigPath = path.join(repoRoot, 'src/zabbixconfig2api/appsettings.json');
+const cmdbConfigBuilderPath = path.join(repoRoot, 'src/cmdbconfigbuilder/Program.cs');
+const zabbixProgramPath = path.join(repoRoot, 'src/zabbixconfig2api/Program.cs');
+const zabbixAggregationApplierPath = path.join(repoRoot, 'src/zabbixconfig2api/ZabbixAggregationApplier.cs');
 
 const appText = fs.readFileSync(appPath, 'utf8');
+const serverText = fs.readFileSync(serverPath, 'utf8');
 const indexText = fs.readFileSync(indexPath, 'utf8');
 const stylesText = fs.readFileSync(stylesPath, 'utf8');
+const cmdbConfigBuilderText = fs.readFileSync(cmdbConfigBuilderPath, 'utf8');
+const zabbixProgramText = fs.readFileSync(zabbixProgramPath, 'utf8');
+const zabbixAggregationApplierText = fs.readFileSync(zabbixAggregationApplierPath, 'utf8');
 const uiConfig = JSON.parse(fs.readFileSync(uiConfigPath, 'utf8'));
 const builderConfig = JSON.parse(fs.readFileSync(builderConfigPath, 'utf8'));
+const zabbixConfig = JSON.parse(fs.readFileSync(zabbixConfigPath, 'utf8'));
 
 const api = await loadAppApi();
 
 assertStaticUiContracts();
 assertReadinessConfigContracts();
+assertWebhookManagementContracts();
 assertPopulationDimensionUiContracts();
 assertTemplateTargetClassContracts();
 assertRuleDocumentNormalizationContracts();
@@ -40,11 +51,13 @@ async function loadAppApi() {
     'targetClassOptions',
     'templateTargetClassOptions',
     'targetClassAttributes',
+    'targetObjectEditableAttributes',
     'normalizeRuleDocument',
     'relationGraphRoleEffectDirection',
     'relationGraphRegexItemsFromRelation',
     'relationRegexComparableValue',
     'templateManagedRelationMatchesRulePair',
+    'fallbackManagedRelationDomain',
     'renderRelationGraphRegexChip',
     'relationGraphRuntimeErrorDetails',
     'relationGraphEdgeGeometry',
@@ -110,6 +123,7 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'data-view="zabbixPreflight"', 'Zabbix preflight menu item must exist.');
   assertIncludes(indexText, 'Статические правила', 'auto-population menu must be renamed to static rules.');
   assertNotIncludes(indexText, 'Просмотр автонаполнения', 'view-only auto-population menu must not return.');
+  assertIncludes(indexText, 'Фильтровать правила и классы из шаблонов', 'static rule template filter label must mention classes.');
   assertIncludes(indexText, 'Создать/обновить правила по шаблонам и связям', 'template apply action must mention links.');
   assertIncludes(indexText, 'id="runTemplateAuditButton"', 'template audit must be available inside template apply menu.');
   assertIncludes(indexText, 'id="relationHideTemplateLinks"', 'rule-rule relation filter checkbox must exist.');
@@ -125,6 +139,12 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'aggregation_type', 'template target attributes help must mention aggregation_type.');
   assertIncludes(indexText, 'zabbix_main_hostid', 'UI must show zabbix_main_hostid readiness attribute.');
   assertNotIncludes(indexText, 'zabbix_hostid', 'visible UI must not mention legacy zabbix_hostid.');
+  const suppressionApplyView = textBetween(indexText, 'id="suppressionZabbixApplyView"', 'id="templateApplyView"');
+  assert(suppressionApplyView.includes('zabbixTriggerDependenciesApplyButton'),
+    'suppression Zabbix apply view must expose trigger dependency publish action.');
+  assert(
+    suppressionApplyView.indexOf('zabbixTriggerDependenciesApplyButton') < suppressionApplyView.indexOf('data-zabbix-apply-list'),
+    'trigger dependency actions must be visible before long suppression apply details.');
   assert(!/writing-mode\s*:\s*vertical/i.test(stylesText), 'relation graph labels must not use vertical writing mode.');
   assertIncludes(stylesText, '.app-shell', 'layout shell styles must exist.');
   assertIncludes(stylesText, 'position: sticky', 'side menu must be sticky and not scroll with page content.');
@@ -137,12 +157,63 @@ function assertReadinessConfigContracts() {
     'monitoring UI readiness attribute must be zabbix_main_hostid.');
   assert(builderConfig.Readiness?.ZabbixHostIdAttribute === 'zabbix_main_hostid',
     'cmdbconfigbuilder readiness attribute must be zabbix_main_hostid.');
+  assertIncludes(cmdbConfigBuilderText, 'SourceHostIdEnrichment.TryResolveAsync',
+    'cmdbconfigbuilder must enrich source events with the configured host id attribute.');
+  assertIncludes(cmdbConfigBuilderText, '"{message.ClassCode}.{attribute}"',
+    'cmdbconfigbuilder must resolve the configured host id attribute from CMDBuild cards.');
+  assertIncludes(cmdbConfigBuilderText, 'attributes[attribute] = value',
+    'resolved host id must be injected into the source event attributes.');
   api.state.zabbixHostIdAttribute = '';
   assert(api.zabbixHostIdAttributeName() === 'zabbix_main_hostid',
     'UI zabbixHostIdAttributeName must default to zabbix_main_hostid.');
   api.state.zabbixHostIdAttribute = 'custom_hostid';
   assert(api.zabbixHostIdAttributeName() === 'custom_hostid',
     'UI zabbixHostIdAttributeName must honor configured readiness attribute.');
+
+  assert(zabbixConfig.ZabbixTriggerDependencies?.AutoReconcileOnMembershipChange === true,
+    'zabbixconfig2api must auto-reconcile suppression trigger dependencies after membership changes.');
+  assert(Number.isInteger(zabbixConfig.ZabbixTriggerDependencies?.AutoReconcileDebounceSeconds),
+    'suppression trigger dependency auto-reconcile debounce must be configured.');
+  assertIncludes(zabbixProgramText, 'ZabbixTriggerDependencyReconcileScheduler',
+    'zabbixconfig2api must register a suppression trigger dependency reconcile scheduler.');
+  assertIncludes(zabbixAggregationApplierText, 'RequestSuppressionTriggerDependencyReconcile(command, layer)',
+    'suppression Zabbix apply must request trigger dependency reconcile after membership changes.');
+  assertIncludes(zabbixProgramText, 'PendingSources',
+    'zabbixconfig2api must retain unready source cards as pending membership diagnostics.');
+  assertIncludes(appText, 'pendingSourceCount',
+    'UI must display source cards waiting for zabbix_main_hostid.');
+}
+
+function assertWebhookManagementContracts() {
+  const eventsMatch = serverText.match(/const WEBHOOK_EVENTS = \[([\s\S]*?)\];/);
+  assert(eventsMatch, 'server must declare managed webhook events.');
+  const eventsBlock = eventsMatch[1];
+  for (const { eventType, suffix, cmdbuildEvent } of [
+    { eventType: 'CREATE', suffix: 'create', cmdbuildEvent: 'card_create_after' },
+    { eventType: 'UPDATE', suffix: 'update', cmdbuildEvent: 'card_update_after' },
+    { eventType: 'DELETE', suffix: 'delete', cmdbuildEvent: 'card_delete_after' }
+  ]) {
+    assertIncludes(eventsBlock, `eventType: '${eventType}'`, `managed webhooks must include ${eventType}.`);
+    assertIncludes(eventsBlock, `suffix: '${suffix}'`, `managed webhook ${eventType} must use stable suffix ${suffix}.`);
+    assertIncludes(eventsBlock, `cmdbuildEvent: '${cmdbuildEvent}'`, `managed webhook ${eventType} must target ${cmdbuildEvent}.`);
+  }
+
+  assertIncludes(serverText, 'for (const sourceClass of sourceClasses)', 'webhook publish must iterate source classes.');
+  assertIncludes(serverText, 'for (const event of WEBHOOK_EVENTS)', 'webhook publish must create every required event per class.');
+  assertIncludes(serverText, 'code: managedWebhookCode(sourceClass.code, event.suffix)', 'webhook code must be based on class and event.');
+  assertIncludes(serverText, 'target: sourceClass.code', 'CMDBuild webhook target must be the source class code.');
+
+  const payloadStart = serverText.indexOf('function buildCmdbuildWebhookPayload');
+  const payloadEnd = serverText.indexOf('function webhookTargetHeaders', payloadStart);
+  assert(payloadStart >= 0 && payloadEnd > payloadStart, 'server must expose webhook payload builder.');
+  const payloadBlock = serverText.slice(payloadStart, payloadEnd);
+  assert(!/rule[_-]?id|ruleId/i.test(payloadBlock), 'managed webhook payload must not depend on rule_id.');
+
+  const codeStart = serverText.indexOf('function managedWebhookCode');
+  const codeEnd = serverText.indexOf('function webhookCodePrefix', codeStart);
+  assert(codeStart >= 0 && codeEnd > codeStart, 'server must expose managed webhook code builder.');
+  const codeBlock = serverText.slice(codeStart, codeEnd);
+  assert(!/rule/i.test(codeBlock), 'managed webhook code must not be rule-based.');
 }
 
 function assertPopulationDimensionUiContracts() {
@@ -206,7 +277,9 @@ function assertTemplateTargetClassContracts() {
     { code: 'C2M_ServiceWorkplaceGroup', layer: 'Service', parentClassCode: 'C2M_ServiceManagedObject', attributes: [] },
     { code: 'C2M_SuppressionManagedObject', layer: 'Suppression', isSuperclass: true, parentClassCode: 'C2M_Monitoring', attributes: [
       { code: 'is_critical', type: 'boolean' },
-      { code: 'aggregation_type', type: 'lookup', lookupTypeCode: 'ServiceAggregationType' }
+      { code: 'aggregation_type', type: 'lookup', lookupTypeCode: 'ServiceAggregationType' },
+      { code: 'threshold', type: 'decimal' },
+      { code: 'n', type: 'integer' }
     ] },
     { code: 'C2M_SuppressionNetworkAccessZone', layer: 'Suppression', parentClassCode: 'C2M_SuppressionManagedObject', attributes: [] }
   ];
@@ -223,15 +296,53 @@ function assertTemplateTargetClassContracts() {
     'template target selector must not include concrete CMDBuild instances.');
   assert(api.targetClassOptions('service').some((item) => String(item.value).startsWith('instance:')),
     'static rule target selector must keep concrete CMDBuild instances.');
+  api.state.ruleExamples.service = [{
+    rule_id: 'generated-workplace-city04',
+    generated_from_template: 'workplaces-by-city',
+    template_generation: { status: 'managed' },
+    target: {
+      class_code: 'C2M_ServiceWorkplaceGroup',
+      card_id: '101',
+      card_description: 'Existing workplace group'
+    }
+  }];
+  const filteredTargetOptions = api.targetClassOptions('service', '', { filterTemplateTargets: true });
+  assert(filteredTargetOptions.some((item) => item.value === 'C2M_ServiceWorkplaceGroup'),
+    'static rule template filter must keep the target class available for manual rules.');
+  assert(!filteredTargetOptions.some((item) => item.value === 'instance:C2M_ServiceWorkplaceGroup:101'),
+    'static rule template filter must hide target instances generated from templates.');
 
   const serviceAttrs = api.targetClassAttributes('C2M_ServiceWorkplaceGroup').map((item) => item.code);
+  assert(serviceAttrs.includes('Code') && serviceAttrs.includes('Description'),
+    'targetClassAttributes must expose CMDBuild system identity fields even when class attributes omit them.');
   assert(serviceAttrs.includes('aggregation_type') && serviceAttrs.includes('threshold') && serviceAttrs.includes('n'),
     'service template target attributes must come from the class hierarchy and include aggregation fields.');
   assert(!serviceAttrs.includes('wrong'),
     'targetClassAttributes must not prefer stale instance attributes when planned class attributes exist.');
   const suppressionAttrs = api.targetClassAttributes('C2M_SuppressionNetworkAccessZone').map((item) => item.code);
-  assert(suppressionAttrs.includes('aggregation_type') && suppressionAttrs.includes('is_critical'),
-    'suppression template target attributes must include aggregation_type and is_critical.');
+  assert(suppressionAttrs.includes('Code') && suppressionAttrs.includes('Description'),
+    'suppression target classes must expose CMDBuild system identity fields for manual rule creation.');
+  assert(suppressionAttrs.includes('aggregation_type') && suppressionAttrs.includes('is_critical') && suppressionAttrs.includes('threshold') && suppressionAttrs.includes('n'),
+    'suppression template target attributes must include aggregation_type, is_critical, threshold and n.');
+  const serviceFallbackDomain = api.fallbackManagedRelationDomain(
+    'service',
+    'C2M_ServiceComputeCluster',
+    'C2M_ServiceNetworkAccessZone',
+    'service_depends_on');
+  assert(serviceFallbackDomain?.code === 'C2M_ServiceComputeClusterDependsOnServiceNetworkAccessZone',
+    'service fallback domains must cover ComputeCluster -> NetworkAccessZone dependency relations.');
+  const suppressionFallbackDomain = api.fallbackManagedRelationDomain(
+    'suppression',
+    'C2M_SuppressionComputeCluster',
+    'C2M_SuppressionNetworkAccessZone',
+    'depends_on_network');
+  assert(suppressionFallbackDomain?.code === 'C2M_SuppressionComputeClusterSuppressesSuppressionNetworkAccessZone',
+    'suppression fallback domains must cover ComputeCluster -> NetworkAccessZone suppress relations.');
+  const editableDescriptionCodes = api.targetObjectEditableAttributes('service', 'C2M_ServiceWorkplaceGroup')
+    .map((item) => item.code)
+    .filter((code) => String(code).toLowerCase() === 'description');
+  assert(editableDescriptionCodes.length === 1 && editableDescriptionCodes[0] === 'Description',
+    `static rule target attributes must show only one Description field, got ${JSON.stringify(editableDescriptionCodes)}.`);
 }
 
 function assertRuleDocumentNormalizationContracts() {
@@ -379,6 +490,15 @@ function assertIncludes(text, expected, message) {
 
 function assertNotIncludes(text, expected, message) {
   assert(!String(text).includes(expected), `${message} Unexpected '${expected}'.`);
+}
+
+function textBetween(text, startNeedle, endNeedle) {
+  const start = text.indexOf(startNeedle);
+  if (start < 0) {
+    return '';
+  }
+  const end = text.indexOf(endNeedle, start);
+  return end < 0 ? text.slice(start) : text.slice(start, end);
 }
 
 function assert(condition, message) {

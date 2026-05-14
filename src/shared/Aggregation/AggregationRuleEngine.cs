@@ -52,10 +52,12 @@ public sealed class AggregationRuleEngine
         ArgumentNullException.ThrowIfNull(rawEvent);
         ArgumentNullException.ThrowIfNull(rulesDocument);
 
-        return rulesDocument.Rules
+        var enabledRules = rulesDocument.Rules
             .Where(rule => rule.Enabled)
             .OrderBy(rule => rule.Priority)
             .ThenBy(rule => rule.RuleId, StringComparer.Ordinal)
+            .ToArray();
+        var plans = enabledRules
             .Where(rule => RuleMatches(rawEvent, rule))
             .Select(rule =>
             {
@@ -67,6 +69,10 @@ public sealed class AggregationRuleEngine
                     SemanticFingerprint = BuildSemanticFingerprint(rawEvent, rule, command, rulesDocument.Version)
                 };
             })
+            .ToArray();
+
+        return plans
+            .Concat(BuildSourceMembershipTombstonePlans(rawEvent, enabledRules, plans, rulesDocument.Version))
             .ToArray();
     }
 
@@ -136,8 +142,7 @@ public sealed class AggregationRuleEngine
 
     private static bool RuleMatches(CmdbRawEvent rawEvent, ConversionRule rule)
     {
-        if (!string.IsNullOrWhiteSpace(rule.Source.ClassCode)
-            && !rawEvent.ClassCode.Equals(rule.Source.ClassCode, StringComparison.OrdinalIgnoreCase))
+        if (!SourceClassMatches(rawEvent, rule))
         {
             return false;
         }
@@ -172,6 +177,83 @@ public sealed class AggregationRuleEngine
         }
 
         return true;
+    }
+
+    private IReadOnlyList<AggregationCommandPlan> BuildSourceMembershipTombstonePlans(
+        CmdbRawEvent rawEvent,
+        IReadOnlyList<ConversionRule> enabledRules,
+        IReadOnlyList<AggregationCommandPlan> matchedPlans,
+        string documentVersion)
+    {
+        if (string.IsNullOrWhiteSpace(rawEvent.ClassCode) || string.IsNullOrWhiteSpace(rawEvent.CardId))
+        {
+            return [];
+        }
+
+        var candidateLayers = enabledRules
+            .Where(rule => SourceClassMatches(rawEvent, rule))
+            .Select(rule => rule.Layer.Trim())
+            .Where(layer => !string.IsNullOrWhiteSpace(layer))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(layer => layer, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (candidateLayers.Length == 0)
+        {
+            return [];
+        }
+
+        var matchedLayers = matchedPlans
+            .Select(plan => plan.Command.Layer)
+            .Where(layer => !string.IsNullOrWhiteSpace(layer))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var isDelete = rawEvent.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase);
+        return candidateLayers
+            .Where(layer => isDelete || !matchedLayers.Contains(layer))
+            .Select(layer =>
+            {
+                var command = BuildSourceMembershipTombstoneCommand(rawEvent, layer);
+                return new AggregationCommandPlan
+                {
+                    Command = command,
+                    SemanticKey = BuildSourceMembershipTombstoneSemanticKey(rawEvent, layer),
+                    SemanticFingerprint = BuildSourceMembershipTombstoneSemanticFingerprint(
+                        rawEvent,
+                        layer,
+                        command,
+                        documentVersion)
+                };
+            })
+            .ToArray();
+    }
+
+    private AggregationCommand BuildSourceMembershipTombstoneCommand(CmdbRawEvent rawEvent, string layer)
+    {
+        return new AggregationCommand
+        {
+            CommandId = Guid.NewGuid().ToString("N"),
+            CorrelationId = rawEvent.EventId,
+            SourceEventId = rawEvent.EventId,
+            CommandType = AggregationCommandTypes.RemoveSourceMembership,
+            Layer = layer,
+            RuleId = $"source-membership-reconcile:{layer}:{rawEvent.ClassCode}",
+            RuleName = $"Reconcile source membership {layer}/{rawEvent.ClassCode}",
+            EventType = rawEvent.EventType,
+            Source = new AggregationSourceObject
+            {
+                ClassCode = rawEvent.ClassCode,
+                CardId = rawEvent.CardId,
+                KeyAttribute = "_id",
+                KeyValue = rawEvent.CardId,
+                ZabbixHostId = SourceZabbixHostId(rawEvent),
+                Attributes = new Dictionary<string, string>(rawEvent.Attributes, StringComparer.OrdinalIgnoreCase)
+            }
+        };
+    }
+
+    private static bool SourceClassMatches(CmdbRawEvent rawEvent, ConversionRule rule)
+    {
+        return string.IsNullOrWhiteSpace(rule.Source.ClassCode)
+            || rawEvent.ClassCode.Equals(rule.Source.ClassCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ConditionMatches(CmdbRawEvent rawEvent, SourceCondition condition)
@@ -276,6 +358,20 @@ public sealed class AggregationRuleEngine
         return string.Join('\u001f', rule.RuleId, rawEvent.ClassCode, rawEvent.CardId, eventKind);
     }
 
+    private static string BuildSourceMembershipTombstoneSemanticKey(CmdbRawEvent rawEvent, string layer)
+    {
+        var eventKind = rawEvent.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase)
+            ? "DELETE"
+            : "UPSERT";
+        return string.Join(
+            '\u001f',
+            AggregationCommandTypes.RemoveSourceMembership,
+            layer,
+            rawEvent.ClassCode,
+            rawEvent.CardId,
+            eventKind);
+    }
+
     private static string BuildSemanticFingerprint(
         CmdbRawEvent rawEvent,
         ConversionRule rule,
@@ -318,6 +414,26 @@ public sealed class AggregationRuleEngine
                         .ToArray()
                 })
                 .ToArray()
+        };
+
+        return Hash(JsonSerializer.Serialize(payload, JsonOptions));
+    }
+
+    private static string BuildSourceMembershipTombstoneSemanticFingerprint(
+        CmdbRawEvent rawEvent,
+        string layer,
+        AggregationCommand command,
+        string documentVersion)
+    {
+        var payload = new
+        {
+            documentVersion,
+            command.CommandType,
+            command.Layer,
+            eventKind = rawEvent.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase) ? "DELETE" : "UPSERT",
+            sourceClass = rawEvent.ClassCode,
+            sourceCard = rawEvent.CardId,
+            sourceZabbixHostId = command.Source.ZabbixHostId
         };
 
         return Hash(JsonSerializer.Serialize(payload, JsonOptions));

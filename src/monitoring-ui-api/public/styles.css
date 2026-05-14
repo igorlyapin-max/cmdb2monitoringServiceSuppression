@@ -1430,6 +1430,17 @@ textarea {
   padding-top: 2px;
 }
 
+.rule-attribute-note {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+}
+
 .rule-attribute-missing {
   background: #f8fafc;
   border: 1px dashed var(--line);

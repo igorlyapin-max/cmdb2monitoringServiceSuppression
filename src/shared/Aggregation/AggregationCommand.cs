@@ -118,4 +118,6 @@ public static class AggregationCommandTypes
     public const string EnsureMembership = "ensure_membership";
 
     public const string RemoveMembership = "remove_membership";
+
+    public const string RemoveSourceMembership = "remove_source_membership";
 }

@@ -128,6 +128,7 @@ const state = {
   cmdbDomainError: '',
   cmdbClassInstanceError: '',
   maxTraversalDepth: 2,
+  transitiveGroupDependencyDepth: 2,
   ruleExamples: {
     service: [],
     suppression: []
@@ -892,6 +893,11 @@ async function activateView(view, activeButton = null) {
     renderRelationsGraphView();
   } else if (view === 'zabbixPreflight') {
     renderZabbixPreflightView();
+  } else if (view === 'generalSettings') {
+    renderGeneralSettingsView();
+    if (!state.zabbixTriggerDependencies.status && !state.zabbixTriggerDependencies.loadingStatus) {
+      void loadZabbixTriggerDependenciesStatus({ renderDependenciesView: false });
+    }
   } else if (view === 'serviceZabbixApply') {
     renderZabbixApplyView('service');
     if (!state.zabbixApply.service.status && !state.zabbixApply.service.loadingStatus) {
@@ -1736,6 +1742,7 @@ function applyGeneralSettingsPayload(payload, options = {}) {
   if (options.render !== false) {
     renderRuleEditors();
     renderConversionConfigSyncView();
+    renderZabbixTriggerDependenciesView();
   }
 }
 
@@ -1888,18 +1895,156 @@ function render() {
 
 function renderGeneralSettingsView() {
   const maxDepth = document.querySelector('#maxTraversalDepthSelect');
+  const transitiveDepth = document.querySelector('#transitiveGroupDependencyDepthSelect');
   const zabbixAttribute = document.querySelector('#zabbixHostIdAttributeInput');
   const conversionFolder = document.querySelector('#conversionConfigFolderInput');
   const status = document.querySelector('#generalSettingsStatus');
-  if (!maxDepth || !zabbixAttribute || !conversionFolder || !status) {
+  const transitiveStatus = document.querySelector('#transitiveGroupDependencyDepthStatus');
+  const aggregateStateInputs = {
+    includeTags: document.querySelector('#aggregateStateTriggerIncludeTagsInput'),
+    excludeTags: document.querySelector('#aggregateStateTriggerExcludeTagsInput'),
+    includeNameRegex: document.querySelector('#aggregateStateTriggerIncludeNameRegexInput'),
+    excludeNameRegex: document.querySelector('#aggregateStateTriggerExcludeNameRegexInput'),
+    minPriority: document.querySelector('#aggregateStateTriggerMinPriorityInput')
+  };
+  const zabbixDependencyRuntimeInputs = {
+    requestTimeoutMs: document.querySelector('#zabbixRequestTimeoutMsInput'),
+    triggerGetBatchSize: document.querySelector('#triggerGetBatchSizeInput'),
+    maxSourceHostsPerAggregate: document.querySelector('#maxSourceHostsPerAggregateInput'),
+    maxAggregateFormulaLength: document.querySelector('#maxAggregateFormulaLengthInput'),
+    maxDependenciesPerRun: document.querySelector('#maxDependenciesPerRunInput'),
+    sampleLimit: document.querySelector('#triggerDependencySampleLimitInput')
+  };
+  if (!maxDepth || !transitiveDepth || !zabbixAttribute || !conversionFolder || !status) {
     return;
   }
 
+  const dependencyState = state.zabbixTriggerDependencies;
+  const payload = dependencyState.status ?? dependencyState.result;
   maxDepth.value = String(state.maxTraversalDepth);
+  transitiveDepth.value = String(state.transitiveGroupDependencyDepth);
+  transitiveDepth.disabled = true;
   zabbixAttribute.value = state.zabbixHostIdAttribute;
   conversionFolder.value = conversionConfigFolderLabel();
+  renderAggregateStateTriggerSettings(aggregateStateInputs, payload);
+  renderZabbixTriggerDependencyRuntimeSettings(zabbixDependencyRuntimeInputs, payload);
+  if (transitiveStatus) {
+    const hasServiceValue = Number.isInteger(Number(payload?.transitiveGroupDependencyDepth));
+    transitiveStatus.classList.toggle('error', Boolean(dependencyState.error) && !hasServiceValue);
+    if (dependencyState.loadingStatus) {
+      transitiveStatus.textContent = 'Загружаю эффективное значение N из zabbixconfig2api...';
+    } else if (hasServiceValue) {
+      transitiveStatus.textContent = `Эффективное значение N=${state.transitiveGroupDependencyDepth} берется из zabbixconfig2api. Ручной dry-run/apply и автоматический reconcile используют одно и то же значение.`;
+    } else if (dependencyState.error) {
+      transitiveStatus.textContent = `Не удалось получить N из zabbixconfig2api: ${dependencyState.error}`;
+    } else {
+      transitiveStatus.textContent = 'Значение N будет загружено из zabbixconfig2api; локальная настройка UI не используется.';
+    }
+  }
   status.textContent = state.generalSettingsError || state.generalSettingsMessage;
   status.classList.toggle('error', Boolean(state.generalSettingsError));
+}
+
+function renderZabbixTriggerDependencyRuntimeSettings(inputs, payload) {
+  const emptyText = payload ? '-' : 'ожидание статуса zabbixconfig2api';
+  const values = {
+    requestTimeoutMs: payload?.zabbixRequestTimeoutMs ?? emptyText,
+    triggerGetBatchSize: payload?.triggerGetBatchSize ?? emptyText,
+    maxSourceHostsPerAggregate: payload?.maxSourceHostsPerAggregate ?? emptyText,
+    maxAggregateFormulaLength: payload?.maxAggregateFormulaLength ?? emptyText,
+    maxDependenciesPerRun: payload?.maxDependenciesPerRun ?? emptyText,
+    sampleLimit: payload?.sampleLimit ?? emptyText
+  };
+
+  for (const [key, input] of Object.entries(inputs)) {
+    if (input) {
+      input.value = values[key] === undefined || values[key] === null || values[key] === ''
+        ? '-'
+        : String(values[key]);
+    }
+  }
+}
+
+function renderAggregateStateTriggerSettings(inputs, payload) {
+  const settings = payload?.aggregateStateTriggerSettings
+    ?? aggregateStateTriggerSettingsFromSummary(payload?.aggregateStateTriggerSelector ?? payload?.aggregateStateTriggerSelectorSummary)
+    ?? {};
+  const emptyText = payload ? '-' : 'ожидание статуса zabbixconfig2api';
+  const values = {
+    includeTags: payload ? zabbixTriggerTagSelectorsText(settings.includeTags) : emptyText,
+    excludeTags: payload ? zabbixTriggerTagSelectorsText(settings.excludeTags) : emptyText,
+    includeNameRegex: payload ? emptyAsDash(settings.includeNameRegex) : emptyText,
+    excludeNameRegex: payload ? emptyAsDash(settings.excludeNameRegex) : emptyText,
+    minPriority: settings.minPriority === undefined || settings.minPriority === null || settings.minPriority === ''
+      ? emptyText
+      : String(settings.minPriority)
+  };
+
+  for (const [key, input] of Object.entries(inputs)) {
+    if (input) {
+      input.value = values[key] ?? '-';
+    }
+  }
+}
+
+function aggregateStateTriggerSettingsFromSummary(summary) {
+  if (!summary) {
+    return null;
+  }
+
+  const fields = Object.fromEntries(String(summary)
+    .split(';')
+    .map((part) => part.trim())
+    .map((part) => {
+      const separator = part.indexOf(':');
+      return separator < 0 ? null : [part.slice(0, separator).trim(), part.slice(separator + 1).trim()];
+    })
+    .filter(Boolean));
+  return {
+    includeTags: zabbixTriggerTagSelectorsFromText(fields['include tags']),
+    excludeTags: zabbixTriggerTagSelectorsFromText(fields['exclude tags']),
+    includeNameRegex: fields['include name regex'] ?? '',
+    excludeNameRegex: fields['exclude name regex'] ?? '',
+    minPriority: fields['min priority'] ?? ''
+  };
+}
+
+function zabbixTriggerTagSelectorsFromText(value) {
+  if (!value || value === '-' || value.toLowerCase() === 'нет') {
+    return [];
+  }
+
+  return String(value)
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const separator = part.indexOf('=');
+      return separator < 0
+        ? { tag: part, value: '' }
+        : { tag: part.slice(0, separator).trim(), value: part.slice(separator + 1).trim() };
+    });
+}
+
+function zabbixTriggerTagSelectorsText(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return 'нет';
+  }
+
+  return items
+    .map((item) => {
+      const tag = item?.tag ?? item?.Tag ?? '';
+      const value = item?.value ?? item?.Value ?? '';
+      return value ? `${tag}=${value}` : tag;
+    })
+    .filter(Boolean)
+    .join(', ') || 'нет';
+}
+
+function emptyAsDash(value) {
+  return value === undefined || value === null || String(value).trim() === ''
+    ? '-'
+    : String(value);
 }
 
 function applyResultMessage(payload) {
@@ -4594,7 +4739,7 @@ async function applyRuleEditorChange(layerKey) {
     const rule = buildBindingRule(layerKey, { ...values, targetCard }, existingRule);
     rule.rule_id = uniqueRuleIdForDocument(document, rule.rule_id, action === 'modify' ? selectedIndex : -1);
     config.targetClass.value = targetInstanceOptionValue(values.targetClass, targetCard.id);
-    state.ruleEditorTargetValues[layerKey] = {};
+    state.ruleEditorTargetValues[layerKey] = { ...(targetCard.initialValues ?? {}) };
     ensureRuleDocumentSource(document, values.sourceClass, sourceFieldsForRule(values));
     if (action === 'modify') {
       document.rules[selectedIndex] = rule;
@@ -4661,7 +4806,7 @@ function readRuleEditorValues(layerKey) {
     sourceClass
   });
   const keyField = sourceKeyFieldFromSelection(selectionFilters);
-  const targetValues = targetSelection.kind === 'class'
+  const targetValues = targetSelection.kind
     ? readRuleTargetObjectValues(layerKey, sourceClass)
     : {};
   const selectedCard = targetSelection.kind === 'instance'
@@ -4693,7 +4838,7 @@ async function ensureRuleTargetCard(layerKey, values, existingRule = null) {
     return {
       id: values.selectedCard.id,
       description: targetCardDisplayLabel(values.selectedCard, values.targetClass),
-      initialValues: {}
+      initialValues: values.targetValues ?? {}
     };
   }
 
@@ -4963,11 +5108,37 @@ function loadSelectedRuleIntoEditor(layerKey) {
   config.priority.value = String(rule.priority ?? 100);
   config.targetClass.value = targetSelectionValueFromRule(rule);
   state.ruleEditorSelectionFilters[layerKey] = selectionFiltersFromRule(rule);
-  state.ruleEditorTargetValues[layerKey] = { ...(rule.target?.initial_user_values ?? {}) };
+  state.ruleEditorTargetValues[layerKey] = ruleTargetInitialValuesForEditor(layerKey, rule);
   renderRuleSourceFieldOptions(layerKey);
   renderRuleSelectionFilterList(layerKey);
   renderRuleTargetFieldOptions(layerKey);
   renderRuleAttributeList(layerKey);
+}
+
+function ruleTargetInitialValuesForEditor(layerKey, rule) {
+  const initialValues = {};
+  const selection = parseTargetSelection(targetSelectionValueFromRule(rule));
+  if (selection.kind === 'instance') {
+    const card = targetInstanceBySelection(selection, layerKey);
+    for (const attribute of targetObjectEditableAttributes(layerKey, selection.classCode, { includeIdentity: false })) {
+      const code = attributeCode(attribute);
+      const value = cardAttributeValue(card, code);
+      if (hasEditableTargetAttributeValue(value)) {
+        initialValues[code] = value;
+      }
+    }
+  }
+
+  return {
+    ...initialValues,
+    ...(rule?.target?.initial_user_values ?? {})
+  };
+}
+
+function hasEditableTargetAttributeValue(value) {
+  return value !== undefined
+    && value !== null
+    && String(value).trim() !== '';
 }
 
 function resetRuleEditorForCreate(layerKey) {
@@ -6016,10 +6187,28 @@ function renderRuleAttributeList(layerKey) {
     return;
   }
 
-  if (selection.kind === 'instance') {
+  const isInstanceTarget = selection.kind === 'instance';
+  if (isInstanceTarget) {
     const card = targetInstanceBySelection(selection, layerKey);
+    const rows = ruleTargetObjectAttributeRows(layerKey, selection.classCode, { includeIdentity: false });
+    const missingCodes = missingTargetObjectEditableAttributeCodes(layerKey, selection.classCode, { includeIdentity: false });
+    if (rows.length === 0) {
+      config.attributeList.innerHTML = `
+        <div class="empty-state">Выбран существующий объект ${escapeHtml(targetCardDisplayLabel(card, selection.classCode))}; в выбранном классе нет пользовательских атрибутов модели для сохранения в правиле.</div>
+        ${missingCodes.length > 0 ? targetMissingAttributeNoteTemplate(missingCodes) : ''}
+      `;
+      return;
+    }
+
     config.attributeList.innerHTML = `
-      <div class="empty-state">Выбран существующий объект ${escapeHtml(targetCardDisplayLabel(card, selection.classCode))}; атрибуты целевого объекта уже заполнены в CMDBuild.</div>
+      <div class="rule-attribute-note">Выбран существующий объект ${escapeHtml(targetCardDisplayLabel(card, selection.classCode))}; Code, name и Description не меняются. Атрибуты ниже сохраняются в правиле и используются runtime-командами агрегации.</div>
+      <div class="rule-attribute-header" role="row">
+        <span role="columnheader">атрибут</span>
+        <span role="columnheader">значение</span>
+        <span role="columnheader">помощь</span>
+      </div>
+      ${rows.map((row) => ruleAttributeRowTemplate(row)).join('')}
+      ${missingCodes.length > 0 ? targetMissingAttributeNoteTemplate(missingCodes) : ''}
     `;
     return;
   }
@@ -6045,9 +6234,9 @@ function renderRuleAttributeList(layerKey) {
   `;
 }
 
-function ruleTargetObjectAttributeRows(layerKey, classCode) {
+function ruleTargetObjectAttributeRows(layerKey, classCode, options = {}) {
   const values = state.ruleEditorTargetValues[layerKey] ?? {};
-  return targetObjectEditableAttributes(layerKey, classCode).map((attribute) => {
+  return targetObjectEditableAttributes(layerKey, classCode, options).map((attribute) => {
     const code = attributeCode(attribute);
     return {
       attribute,
@@ -6057,8 +6246,8 @@ function ruleTargetObjectAttributeRows(layerKey, classCode) {
   });
 }
 
-function targetObjectEditableAttributes(layerKey, classCode) {
-  const allowedCodes = targetObjectEditableAttributeCodes(layerKey);
+function targetObjectEditableAttributes(layerKey, classCode, options = {}) {
+  const allowedCodes = targetObjectEditableAttributeCodes(layerKey, options);
   const attributes = targetClassAttributes(classCode);
   const attributeByExactCode = new Map(attributes
     .map((attribute) => [attributeCode(attribute), attribute]));
@@ -6069,11 +6258,11 @@ function targetObjectEditableAttributes(layerKey, classCode) {
     .filter(Boolean);
 }
 
-function missingTargetObjectEditableAttributeCodes(layerKey, classCode) {
+function missingTargetObjectEditableAttributeCodes(layerKey, classCode, options = {}) {
   const attributes = targetClassAttributes(classCode);
   const exactCodes = new Set(attributes.map((attribute) => attributeCode(attribute)));
   const attributeTokens = new Set(attributes.map((attribute) => canonicalToken(attributeCode(attribute))));
-  return targetObjectEditableAttributeCodes(layerKey)
+  return targetObjectEditableAttributeCodes(layerKey, options)
     .filter((code) => !exactCodes.has(code) && !attributeTokens.has(canonicalToken(code)));
 }
 
@@ -6086,17 +6275,20 @@ function targetMissingAttributeNoteTemplate(codes) {
   `;
 }
 
-function targetObjectEditableAttributeCodes(layerKey) {
+function targetObjectEditableAttributeCodes(layerKey, options = {}) {
   const normalizedLayer = String(layerKey ?? '').toLowerCase();
+  const identityAttributes = options.includeIdentity === false
+    ? []
+    : TARGET_CARD_IDENTITY_ATTRIBUTES;
   if (normalizedLayer === 'service') {
-    return [...TARGET_CARD_IDENTITY_ATTRIBUTES, ...SERVICE_USER_RESPONSIBILITY_ATTRIBUTES];
+    return [...identityAttributes, ...SERVICE_USER_RESPONSIBILITY_ATTRIBUTES];
   }
 
   if (normalizedLayer === 'suppression') {
-    return [...TARGET_CARD_IDENTITY_ATTRIBUTES, ...SUPPRESSION_USER_RESPONSIBILITY_ATTRIBUTES];
+    return [...identityAttributes, ...SUPPRESSION_USER_RESPONSIBILITY_ATTRIBUTES];
   }
 
-  return [...TARGET_CARD_IDENTITY_ATTRIBUTES];
+  return [...identityAttributes];
 }
 
 function defaultRuleTargetObjectValue(layerKey, code) {
@@ -6214,7 +6406,8 @@ function readRuleTargetObjectValues(layerKey, sourceClass) {
   const config = ruleEditorConfig(layerKey);
   const selection = parseTargetSelection(config.targetClass.value.trim());
   const values = {};
-  const attributes = targetObjectEditableAttributes(layerKey, selection.classCode);
+  const includeIdentity = selection.kind === 'class';
+  const attributes = targetObjectEditableAttributes(layerKey, selection.classCode, { includeIdentity });
   const attributeByExactCode = new Map(attributes.map((attribute) => [attributeCode(attribute), attribute]));
   const attributeByToken = new Map(attributes.map((attribute) => [canonicalToken(attributeCode(attribute)), attribute]));
   const templateContext = ruleTargetObjectTemplateContext(sourceClass);
@@ -6239,7 +6432,7 @@ function readRuleTargetObjectValues(layerKey, sourceClass) {
     values[code] = coerceRuleTargetObjectValue(attribute, renderedValue);
   }
 
-  validateRuleTargetObjectValues(layerKey, values, attributes, selection.classCode);
+  validateRuleTargetObjectValues(layerKey, values, attributes, selection.classCode, { requireIdentity: includeIdentity });
   state.ruleEditorTargetValues[layerKey] = { ...values };
   return values;
 }
@@ -6302,22 +6495,24 @@ function coerceRuleTargetObjectValue(attribute, rawValue) {
   return rawValue;
 }
 
-function validateRuleTargetObjectValues(layerKey, values, attributes = [], classCode = '') {
+function validateRuleTargetObjectValues(layerKey, values, attributes = [], classCode = '', options = {}) {
   const availableTokens = new Set(attributes.map((attribute) => canonicalToken(attributeCode(attribute))));
-  if (!availableTokens.has('name')) {
-    throw new Error(`В целевом классе ${classCode || ''} нет атрибута name; создание экземпляра из этого правила невозможно.`);
-  }
+  if (options.requireIdentity !== false) {
+    if (!availableTokens.has('name')) {
+      throw new Error(`В целевом классе ${classCode || ''} нет атрибута name; создание экземпляра из этого правила невозможно.`);
+    }
 
-  if (!availableTokens.has('code')) {
-    throw new Error(`В целевом классе ${classCode || ''} нет атрибута Code; создание экземпляра из этого правила невозможно.`);
-  }
+    if (!availableTokens.has('code')) {
+      throw new Error(`В целевом классе ${classCode || ''} нет атрибута Code; создание экземпляра из этого правила невозможно.`);
+    }
 
-  if (!String(values.Code ?? values.code ?? '').trim()) {
-    throw new Error('Для создаваемого целевого объекта заполните Code.');
-  }
+    if (!String(values.Code ?? values.code ?? '').trim()) {
+      throw new Error('Для создаваемого целевого объекта заполните Code.');
+    }
 
-  if (!String(values.name ?? '').trim()) {
-    throw new Error('Для создаваемого целевого объекта заполните name.');
+    if (!String(values.name ?? '').trim()) {
+      throw new Error('Для создаваемого целевого объекта заполните name.');
+    }
   }
 
   validateLayerAggregationTargetValues(layerKey, values, attributes, classCode);
@@ -7288,12 +7483,16 @@ async function loadZabbixApplyStatus(layerKey) {
   }
 }
 
-async function loadZabbixTriggerDependenciesStatus() {
+async function loadZabbixTriggerDependenciesStatus(options = {}) {
+  const renderDependenciesView = options.renderDependenciesView !== false;
   const stateItem = state.zabbixTriggerDependencies;
   try {
     stateItem.loadingStatus = true;
     stateItem.error = '';
-    renderZabbixTriggerDependenciesView();
+    if (renderDependenciesView) {
+      renderZabbixTriggerDependenciesView();
+    }
+    renderGeneralSettingsView();
 
     const response = await fetch('/api/zabbix/trigger-dependencies/status', {
       headers: { accept: 'application/json' }
@@ -7304,12 +7503,16 @@ async function loadZabbixTriggerDependenciesStatus() {
     }
 
     stateItem.status = result;
+    syncTransitiveGroupDependencyDepthFromPayload(result);
     stateItem.message = 'Статус trigger dependencies обновлен.';
   } catch (error) {
     stateItem.error = error.message;
   } finally {
     stateItem.loadingStatus = false;
-    renderZabbixTriggerDependenciesView();
+    if (renderDependenciesView) {
+      renderZabbixTriggerDependenciesView();
+    }
+    renderGeneralSettingsView();
   }
 }
 
@@ -7328,7 +7531,11 @@ async function runZabbixTriggerDependencies(options = {}) {
       dryRun ? '/api/zabbix/trigger-dependencies/dry-run' : '/api/zabbix/trigger-dependencies/apply',
       {
         method: 'POST',
-        headers: { accept: 'application/json' }
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({})
       });
     const result = await response.json();
     if (!response.ok) {
@@ -7336,6 +7543,7 @@ async function runZabbixTriggerDependencies(options = {}) {
     }
 
     stateItem.result = result;
+    syncTransitiveGroupDependencyDepthFromPayload(result);
     const finalMessage = result.message || (dryRun ? 'Dry-run конфигурации dependencies завершен.' : 'Конфигурация dependencies опубликована в Zabbix.');
     stateItem.message = finalMessage;
     await loadZabbixTriggerDependenciesStatus();
@@ -7401,7 +7609,9 @@ async function applyZabbixLayer(layerKey, options = {}) {
       : [];
     const finalMessage = dryRun
       ? `Dry-run завершен: карточек ${result.cardsScanned ?? 0}, команд ${result.commandsBuilt ?? 0}.`
-      : `Опубликовано в Zabbix-топик: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`;
+      : (layerKey === 'suppression'
+        ? `Отправлено в Zabbix-топик для обновления suppression membership: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`
+        : `Опубликовано в Zabbix-топик: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`);
     await loadZabbixApplyStatus(layerKey);
     stateItem.message = finalMessage;
     stateItem.error = resultErrors.length
@@ -7512,8 +7722,14 @@ function renderZabbixApplyView(layerKey) {
     </div>
     <div>
       <span class="metric-label">Reconcile</span>
-      <strong>${escapeHtml(zabbixReconcileText(reconcile))}</strong>
+      <strong>${escapeHtml(zabbixReconcileText(reconcile, layerKey))}</strong>
     </div>
+    ${layerKey === 'suppression' ? `
+      <div>
+        <span class="metric-label">Zabbix Services</span>
+        <strong>${escapeHtml(layerStatus.createSuppressionServices ? 'создаются' : 'не создаются')}</strong>
+      </div>
+    ` : ''}
   `;
 
   const progressText = stateItem.applying && stateItem.progress
@@ -7522,7 +7738,9 @@ function renderZabbixApplyView(layerKey) {
   status.textContent = stateItem.error
     || progressText
     || stateItem.message
-    || 'Команды этого слоя публикуются в отдельный Zabbix-топик; статус ведется независимо от второго слоя.';
+    || (layerKey === 'suppression'
+      ? 'Команды этого слоя обновляют suppression membership для aggregate triggers и trigger dependencies; Zabbix Services по умолчанию не создаются.'
+      : 'Команды этого слоя публикуются в отдельный Zabbix-топик; статус ведется независимо от второго слоя.');
   status.classList.toggle('error', Boolean(stateItem.error));
 
   list.innerHTML = renderZabbixApplyDetails(layerKey, stateItem);
@@ -7542,10 +7760,10 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
   return `
     ${progress ? renderZabbixApplyProgress(progress) : ''}
     ${zabbixPlan ? renderZabbixObjectPlan(zabbixPlan, layerKey) : ''}
-    ${membershipTargets.length > 0 ? renderZabbixMembershipTargets(membershipTargets) : ''}
+    ${membershipTargets.length > 0 ? renderZabbixMembershipTargets(membershipTargets, layerKey) : ''}
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
-      <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : 'последняя публикация') : 'ожидание запуска')}</strong>
+      <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : zabbixApplyLastRunLabel(layerKey)) : 'ожидание запуска')}</strong>
       <span>правил ${escapeHtml(result?.ruleCount ?? 0)} · классов-источников ${escapeHtml(result?.sourceClassCount ?? 0)} · карточек ${escapeHtml(result?.cardsScanned ?? 0)} · команд ${escapeHtml(result?.commandsBuilt ?? 0)}</span>
       <span>топики: ${escapeHtml((result?.topics ?? (result?.topic ? [result.topic] : [])).join(', ') || '-')}</span>
       <span>последняя команда: ${escapeHtml(layerStatus.lastRuleName || layerStatus.lastRuleId || '-')} -> ${escapeHtml(layerStatus.lastTargetClass || '-')}:${escapeHtml(layerStatus.lastTargetKey || '-')}</span>
@@ -7607,10 +7825,47 @@ function renderZabbixTriggerDependenciesView() {
   applyButton.disabled = busy;
 
   const payload = stateItem.result ?? stateItem.status ?? {};
+  const transitiveDepth = zabbixTransitiveGroupDependencyDepth(payload);
   summary.innerHTML = `
     <div>
       <span class="metric-label">Статус</span>
       <strong>${escapeHtml(zabbixApplyStatusLabel(payload.status || payload.lastStatus || '-'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Глубина групп N</span>
+      <strong>${escapeHtml(transitiveDepth)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Таймаут Zabbix</span>
+      <strong>${escapeHtml(zabbixRequestTimeoutText(payload?.zabbixRequestTimeoutMs))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Размер trigger.get</span>
+      <strong>${escapeHtml(payload?.triggerGetBatchSize ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Пачек trigger.get</span>
+      <strong>${escapeHtml(payload?.triggerGetBatchCount ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Время trigger.get</span>
+      <strong>${escapeHtml(zabbixElapsedText(payload?.triggerGetElapsedMs))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Макс. hosts/aggregate</span>
+      <strong>${escapeHtml(zabbixLimitText(payload?.largestAggregateSourceHostCount, payload?.maxSourceHostsPerAggregate))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Макс. formula</span>
+      <strong>${escapeHtml(zabbixLimitText(payload?.largestAggregateFormulaLength, payload?.maxAggregateFormulaLength))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Макс. trigger expr</span>
+      <strong>${escapeHtml(zabbixLimitText(payload?.largestAggregateTriggerExpressionLength, payload?.maxAggregateFormulaLength))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Сложность aggregate</span>
+      <strong>${escapeHtml((payload?.aggregateComplexityErrorCount ?? 0) > 0 ? `${payload.aggregateComplexityErrorCount} ошибок` : `${payload?.aggregateComplexityWarningCount ?? 0} предупреждений`)}</strong>
     </div>
     <div>
       <span class="metric-label">Желаемых зависимостей</span>
@@ -7669,6 +7924,10 @@ function renderZabbixTriggerDependenciesView() {
       <strong>${escapeHtml(payload.unsupportedTriggerExpressionCount ?? 0)}</strong>
     </div>
     <div>
+      <span class="metric-label">Unsupported aggregate items</span>
+      <strong>${escapeHtml(payload.unsupportedAggregateItemCount ?? 0)}</strong>
+    </div>
+    <div>
       <span class="metric-label">Hosts без выбранных trigger-ов</span>
       <strong>${escapeHtml(payload.hostsWithoutSelectedSourceTriggers ?? 0)}</strong>
     </div>
@@ -7686,9 +7945,37 @@ function renderZabbixTriggerDependenciesView() {
 function renderZabbixTriggerDependenciesDetails(payload) {
   const samples = Array.isArray(payload?.sampleDependencies) ? payload.sampleDependencies : [];
   const aggregates = Array.isArray(payload?.sampleAggregates) ? payload.sampleAggregates : [];
+  const unsupportedAggregateItems = Array.isArray(payload?.unsupportedAggregateItems) ? payload.unsupportedAggregateItems : [];
   const warnings = Array.isArray(payload?.warnings) ? payload.warnings : [];
   const errors = Array.isArray(payload?.errors) ? payload.errors : [];
   return `
+    <div class="rule-summary">
+      <span class="structure-mark">параметры Zabbix API</span>
+      <span>таймаут=${escapeHtml(zabbixRequestTimeoutText(payload?.zabbixRequestTimeoutMs))} · размер trigger.get=${escapeHtml(payload?.triggerGetBatchSize ?? '-')} · пачек=${escapeHtml(payload?.triggerGetBatchCount ?? '-')} · время=${escapeHtml(zabbixElapsedText(payload?.triggerGetElapsedMs))}</span>
+      <span>Если dry-run/apply завершается timeout, уменьшите <code>ZabbixTriggerDependencies:TriggerGetBatchSize</code> или увеличьте <code>Zabbix:RequestTimeoutMs</code> в настройках <code>zabbixconfig2api</code>.</span>
+    </div>
+    <div class="rule-summary">
+      <span class="structure-mark">лимиты aggregate formula</span>
+      <span>source-hosts=${escapeHtml(zabbixLimitText(payload?.largestAggregateSourceHostCount, payload?.maxSourceHostsPerAggregate))} · calculated formula=${escapeHtml(zabbixLimitText(payload?.largestAggregateFormulaLength, payload?.maxAggregateFormulaLength))} · trigger expression=${escapeHtml(zabbixLimitText(payload?.largestAggregateTriggerExpressionLength, payload?.maxAggregateFormulaLength))}</span>
+      <span>Превышение лимитов блокирует публикацию aggregate trigger до Zabbix. Предупреждение появляется с 80% лимита; исправляйте шаблон/source filters, делите группу или уменьшайте транзитивную глубину N.</span>
+    </div>
+    <div class="rule-summary">
+      <span class="structure-mark">глубина транзитивных связей</span>
+      <strong>N=${escapeHtml(zabbixTransitiveGroupDependencyDepth(payload))}</strong>
+      <span>Leaf/source trigger-ы зависят только от ближайшей suppression-группы. Upstream-причины включаются в выражения aggregate trigger-ов групп на N уровней, чтобы модель не росла полной матрицей от каждого host trigger-а до всех верхних причин.</span>
+    </div>
+    <div class="rule-summary">
+      <span class="structure-mark">selector состояния группы</span>
+      <span>${escapeHtml(payload?.aggregateStateTriggerSelector || payload?.aggregateStateTriggerSelectorSummary || '-')}</span>
+      <span>Используется только для calculated item suppression-группы; сюда должны попадать корневые признаки недоступности.</span>
+      <span>Порог aggregation_type считается по host-ам, чьи выбранные поддержанные trigger-ы реально попали в calculated item; host-ы без выбранных trigger-ов показываются как unknown/skipped и не считаются отказавшими.</span>
+    </div>
+    <div class="rule-summary">
+      <span class="structure-mark">selector dependency-покрытия</span>
+      <span>${escapeHtml(payload?.dependencyTriggerSelector || payload?.dependencyTriggerSelectorSummary || '-')}</span>
+      <span>Определяет, какие leaf/source trigger-ы получают Zabbix dependencies от ближайшей suppression-группы.</span>
+    </div>
+    ${unsupportedAggregateItems.length > 0 ? renderUnsupportedAggregateItems(unsupportedAggregateItems) : ''}
     ${aggregates.length > 0 ? `
       <div class="rule-summary">
         <span class="structure-mark">aggregate triggers</span>
@@ -7722,6 +8009,48 @@ function renderZabbixTriggerDependenciesDetails(payload) {
   `;
 }
 
+function zabbixRequestTimeoutText(value) {
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return '-';
+  }
+
+  return `${timeoutMs} ms`;
+}
+
+function zabbixElapsedText(value) {
+  const elapsedMs = Number(value);
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    return '-';
+  }
+
+  return `${elapsedMs} ms`;
+}
+
+function zabbixLimitText(value, limit) {
+  const numericValue = Number(value);
+  const numericLimit = Number(limit);
+  const valueText = Number.isFinite(numericValue) ? String(numericValue) : '-';
+  const limitText = Number.isFinite(numericLimit) && numericLimit > 0 ? String(numericLimit) : '-';
+  return `${valueText}/${limitText}`;
+}
+
+function zabbixTransitiveGroupDependencyDepth(payload) {
+  return clampNumber(
+    Number(payload?.transitiveGroupDependencyDepth ?? state.transitiveGroupDependencyDepth),
+    state.transitiveGroupDependencyDepth,
+    1,
+    3);
+}
+
+function syncTransitiveGroupDependencyDepthFromPayload(payload) {
+  const value = Number(payload?.transitiveGroupDependencyDepth);
+  if (Number.isInteger(value) && value >= 1 && value <= 3) {
+    state.transitiveGroupDependencyDepth = value;
+  }
+  return state.transitiveGroupDependencyDepth;
+}
+
 function renderZabbixSuppressionAggregateSample(item) {
   const stateText = Number(item?.stateValue ?? 0) === 1 ? 'PROBLEM' : 'OK';
   return `
@@ -7732,14 +8061,112 @@ function renderZabbixSuppressionAggregateSample(item) {
       </summary>
       <span>trigger: ${escapeHtml(item?.triggerId || '-')} ${escapeHtml(item?.triggerName || '')}</span>
       <span>calculated item: ${escapeHtml(item?.itemId || '-')} ${escapeHtml(item?.itemKey || '-')}</span>
+      <span>item state: ${escapeHtml(zabbixAggregateItemStateText(item))}</span>
       <span>формула calculated item: ${escapeHtml(item?.calculationFormula || '-')}</span>
       <span>expression trigger-а: ${escapeHtml(item?.triggerExpression || '-')}</span>
+      <span>сложность: hosts=${escapeHtml(zabbixLimitText(item?.hostCount, item?.maxSourceHostsPerAggregate))} · formula=${escapeHtml(item?.calculationFormulaLength ?? 0)} · own trigger=${escapeHtml(item?.ownProblemExpressionLength ?? 0)} · upstream=${escapeHtml(item?.upstreamProblemExpressionLength ?? 0)} · trigger expression=${escapeHtml(item?.triggerExpressionLength ?? 0)}</span>
+      ${renderZabbixAggregateComplexityMessages(item?.complexityMessages)}
+      <span>свои source-hosts: ${escapeHtml(zabbixAggregateOwnStateText(item))}</span>
+      <span>причина состояния: ${escapeHtml(zabbixAggregateStateReasonText(item))}</span>
+      ${item?.upstreamProblemExpression ? `<span>upstream condition: ${escapeHtml(item.upstreamProblemExpression)}</span>` : ''}
       <span>host: ${escapeHtml(item?.hostId || '-')} ${escapeHtml(item?.hostName || '-')}</span>
       <span>source-hosts: healthy=${escapeHtml(item?.healthyHostCount ?? 0)} problem=${escapeHtml(item?.problemHostCount ?? 0)} unknown=${escapeHtml(item?.unknownHostCount ?? 0)} required=${escapeHtml(item?.requiredHealthyHostCount ?? 0)}</span>
       <span>selector: ${escapeHtml(item?.triggerSelectorSummary || '-')}</span>
+      ${renderZabbixAggregateUpstreamCauses(item?.upstreamCauses)}
       ${renderZabbixAggregateSourceTriggers(item?.selectedSourceTriggers)}
       ${renderZabbixAggregateSkippedTriggers(item?.skippedSourceTriggers)}
       <span>actions: host=${escapeHtml(item?.hostAction || 'planned')} item=${escapeHtml(item?.itemAction || 'planned')} trigger=${escapeHtml(item?.triggerAction || 'planned')}</span>
+    </details>
+  `;
+}
+
+function renderZabbixAggregateComplexityMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return '';
+  }
+
+  return messages
+    .slice(0, 10)
+    .map(message => `<span>лимит: ${escapeHtml(message)}</span>`)
+    .join('');
+}
+
+function renderUnsupportedAggregateItems(items) {
+  return `
+    <details class="rule-summary zabbix-plan-object" open>
+      <summary>
+        <span class="structure-mark">unsupported aggregate items</span>
+        <strong>${escapeHtml(items.length)}</strong>
+      </summary>
+      ${items.slice(0, 100).map(item => `
+        <span>${escapeHtml(item?.targetName || item?.targetManagedKey || '-')} · item ${escapeHtml(item?.itemId || '-')} · ${escapeHtml(item?.itemKey || '-')}</span>
+        <span>state=${escapeHtml(item?.state || '-')} last=${escapeHtml(item?.lastValue || '-')} clock=${escapeHtml(item?.lastClock || '-')}</span>
+        <span>ошибка: ${escapeHtml(item?.error || '-')}</span>
+      `).join('')}
+    </details>
+  `;
+}
+
+function zabbixAggregateItemStateText(item) {
+  const state = String(item?.itemState ?? '');
+  const status = String(item?.itemStatus ?? '');
+  const error = String(item?.itemError ?? '');
+  const last = String(item?.itemLastValue ?? '');
+  const clock = String(item?.itemLastClock ?? '');
+  const availability = state === '1' || error ? 'UNSUPPORTED' : 'OK';
+  const details = [
+    `state=${state || '-'}`,
+    `status=${status || '-'}`,
+    `last=${last || '-'}`,
+    `clock=${clock || '-'}`
+  ];
+  if (error) {
+    details.push(`error=${error}`);
+  }
+
+  return `${availability} · ${details.join(' · ')}`;
+}
+
+function zabbixAggregateOwnStateText(item) {
+  const ownState = Number(item?.ownStateValue ?? item?.stateValue ?? 0) === 1 ? 'PROBLEM' : 'OK';
+  return `${ownState} · healthy=${item?.healthyHostCount ?? 0} problem=${item?.problemHostCount ?? 0} required=${item?.requiredHealthyHostCount ?? 0}`;
+}
+
+function zabbixAggregateStateReasonText(item) {
+  const reason = String(item?.stateReason ?? '').toLowerCase();
+  if (reason === 'own_and_upstream') {
+    return 'свои source-hosts и upstream-причина';
+  }
+
+  if (reason === 'own') {
+    return 'свои source-hosts';
+  }
+
+  if (reason === 'upstream') {
+    const causes = Array.isArray(item?.upstreamCauses)
+      ? item.upstreamCauses.filter((cause) => Number(cause?.stateValue ?? 0) === 1).map((cause) => cause?.targetName || cause?.targetManagedKey).filter(Boolean)
+      : [];
+    return causes.length > 0 ? `upstream: ${causes.join(', ')}` : 'upstream-причина';
+  }
+
+  return 'OK';
+}
+
+function renderZabbixAggregateUpstreamCauses(causes) {
+  const items = Array.isArray(causes) ? causes : [];
+  if (items.length === 0) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object nested">
+      <summary>upstream-группы: ${escapeHtml(items.length)}</summary>
+      ${items.map(cause => `
+        <span>L${escapeHtml(cause?.depth ?? '-')} · ${escapeHtml(cause?.targetName || cause?.targetManagedKey || '-')} · ${escapeHtml(Number(cause?.stateValue ?? 0) === 1 ? 'PROBLEM' : 'OK')} · own=${escapeHtml(Number(cause?.ownStateValue ?? 0) === 1 ? 'PROBLEM' : 'OK')}</span>
+        <span>domain path: ${escapeHtml(cause?.domainPath || '-')}</span>
+        <span>trigger: ${escapeHtml(cause?.triggerId || '-')} ${escapeHtml(cause?.triggerName || '')}</span>
+        <span>condition: ${escapeHtml(cause?.problemExpression || '-')}</span>
+      `).join('')}
     </details>
   `;
 }
@@ -7793,13 +8220,16 @@ function renderZabbixTriggerDependencySample(item) {
   `;
 }
 
-function renderZabbixMembershipTargets(targets) {
+function renderZabbixMembershipTargets(targets, layerKey = 'service') {
   const hostAttr = zabbixHostIdAttributeName();
+  const suppressionMode = layerKey === 'suppression';
   return `
     <div class="rule-summary">
-      <span class="structure-mark">membership Zabbix</span>
+      <span class="structure-mark">${escapeHtml(suppressionMode ? 'suppression membership' : 'membership Zabbix')}</span>
       <strong>${escapeHtml(targets.length)} последних объектов</strong>
-      <span>Показывает, какие source-карточки сейчас закреплены за managed service и готовы попасть в Zabbix через source leaf/problem tags.</span>
+      <span>${escapeHtml(suppressionMode
+        ? 'Показывает source-карточки, из которых строятся aggregate triggers и trigger dependencies. Zabbix Services по умолчанию не создаются.'
+        : 'Показывает, какие source-карточки сейчас закреплены за managed service и готовы попасть в Zabbix через source leaf/problem tags.')}</span>
     </div>
     ${targets.slice(0, 10).map((target) => {
       const sources = Array.isArray(target?.sources) ? target.sources : [];
@@ -7814,7 +8244,7 @@ function renderZabbixMembershipTargets(targets) {
           </summary>
           <span>ключ: ${escapeHtml(target?.targetManagedKey || '-')}</span>
           <span>агрегация: ${escapeHtml(zabbixMembershipAggregationText(target))}</span>
-          <span>leaf children: ${escapeHtml((target?.sourceLeafManagedKeys ?? []).join(', ') || '-')}</span>
+          ${suppressionMode ? '' : `<span>leaf children: ${escapeHtml((target?.sourceLeafManagedKeys ?? []).join(', ') || '-')}</span>`}
           <span>готовые source: ${escapeHtml(sourceText.join('; ') || '-')}</span>
           <span>ожидают ${escapeHtml(hostAttr)}: ${escapeHtml(pendingText.join('; ') || '-')}</span>
         </details>
@@ -7863,12 +8293,17 @@ function zabbixApplyCommandSourceLabel(item) {
   return `${source} ${keyAttribute || 'key'}=${keyValue}${hostSuffix}`;
 }
 
+function zabbixApplyLastRunLabel(layerKey) {
+  return layerKey === 'suppression' ? 'последнее обновление membership' : 'последняя публикация';
+}
+
 function renderZabbixObjectPlan(plan, layerKey) {
   const objects = Array.isArray(plan?.objects) ? plan.objects : [];
   if (!plan || ((plan.objectCount ?? 0) === 0 && objects.length === 0)) {
     return '';
   }
 
+  const suppressionMode = layerKey === 'suppression';
   const pageSize = 25;
   const pageCount = Math.max(1, Math.ceil(objects.length / pageSize));
   const stateItem = zabbixApplyState(layerKey);
@@ -7881,8 +8316,8 @@ function renderZabbixObjectPlan(plan, layerKey) {
   const hasMore = Boolean(plan.hasMoreObjects);
   return `
     <div class="rule-summary">
-      <span class="structure-mark">план объектов Zabbix</span>
-      <strong>${escapeHtml(plan.objectCount ?? objects.length)} объектов · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
+      <span class="structure-mark">${escapeHtml(suppressionMode ? 'план suppression membership' : 'план объектов Zabbix')}</span>
+      <strong>${escapeHtml(plan.objectCount ?? objects.length)} ${escapeHtml(suppressionMode ? 'membership-объектов' : 'объектов')} · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
       <span>${escapeHtml(`страница ${page} из ${pageCount}; показаны ${shownFrom}-${shownTo} из ${objects.length}`)}${hasMore ? escapeHtml(`; полный список ограничен первыми ${plan.objectSamplesLimit ?? objects.length}`) : ''}</span>
       ${pageCount > 1 ? `
         <div class="rule-summary-actions">
@@ -7891,12 +8326,13 @@ function renderZabbixObjectPlan(plan, layerKey) {
         </div>
       ` : ''}
     </div>
-    ${visibleObjects.map(renderZabbixObjectPlanItem).join('')}
+    ${visibleObjects.map((item) => renderZabbixObjectPlanItem(item, layerKey)).join('')}
   `;
 }
 
-function renderZabbixObjectPlanItem(item) {
+function renderZabbixObjectPlanItem(item, layerKey = 'service') {
   const hostAttr = zabbixHostIdAttributeName();
+  const suppressionMode = layerKey === 'suppression';
   const attributes = Object.entries(item?.attributes ?? {})
     .slice(0, 8)
     .map(([key, value]) => `${key}=${value}`);
@@ -7908,17 +8344,23 @@ function renderZabbixObjectPlanItem(item) {
   const sourceBindings = Array.isArray(item?.sourceBindings) ? item.sourceBindings : [];
   const sourceBindingText = sourceBindings
     .slice(0, 8)
-    .map((binding) => zabbixSourceBindingPlanText(binding));
+    .map((binding) => zabbixSourceBindingPlanText(binding, layerKey));
   const ruleIds = Array.isArray(item?.ruleIds) ? item.ruleIds : [];
   const ruleNames = Array.isArray(item?.ruleNames) ? item.ruleNames : [];
   const title = item?.targetName || item?.targetKey || '-';
   const target = `${item?.targetClass || '-'}:${item?.targetCardId || item?.targetKey || '-'}`;
-  const bindingSummary = [
-    `source ${item?.sourceCount ?? sources.length}`,
-    `с ${hostAttr} ${item?.hostBindingCount ?? 0}`,
-    `без ${hostAttr} ${item?.missingHostBindingCount ?? 0}`,
-    `problem tags ${item?.problemTagCount ?? 0}`
-  ].join(' · ');
+  const bindingSummary = suppressionMode
+    ? [
+        `source ${item?.sourceCount ?? sources.length}`,
+        `с ${hostAttr} ${item?.hostBindingCount ?? 0}`,
+        `ожидают ${hostAttr} ${item?.missingHostBindingCount ?? 0}`
+      ].join(' · ')
+    : [
+        `source ${item?.sourceCount ?? sources.length}`,
+        `с ${hostAttr} ${item?.hostBindingCount ?? 0}`,
+        `без ${hostAttr} ${item?.missingHostBindingCount ?? 0}`,
+        `problem tags ${item?.problemTagCount ?? 0}`
+      ].join(' · ');
   return `
     <details class="rule-summary zabbix-plan-object">
       <summary>
@@ -7928,17 +8370,23 @@ function renderZabbixObjectPlanItem(item) {
       <span>действие: ${escapeHtml(item?.actionLabel || zabbixObjectActionLabel(item?.action))}</span>
       <span>правила: ${escapeHtml(ruleNames.length > 0 ? ruleNames.join(', ') : ruleIds.join(', ') || '-')}</span>
       <span>источники: ${escapeHtml(sources.join(', ') || '-')}</span>
-      ${sourceBindingText.length > 0 ? `<span>привязка к проблемам Zabbix: ${escapeHtml(sourceBindingText.join('; '))}</span>` : ''}
+      ${sourceBindingText.length > 0 ? `<span>${escapeHtml(suppressionMode ? 'готовность к trigger dependencies' : 'привязка к проблемам Zabbix')}: ${escapeHtml(sourceBindingText.join('; '))}</span>` : ''}
       ${attributes.length > 0 ? `<span>атрибуты: ${escapeHtml(attributes.join('; '))}</span>` : ''}
       ${relationText.length > 0 ? `<span>связи: ${escapeHtml(relationText.join('; '))}</span>` : ''}
     </details>
   `;
 }
 
-function zabbixSourceBindingPlanText(binding) {
+function zabbixSourceBindingPlanText(binding, layerKey = 'service') {
   const hostAttr = zabbixHostIdAttributeName();
   const label = binding?.label || `${binding?.sourceClass || '-'}/${binding?.sourceCardId || '-'}`;
   const hostId = String(binding?.zabbixHostId ?? '').trim();
+  if (layerKey === 'suppression') {
+    return hostId
+      ? `${label}: ${hostAttr}=${hostId}, готово для aggregate/dependencies`
+      : `${label}: нет ${hostAttr}, будет pending membership`;
+  }
+
   const problemTags = Array.isArray(binding?.problemTags) ? binding.problemTags : [];
   const leaf = binding?.sourceLeafManagedKey ? `leaf ${binding.sourceLeafManagedKey}` : 'leaf не задан';
   return hostId
@@ -8094,7 +8542,20 @@ function zabbixApplyStatusLabel(status) {
   return status || '-';
 }
 
-function zabbixReconcileText(reconcile) {
+function zabbixReconcileText(reconcile, layerKey = 'service') {
+  if (layerKey === 'suppression'
+      && ((reconcile.ensureMembershipTargets ?? 0) > 0
+        || (reconcile.ensureMembershipSources ?? 0) > 0
+        || (reconcile.ensureMembershipRelations ?? 0) > 0
+        || (reconcile.removeMembershipSources ?? 0) > 0)) {
+    return [
+      `membership target +${reconcile.ensureMembershipTargets ?? 0}`,
+      `source +${reconcile.ensureMembershipSources ?? 0}`,
+      `связи +${reconcile.ensureMembershipRelations ?? 0}`,
+      `source -${reconcile.removeMembershipSources ?? 0}`
+    ].join(', ');
+  }
+
   return [
     `объекты +${reconcile.ensureObjects ?? 0}`,
     `связи +${reconcile.ensureRelations ?? 0}`,
@@ -8849,6 +9310,11 @@ function templateDimensionNeedsSourceCards(dimension) {
 function sourceClassCardsAvailable(classCode) {
   return sourceClassInstanceItems(classCode).some((item) =>
     String(item.layer).toLowerCase() === 'source' && Array.isArray(item.cards) && item.cards.length > 0);
+}
+
+function sourceClassCardsLoaded(classCode) {
+  return sourceClassInstanceItems(classCode).some((item) =>
+    String(item.layer).toLowerCase() === 'source' && Array.isArray(item.cards));
 }
 
 function templatePopulationDimensionDependencyClasses(sourceClass, dimension) {
@@ -12518,6 +12984,7 @@ function templateAuditForLayer(layerKey) {
     .map((rule) => [generatedRuleManagedKeyFromRule(rule, layerKey), rule]));
   const planByTemplate = new Map(plan.templates.map((item) => [item.template.template_id, item]));
   const errors = uniqueTextList(parsed.ok ? plan.errors : [parsed.error].concat(plan.errors));
+  const planWarnings = uniqueTextList(plan.warnings ?? []);
   const warnings = [];
   const duplicateMessages = templateAuditDuplicateMessages(layerKey, plan.generatedRules);
   errors.push(...duplicateMessages);
@@ -12528,7 +12995,8 @@ function templateAuditForLayer(layerKey) {
       currentGeneratedRules,
       currentByKey,
       desiredByKey,
-      planErrors: errors
+      planErrors: errors,
+      planWarnings
     });
   });
 
@@ -12577,7 +13045,8 @@ function templateAuditRowForTemplate(layerKey, template, planItem, context) {
   const currentTemplateRules = context.currentGeneratedRules.filter((rule) => ruleTemplateId(rule) === template.template_id);
   const rowErrors = context.planErrors.filter((message) =>
     templateAuditMessageBelongsToTemplate(message, template, rules));
-  const warnings = [];
+  const warnings = (context.planWarnings ?? []).filter((message) =>
+    templateAuditMessageBelongsToTemplate(message, template, rules));
   const dimension = templatePopulationDimension(template);
   if (candidates.length === 0) {
     warnings.push(`регулярное выражение source-класса не выбрало ни одного класса (${template.source_class_regex || 'пустое выражение'}).`);
@@ -12890,6 +13359,7 @@ function uniqueTextList(values) {
 function templateMaterializationPlan(layerKey, options = {}) {
   const document = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey);
   const errors = [];
+  const warnings = [];
   const templates = [];
   const generatedRules = [];
   let candidateCount = 0;
@@ -12899,16 +13369,47 @@ function templateMaterializationPlan(layerKey, options = {}) {
       const rules = [];
       const dimensionPlans = [];
       for (const candidate of candidates) {
-        const candidateRules = rulesFromTemplate(layerKey, template, candidate);
-        rules.push(...candidateRules);
-        dimensionPlans.push({
-          source_class_code: candidate.code || '',
-          generated_rules: candidateRules.length
-        });
+        try {
+          const candidateRules = rulesFromTemplate(layerKey, template, candidate);
+          rules.push(...candidateRules);
+          dimensionPlans.push({
+            source_class_code: candidate.code || '',
+            generated_rules: candidateRules.length
+          });
+        } catch (error) {
+          const message = templateCandidateMaterializationMessage(template, candidate, error);
+          dimensionPlans.push({
+            source_class_code: candidate.code || '',
+            generated_rules: 0,
+            warning: error.message
+          });
+          if (isSkippableTemplateCandidateError(error)) {
+            warnings.push(message);
+            continue;
+          }
+
+          errors.push(message);
+          if (!options.safe) {
+            throw new Error(message);
+          }
+        }
       }
       const maxRules = templatePopulationDimension(template).max_rules || TEMPLATE_DIMENSION_DEFAULT_MAX_RULES;
       if (rules.length > maxRules) {
         throw new Error(`Шаблон породил ${rules.length} правил при лимите ${maxRules}; сузьте regex, значения измерения или увеличьте лимит.`);
+      }
+      const templateWarnings = warnings.filter((message) => templateAuditMessageBelongsToTemplate(message, template, rules));
+      if (candidates.length > 0 && rules.length === 0 && templateWarnings.length > 0) {
+        errors.push(...templateWarnings);
+        for (const warning of templateWarnings) {
+          const index = warnings.indexOf(warning);
+          if (index >= 0) {
+            warnings.splice(index, 1);
+          }
+        }
+        if (!options.safe) {
+          throw new Error(templateWarnings[0]);
+        }
       }
       candidateCount += candidates.length;
       generatedRules.push(...rules);
@@ -12928,8 +13429,17 @@ function templateMaterializationPlan(layerKey, options = {}) {
     generatedRules,
     candidateCount,
     errors,
+    warnings,
     reconcile: templateReconcilePreview(layerKey, generatedRules)
   };
+}
+
+function templateCandidateMaterializationMessage(template, candidate, error) {
+  return `${template.template_id}: ${candidate.code || 'класс-источник'}: ${error.message}`;
+}
+
+function isSkippableTemplateCandidateError(error) {
+  return Boolean(error?.templateDimensionNoValues);
 }
 
 function applyTemplateManagedRelationsToGeneratedRules(layerKey, generatedRules, templateDocument, errors, options = {}) {
@@ -12965,7 +13475,8 @@ function applyTemplateManagedRelationsToGeneratedRules(layerKey, generatedRules,
       const targetRules = targetRulesForTemplateRelation(relation, rulesByTemplate, rulesById, errors, options, {
         layerKey,
         sourceTemplate,
-        sourceRule
+        sourceRule,
+        targetTemplate: templatesById.get(relation.target_template_id)
       });
       for (const targetRule of targetRules) {
         if (sourceRule === targetRule || sourceRule.rule_id === targetRule.rule_id) {
@@ -13040,7 +13551,7 @@ function templateRelationMissingTargetRuleMessage(relation, context = {}) {
     ? ' В связи сохранена заглушка "rule" вместо реального rule_id.'
     : '';
   return [
-    `Шаблон ${templateHumanLabel(context.sourceTemplate)} не может применить связь ${templateRelationHumanLabel(relation)}: целевое ручное правило ${targetRuleId ? `"${targetRuleId}"` : 'не задано'} не найдено.`,
+    `Шаблон ${templateHumanLabel(context.sourceTemplate)} не может применить связь ${templateRelationHumanLabel(relation, context)}: целевое ручное правило ${targetRuleId ? `"${targetRuleId}"` : 'не задано'} не найдено.`,
     placeholderText,
     `Источник связи: ${generatedRuleHumanLabel(context.sourceRule)}.`,
     `Что сделать: откройте ${layerHumanLabel(context.layerKey)} -> Управление связями -> Шаблон-правило, удалите эту связь и создайте заново, выбрав существующее ручное правило.`
@@ -13049,8 +13560,16 @@ function templateRelationMissingTargetRuleMessage(relation, context = {}) {
 
 function templateRelationMissingTargetTemplateMessage(relation, context = {}) {
   const targetTemplateId = String(relation?.target_template_id ?? '').trim();
+  const targetTemplateText = context.targetTemplate
+    ? templateHumanLabel(context.targetTemplate)
+    : targetTemplateId
+      ? `"${targetTemplateId}"`
+      : 'не задан';
+  const reasonText = context.targetTemplate
+    ? `целевой шаблон ${targetTemplateText} найден, но не породил сгенерированные правила`
+    : `целевой шаблон ${targetTemplateText} не найден`;
   return [
-    `Шаблон ${templateHumanLabel(context.sourceTemplate)} не может применить связь ${templateRelationHumanLabel(relation)}: целевой шаблон ${targetTemplateId ? `"${targetTemplateId}"` : 'не задан'} не найден или не породил сгенерированные правила.`,
+    `Шаблон ${templateHumanLabel(context.sourceTemplate)} не может применить связь ${templateRelationHumanLabel(relation, context)}: ${reasonText}.`,
     `Источник связи: ${generatedRuleHumanLabel(context.sourceRule)}.`,
     `Что сделать: откройте ${layerHumanLabel(context.layerKey)} -> Управление связями -> Шаблон-шаблон или Шаблон-правило и перенастройте целевой шаблон.`
   ].join(' ');
@@ -13083,13 +13602,15 @@ function generatedRuleHumanLabel(rule) {
   ].filter(Boolean).join(', ');
 }
 
-function templateRelationHumanLabel(relation) {
+function templateRelationHumanLabel(relation, context = {}) {
   const role = linkRelationRoleLabel(relation?.relation_role);
   const targetRule = String(relation?.target_rule_id ?? '').trim();
   const targetTemplate = String(relation?.target_template_id ?? '').trim();
   const target = targetRule
     ? `ручное правило "${targetRule}"`
-    : targetTemplate
+    : context.targetTemplate
+      ? `шаблон ${templateHumanLabel(context.targetTemplate)}`
+      : targetTemplate
       ? `шаблон "${targetTemplate}"`
       : 'цель не задана';
   return `"${role}" -> ${target}`;
@@ -13749,7 +14270,7 @@ function templateDimensionValues(template, candidate, dimension = templatePopula
     });
 
   if (normalizedValues.length === 0) {
-    throw new Error(`Не удалось получить значения population dimension для ${candidate.code || 'класса-источника'}.`);
+    throw templateDimensionNoValuesError(`Не удалось получить значения population dimension для ${candidate.code || 'класса-источника'}.`);
   }
 
   return normalizedValues;
@@ -13786,7 +14307,7 @@ function sourceFieldDimensionValues(candidate, dimension) {
   if (values.length === 0) {
     const reason = sourceFieldDimensionEmptyReason(candidate.code, dimension.source_field);
     if (reason) {
-      throw new Error(reason);
+      throw templateDimensionNoValuesError(reason);
     }
   }
 
@@ -13800,7 +14321,7 @@ function regexCaptureDimensionValues(candidate, dimension) {
   if (sourceValues.length === 0) {
     const reason = sourceFieldDimensionEmptyReason(candidate.code, dimension.source_field);
     if (reason) {
-      throw new Error(reason);
+      throw templateDimensionNoValuesError(reason);
     }
   }
 
@@ -13826,6 +14347,12 @@ function regexCaptureDimensionValues(candidate, dimension) {
   return values;
 }
 
+function templateDimensionNoValuesError(message) {
+  const error = new Error(message);
+  error.templateDimensionNoValues = true;
+  return error;
+}
+
 function sourceFieldDimensionEmptyReason(sourceClass, sourceField) {
   const field = String(sourceField ?? '').trim();
   if (!field) {
@@ -13835,8 +14362,11 @@ function sourceFieldDimensionEmptyReason(sourceClass, sourceField) {
   const items = sourceClassInstanceItems(sourceClass);
   const sourceItems = items.filter((item) => String(item.layer).toLowerCase() === 'source');
   const cards = (sourceItems.length > 0 ? sourceItems : items).flatMap((item) => item.cards ?? []);
-  if (cards.length === 0) {
+  if (!sourceClassCardsLoaded(sourceClass)) {
     return `карточки класса-источника ${sourceClass || ''} не загружены.`;
+  }
+  if (cards.length === 0) {
+    return `в классе-источнике ${sourceClass || ''} нет карточек.`;
   }
 
   const option = sourceFieldOptionForClass(sourceClass, field);
@@ -13844,10 +14374,14 @@ function sourceFieldDimensionEmptyReason(sourceClass, sourceField) {
     return `поле ${field} не найдено в схеме ${sourceClass || 'класса-источника'} при глубине рекурсии ${state.maxTraversalDepth}.`;
   }
 
-  const missingDependencies = sourceFieldDependencyClasses(sourceClass, field)
-    .filter((dependencyClass) => !sourceClassCardsAvailable(dependencyClass));
+  const dependencyClasses = sourceFieldDependencyClasses(sourceClass, field);
+  const missingDependencies = dependencyClasses.filter((dependencyClass) => !sourceClassCardsLoaded(dependencyClass));
   if (missingDependencies.length > 0) {
     return `для поля ${field} не загружены связанные классы: ${missingDependencies.join(', ')}.`;
+  }
+  const emptyDependencies = dependencyClasses.filter((dependencyClass) => !sourceClassCardsAvailable(dependencyClass));
+  if (emptyDependencies.length > 0) {
+    return `для поля ${field} связанные классы не содержат карточек: ${emptyDependencies.join(', ')}.`;
   }
 
   const path = option.fieldRule?.cmdbPath ? ` путь ${option.fieldRule.cmdbPath}` : '';

@@ -111,7 +111,11 @@
         "name_template": "${dimension.name}",
         "description_template": "Подавление для ${source.locationFloorBuildingCity}",
         "population_source_key_template": "${template.id}:${dimension.key}",
-        "initial_user_values": {}
+        "initial_user_values": {
+          "is_critical": "false",
+          "aggregation_type": "threshold",
+          "threshold": "60"
+        }
       },
       "variables": [
         {
@@ -123,16 +127,16 @@
         "suppression"
       ],
       "managed_by": "suppression",
-      "version": 3,
+      "version": 4,
       "lifecycle": {
         "change_mode": "modified",
-        "updated_at": "2026-05-12T07:03:00.125Z",
+        "updated_at": "2026-05-14T14:44:39.243Z",
         "source_regex_fingerprint": "d37ca1a6:35",
         "regex_fingerprint": "a69f6846:399",
         "population_dimension_fingerprint": "56e68153:280",
         "variables_fingerprint": "66abbba7:63",
         "relation_fingerprint": "5975e3:2",
-        "full_fingerprint": "1cd3c324:907"
+        "full_fingerprint": "d7add520:976"
       },
       "managed_relations": []
     }
@@ -936,6 +940,67 @@
           }
         }
       ]
+    },
+    {
+      "snapshot_id": "rule-v4-d7add520-976",
+      "layer": "suppression",
+      "template_id": "rule",
+      "template_version": 4,
+      "template_name": "Рабочие места",
+      "content_hash": "d7add520:976",
+      "candidate_selection_hash": "a69f6846:399",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "5975e3:2",
+      "change_mode": "modified",
+      "created_at": "2026-05-14T14:44:39.244Z",
+      "definition": {
+        "template_id": "rule",
+        "name": "Рабочие места",
+        "layer": "suppression",
+        "enabled": true,
+        "available_for": [
+          "suppression"
+        ],
+        "managed_by": "suppression",
+        "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_SuppressionResource",
+          "name_template": "${dimension.name}",
+          "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false",
+            "aggregation_type": "threshold",
+            "threshold": "60"
+          }
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": []
+      },
+      "managed_relations": []
     }
   ]
 }

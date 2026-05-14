@@ -168,9 +168,14 @@ const server = http.createServer(async (request, response) => {
         return sendJson(response, 500, { error: 'backend.zabbixTriggerDependenciesDryRunUrl is not configured' });
       }
 
+      const body = await readJsonBody(request);
       return proxyJson(response, targetUrl, {
         method: 'POST',
-        headers: { accept: 'application/json' }
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body ?? {})
       });
     }
 
@@ -180,9 +185,14 @@ const server = http.createServer(async (request, response) => {
         return sendJson(response, 500, { error: 'backend.zabbixTriggerDependenciesApplyUrl is not configured' });
       }
 
+      const body = await readJsonBody(request);
       return proxyJson(response, targetUrl, {
         method: 'POST',
-        headers: { accept: 'application/json' }
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body ?? {})
       });
     }
 

@@ -120,12 +120,14 @@ and relations under expandable details so large plans remain readable.
 `zabbixconfig2api` exposes `/apply/status` with separate service and suppression
 status blocks. Each block reports the topic, last command,
 dry-run/applied/partial/skipped/manual pending/error counters, recent errors and
-warnings, reconcile counters for objects, relations, source leaf services, host
-tags, and problem tags, plus a limited membership snapshot.
+warnings, and a limited membership snapshot. Service status reports Zabbix
+Service objects, relations, source leaf services, host tags, and problem tags.
+Suppression status reports membership targets, source membership, and membership
+relations that feed aggregate triggers and trigger dependencies.
 
 When `zabbixconfig2api` has `Apply:Mode=auto` or `Apply:AutoApplyEnabled=true`,
-published layer commands are applied to Zabbix through the Service API. The
-applier performs an idempotent upsert of Zabbix Services and marks them with
+published service-layer commands are applied to Zabbix through the Service API.
+The applier performs an idempotent upsert of Zabbix Services and marks them with
 managed tags:
 
 - `cmdb2monitoring:managed=true`
@@ -134,10 +136,9 @@ managed tags:
 - `cmdb2monitoring:key=<target idempotency key>`
 - optional `cmdb2monitoring:card_id=<CMDBuild card id>` for existing cards
 
-Expected place in Zabbix UI: `Monitoring -> Services` / the service tree pages.
-Use the tags above or the generated service name to identify objects created by
-this system. Service-model and suppression-model contours are both materialized
-as separate managed Zabbix service graphs.
+Expected place for the service model in Zabbix UI: `Monitoring -> Services` /
+the service tree pages. Use the tags above or the generated service name to
+identify objects created by this system.
 
 For source objects with `zabbix_main_hostid`, the applier also creates a managed
 source leaf service. The parent managed service keeps these source leaf services
@@ -146,18 +147,40 @@ as children in addition to model relation children. The source leaf service gets
 the applier preserves existing Zabbix host tags while adding the same managed
 host tag to the Zabbix host. This is the binding that lets Zabbix Services know
 which real host problems belong under a managed service object such as
-`ВПН филиалов`.
+`ВПН филиалов` in the service model.
+
+Suppression is different. By default `Apply:CreateSuppressionServices=false`,
+so suppression commands do not create Zabbix Services and do not create source
+leaf services/problem tags. They update only persisted suppression membership in
+`ZabbixApplyState:FilePath`; the `Зависимости триггеров` reconcile then creates
+or updates the technical aggregate host, calculated items, aggregate triggers,
+and source-host trigger dependencies. The compatibility flag
+`Apply:CreateSuppressionServices=true` restores the old behavior for a lab
+transition, but it is not the normal production path.
 
 The membership set is stored by `zabbixconfig2api` in
 `ZabbixApplyState:FilePath` so that multiple source cards mapped into the same
 target service do not overwrite each other during repeated applies or service
 restarts. If a source object has no `zabbix_main_hostid`, it is treated as unready:
-dry-run reports the missing binding, and publish removes any previous source
-membership for that card instead of adding a source leaf. The same source card
+dry-run reports the missing binding, and publish removes any previous active
+membership for that card instead of adding it to dependencies. The same source card
 remains visible in the membership snapshot as `pendingSources`; this is a
 diagnostic state, not a Zabbix service child. When a later `UPDATE` or
 current-card reconcile sees `zabbix_main_hostid`, the source is moved from
-pending into active membership and source leaf/problem tags are created.
+pending into active membership. In the service layer this also creates
+source leaf/problem tags; in suppression it only makes the source eligible for
+aggregate trigger and dependency calculation.
+
+Membership is reconciled as current state per source card. The stable identity is
+`layer + source class + source card id`; dimension fields and `sourceKeyValue`
+only decide which target currently owns that source. When an `UPDATE` moves a
+source card to another dimension, `zabbixconfig2api` removes the same source
+from other targets in the same layer before storing it in the new target. When
+the source card no longer matches any rule for a layer, `cmdbconfigbuilder`
+publishes `remove_source_membership`; `zabbixconfig2api` then removes that source
+from all targets in that layer. The service and suppression layers are isolated,
+so a suppression tombstone does not remove service membership for the same
+CMDBuild card.
 
 Webhook payloads may omit `zabbix_main_hostid`. `cmdbconfigbuilder` resolves the
 configured readiness attribute (`Readiness:ZabbixHostIdAttribute`, default
@@ -174,12 +197,12 @@ Zabbix command.
 This binding builds the Zabbix service impact model. Automatic hiding,
 acknowledging, or closing of dependent problem events is not performed by a
 separate cmdb2monitoring problem applier. The production suppression mechanism
-must be expressed in Zabbix itself through service topology and trigger
-dependencies derived from the same suppression model.
+must be expressed in Zabbix itself through aggregate triggers and trigger
+dependencies derived from the suppression model.
 
 The `Зависимости триггеров` block in `Каскадное подавление -> Применить в
-Zabbix` performs that reconciliation. It uses the persisted suppression
-membership and relation graph after the suppression model has been published:
+Zabbix` performs suppression reconciliation. It uses the persisted suppression
+membership and relation graph after `Обновить membership подавления`:
 
 - command target is treated as the cause/parent object;
 - each related target is treated as the dependent/child object;
@@ -194,13 +217,64 @@ membership and relation graph after the suppression model has been published:
   healthy-host count: `all` fails when not all source hosts are healthy, `any`
   fails only when none of the source hosts is healthy, `threshold` fails when
   healthy percentage is below `threshold`, and `n_of_m` fails when healthy count
-  is below `n`. The healthy count is calculated from selected source-host
-  triggers. By default the selector takes triggers tagged `scope=availability`
-  or `component=health`, so the aggregate follows the same Zabbix expression
-  that creates the source host Problem;
-- active triggers of dependent source hosts, and the dependent object's own
-  aggregate trigger, get dependencies on the aggregate trigger of the
-  cause object;
+  is below `n`. The healthy count is calculated from the aggregate state
+  selector, not from every source-host trigger that may later receive a
+  dependency. By default this selector takes enabled triggers tagged
+  `scope=availability` with priority at least `3`; `component=health` is not
+  required. This keeps common ICMP availability triggers usable while
+  low-priority secondary symptoms like time/agent side checks do not make the
+  suppression group unsupported or incorrectly healthy. The selector must be
+  explicit in `ZabbixTriggerDependencies`: if an operator really wants to use
+  every enabled trigger for group state, set
+  `AggregateStateTriggerIncludeNameRegex=.*` rather than leaving include
+  filters empty;
+- `aggregation_type` is evaluated against source hosts that actually contributed
+  at least one selected, supported trigger to the calculated item. Source cards
+  with `zabbix_main_hostid` but no selected group-state trigger are reported as
+  unknown/skipped in dry-run/apply diagnostics and are not counted as failed
+  children. For example, if a workplace group has 12 CMDBuild source cards but
+  only 3 source hosts have selected availability triggers, `all` requires those
+  3 contributing hosts to be healthy, not all 12 raw membership records;
+- the calculated item stores only the object's own healthy source-host count.
+  The managed aggregate trigger is the union of the own failure expression and
+  upstream aggregate failure expressions. This lets an intermediate group become
+  Problem because of a cause above it while its own source hosts are still
+  healthy;
+- source trigger dependency coverage uses a separate selector. By default it
+  selects all enabled triggers of dependent source hosts (`min priority 0`,
+  no include tags), because any real Problem on the leaf host should be blocked
+  by the nearest suppression group while the group is in Problem;
+- `ZabbixTriggerDependencies:TransitiveGroupDependencyDepth` limits how many
+  upstream group levels are included into aggregate trigger expressions. The
+  default is `2`; valid values are `1..3`. This setting lives only in
+  `zabbixconfig2api`; the Monitoring UI reads and displays the effective value
+  from `/dependencies/suppression/status` and does not send per-run overrides.
+  Therefore manual dry-run/apply and automatic reconcile use the same value;
+- Zabbix API execution limits are also shown in the UI read-only:
+  `Zabbix:RequestTimeoutMs` is the timeout for one JSON-RPC request, and
+  `ZabbixTriggerDependencies:TriggerGetBatchSize` is the number of hostid or
+  triggerid values sent in one `trigger.get` batch. Defaults are `60000` ms and
+  `25`. If dry-run/apply reports a `trigger.get` timeout, lower the batch size
+  or raise the timeout in `src/zabbixconfig2api/appsettings.json`, then reload
+  or restart `zabbixconfig2api`;
+- aggregate formula complexity limits are also enforced before publishing:
+  `ZabbixTriggerDependencies:MaxSourceHostsPerAggregate` limits how many
+  source-hosts can feed one suppression aggregate, and
+  `ZabbixTriggerDependencies:MaxAggregateFormulaLength` limits both the
+  calculated item formula and the final aggregate trigger expression. Defaults
+  are `1000` hosts and `65000` characters. At 80% of a limit the dry-run shows a
+  warning; above the limit dry-run/apply is blocked for that model. Typical
+  fixes are narrowing source filters, splitting the template by dimension, or
+  lowering transitive depth `N`;
+- active triggers of dependent source hosts get dependencies on the aggregate
+  trigger of the nearest cause object. Aggregate triggers of groups do not get
+  Zabbix trigger dependencies on upstream groups, because that would prevent the
+  intermediate group from entering Problem. Group-to-group propagation is
+  expressed only inside aggregate trigger expressions up to depth `N`;
+- source/leaf triggers do not receive a full matrix of direct dependencies to
+  every upper-level cause. Example: `Workplaces -> City routers -> VPN hubs ->
+  Core routers` is implemented as leaf-to-nearest-group dependencies plus
+  inherited group state from upstream groups within depth `N`;
 - direct dependencies from downstream triggers to individual source-host
   triggers are not created. This keeps VPN/failover groups and non-`all`
   aggregations correct;
@@ -211,9 +285,16 @@ membership and relation graph after the suppression model has been published:
 Operators should run dry-run first. Blocking errors include dependency cycles,
 missing membership for related targets, or a dependency count above
 `ZabbixTriggerDependencies:MaxDependenciesPerRun`. The same screen reports
-aggregate host, calculated item, trigger creation, generated formulas, and
-trigger dependency changes. Runtime state is not written through `history.push`;
-after reconcile Zabbix recalculates aggregate items and trigger states itself.
+aggregate host, calculated item, trigger creation, generated formulas, upstream
+cause expressions, state reason (`own`, `upstream`, `own+upstream`, `ok`),
+unsupported calculated items, and trigger dependency changes. If
+`unsupportedAggregateItemCount` is non-zero, open the dependency details: the UI
+shows the target object, item key/id, item state, last value, clock, and Zabbix
+error text from the technical host `CMDB2Monitoring suppression aggregates`.
+This usually means the aggregate state selector included a trigger expression
+that Zabbix cannot use inside a calculated item formula. Runtime state is not
+written through `history.push`; after reconcile Zabbix recalculates aggregate
+items and trigger states itself.
 When a suppression membership command is applied from Kafka, `zabbixconfig2api`
 automatically requests the same reconcile with debounce
 `ZabbixTriggerDependencies:AutoReconcileDebounceSeconds`. The manual action

@@ -163,6 +163,25 @@ public sealed record ZabbixSuppressionAggregateApplyResult
     public string TriggerAction { get; init; } = "";
 }
 
+public sealed record ZabbixSuppressionAggregateItemInfo
+{
+    public string ItemId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string Key { get; init; } = "";
+
+    public string Status { get; init; } = "";
+
+    public string State { get; init; } = "";
+
+    public string Error { get; init; } = "";
+
+    public string LastValue { get; init; } = "";
+
+    public string LastClock { get; init; } = "";
+}
+
 public sealed record ZabbixManagedServiceApplyResult
 {
     public bool Success { get; init; }

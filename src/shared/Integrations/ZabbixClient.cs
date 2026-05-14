@@ -9,6 +9,7 @@ namespace Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 
 public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOptions> options)
 {
+    public const int DefaultTriggerGetBatchSize = 25;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private string? loginToken;
     private int requestId = 10;
@@ -159,6 +160,15 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         bool includeDisabled,
         CancellationToken cancellationToken)
     {
+        return await GetTriggersByHostIdsAsync(hostIds, includeDisabled, DefaultTriggerGetBatchSize, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByHostIdsAsync(
+        IReadOnlyList<string> hostIds,
+        bool includeDisabled,
+        int batchSize,
+        CancellationToken cancellationToken)
+    {
         var ids = hostIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.Ordinal)
@@ -168,14 +178,21 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             return [];
         }
 
-        var parameters = TriggerGetBaseParameters(includeDisabled);
-        parameters["hostids"] = StringArray(ids);
-        return await GetTriggersAsync(parameters, "hostids", cancellationToken);
+        return await GetTriggersByLookupBatchesAsync(ids, "hostids", includeDisabled, batchSize, cancellationToken);
     }
 
     public async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByIdsAsync(
         IReadOnlyList<string> triggerIds,
         bool includeDisabled,
+        CancellationToken cancellationToken)
+    {
+        return await GetTriggersByIdsAsync(triggerIds, includeDisabled, DefaultTriggerGetBatchSize, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByIdsAsync(
+        IReadOnlyList<string> triggerIds,
+        bool includeDisabled,
+        int batchSize,
         CancellationToken cancellationToken)
     {
         var ids = triggerIds
@@ -187,9 +204,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             return [];
         }
 
-        var parameters = TriggerGetBaseParameters(includeDisabled);
-        parameters["triggerids"] = StringArray(ids);
-        return await GetTriggersAsync(parameters, "triggerids", cancellationToken);
+        return await GetTriggersByLookupBatchesAsync(ids, "triggerids", includeDisabled, batchSize, cancellationToken);
     }
 
     public async Task<int> UpdateTriggerDependenciesAsync(
@@ -220,6 +235,68 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         ZabbixSuppressionAggregateDefinition definition,
         CancellationToken cancellationToken)
     {
+        var result = await ApplySuppressionAggregateHostItemAsync(definition, cancellationToken);
+        var trigger = await ApplySuppressionAggregateTriggerAsync(
+            definition,
+            result.HostId,
+            cancellationToken);
+
+        return new ZabbixSuppressionAggregateApplyResult
+        {
+            HostId = result.HostId,
+            ItemId = result.ItemId,
+            TriggerId = trigger.TriggerId,
+            HostAction = result.HostAction,
+            ItemAction = result.ItemAction,
+            TriggerAction = trigger.TriggerAction
+        };
+    }
+
+    public async Task<ZabbixSuppressionAggregateApplyResult> ApplySuppressionAggregateHostItemAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        EnsureSuppressionAggregateDefinitionComplete(definition, requireTriggerExpression: false);
+
+        var tags = AggregateTags(definition);
+        var group = await EnsureHostGroupAsync(definition.HostGroupName, cancellationToken);
+        var host = await EnsureAggregateHostAsync(definition, group.Id, cancellationToken);
+        var item = await EnsureAggregateItemAsync(definition, host.Id, tags, cancellationToken);
+
+        return new ZabbixSuppressionAggregateApplyResult
+        {
+            HostId = host.Id,
+            ItemId = item.Id,
+            HostAction = host.Action,
+            ItemAction = item.Action
+        };
+    }
+
+    public async Task<ZabbixSuppressionAggregateApplyResult> ApplySuppressionAggregateTriggerAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        string hostId,
+        CancellationToken cancellationToken)
+    {
+        EnsureSuppressionAggregateDefinitionComplete(definition, requireTriggerExpression: true);
+        if (string.IsNullOrWhiteSpace(hostId))
+        {
+            throw new InvalidOperationException(
+                $"Zabbix suppression aggregate host id is empty for '{definition.TargetManagedKey}'.");
+        }
+
+        var trigger = await EnsureAggregateTriggerAsync(definition, hostId, AggregateTags(definition), cancellationToken);
+        return new ZabbixSuppressionAggregateApplyResult
+        {
+            HostId = hostId,
+            TriggerId = trigger.Id,
+            TriggerAction = trigger.Action
+        };
+    }
+
+    private static void EnsureSuppressionAggregateDefinitionComplete(
+        ZabbixSuppressionAggregateDefinition definition,
+        bool requireTriggerExpression)
+    {
         if (string.IsNullOrWhiteSpace(definition.TargetManagedKey))
         {
             throw new InvalidOperationException("Zabbix suppression aggregate target key is empty.");
@@ -235,27 +312,11 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         }
 
         if (string.IsNullOrWhiteSpace(definition.CalculationFormula)
-            || string.IsNullOrWhiteSpace(definition.TriggerExpression))
+            || (requireTriggerExpression && string.IsNullOrWhiteSpace(definition.TriggerExpression)))
         {
             throw new InvalidOperationException(
                 $"Zabbix suppression aggregate formula is empty for '{definition.TargetManagedKey}'.");
         }
-
-        var tags = AggregateTags(definition);
-        var group = await EnsureHostGroupAsync(definition.HostGroupName, cancellationToken);
-        var host = await EnsureAggregateHostAsync(definition, group.Id, cancellationToken);
-        var item = await EnsureAggregateItemAsync(definition, host.Id, tags, cancellationToken);
-        var trigger = await EnsureAggregateTriggerAsync(definition, host.Id, tags, cancellationToken);
-
-        return new ZabbixSuppressionAggregateApplyResult
-        {
-            HostId = host.Id,
-            ItemId = item.Id,
-            TriggerId = trigger.Id,
-            HostAction = host.Action,
-            ItemAction = item.Action,
-            TriggerAction = trigger.Action
-        };
     }
 
     public async Task<ZabbixServiceInfo?> FindManagedServiceByKeyAsync(
@@ -278,6 +339,38 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             cancellationToken);
 
         return SingleManagedServiceOrDefault(services, $"key '{managedKey}'");
+    }
+
+    public async Task<IReadOnlyList<ZabbixSuppressionAggregateItemInfo>> GetSuppressionAggregateItemsAsync(
+        string aggregateHostName,
+        IReadOnlyList<string> itemKeys,
+        CancellationToken cancellationToken)
+    {
+        var keys = itemKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(aggregateHostName) || keys.Length == 0)
+        {
+            return [];
+        }
+
+        var parameters = new JsonObject
+        {
+            ["host"] = aggregateHostName,
+            ["output"] = new JsonArray("itemid", "name", "key_", "status", "state", "error", "lastvalue", "lastclock"),
+            ["filter"] = new JsonObject
+            {
+                ["key_"] = StringArray(keys)
+            },
+            ["limit"] = keys.Length + 1
+        };
+        var response = await SendZabbixMethodAsync("item.get", parameters, cancellationToken);
+        return ReadResultArray(response, "item.get")
+            .OfType<JsonObject>()
+            .Select(ReadSuppressionAggregateItem)
+            .Where(item => !string.IsNullOrWhiteSpace(item.Key))
+            .ToArray();
     }
 
     public async Task<ZabbixServiceInfo?> FindManagedServiceByReferenceAsync(
@@ -504,6 +597,32 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             .OfType<JsonObject>()
             .Select(ReadTrigger)
             .Where(trigger => !string.IsNullOrWhiteSpace(trigger.TriggerId))
+            .ToArray();
+    }
+
+    private async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByLookupBatchesAsync(
+        IReadOnlyList<string> ids,
+        string lookupField,
+        bool includeDisabled,
+        int batchSize,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<ZabbixTriggerInfo>();
+        var batchIndex = 0;
+        var effectiveBatchSize = Math.Max(1, batchSize);
+        foreach (var batch in ids.Chunk(effectiveBatchSize))
+        {
+            batchIndex++;
+            var parameters = TriggerGetBaseParameters(includeDisabled);
+            parameters[lookupField] = StringArray(batch);
+            result.AddRange(await GetTriggersAsync(
+                parameters,
+                $"{lookupField} batch {batchIndex}",
+                cancellationToken));
+        }
+
+        return result
+            .DistinctBy(trigger => trigger.TriggerId, StringComparer.Ordinal)
             .ToArray();
     }
 
@@ -987,6 +1106,21 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             Tags = ReadTagList(trigger["tags"] as JsonArray),
             Hosts = ReadTriggerHosts(trigger["hosts"] as JsonArray),
             Dependencies = ReadTriggerDependencies(trigger["dependencies"] as JsonArray)
+        };
+    }
+
+    private static ZabbixSuppressionAggregateItemInfo ReadSuppressionAggregateItem(JsonObject item)
+    {
+        return new ZabbixSuppressionAggregateItemInfo
+        {
+            ItemId = JsonString(item["itemid"]),
+            Name = JsonString(item["name"]),
+            Key = JsonString(item["key_"]),
+            Status = JsonString(item["status"]),
+            State = JsonString(item["state"]),
+            Error = JsonString(item["error"]),
+            LastValue = JsonString(item["lastvalue"]),
+            LastClock = JsonString(item["lastclock"])
         };
     }
 

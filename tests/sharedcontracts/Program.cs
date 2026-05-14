@@ -5,6 +5,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.ConversionRules;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 var factory = new CmdbuildSchemaFactory();
@@ -339,6 +340,9 @@ AssertConversionRulesValidatorRejectsDuplicateRuleIds();
 AssertZabbixHostIdReadinessContract();
 AssertApplyModeContract();
 AssertRouterCoreAggregationContract();
+AssertRuleEngineEmitsSourceMembershipTombstones();
+AssertZabbixMembershipMovesSourceBetweenTargets();
+AssertZabbixMembershipRemovesSourceFromLayer();
 AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
 AssertSemanticFingerprintChangesWhenHostIdAppears();
@@ -348,6 +352,7 @@ await AssertZabbixSourceLeafServiceCreatesProblemTagsAsync();
 await AssertZabbixClientEnsuresHostTagsAsync();
 await AssertZabbixClientAppliesTriggerDependenciesAsync();
 await AssertZabbixClientAppliesSuppressionAggregateAsync();
+await AssertZabbixSuppressionAggregateThresholdUsesSelectedHostsAsync();
 await AssertCmdbuildApplyCreatesSourceLinkAsync();
 
 Console.WriteLine("Shared contract checks passed.");
@@ -360,6 +365,8 @@ static void AssertApplyModeContract()
         "auto apply mode must enable Kafka auto-apply.");
     Assert(new ApplyOptions { Mode = "manual", AutoApplyEnabled = true }.EffectiveAutoApplyEnabled(),
         "AutoApplyEnabled flag must enable Kafka auto-apply.");
+    Assert(!new ApplyOptions().CreateSuppressionServices,
+        "suppression must not create Zabbix Services by default.");
 }
 
 static void AssertConversionRulesValidatorRejectsDuplicateRuleIds()
@@ -440,6 +447,117 @@ static void AssertRouterCoreAggregationContract()
     Assert(cityCommand.Target.Relations[0].DomainCode == "C2M_ServiceNetworkZoneDependsOnNetworkZone",
         "city command managed relation domain is invalid.");
     Assert(cityCommand.Target.Relations[0].TargetLookup == "576100", "city command must link to the core-router target.");
+}
+
+static void AssertRuleEngineEmitsSourceMembershipTombstones()
+{
+    var document = new ConversionRulesDocument
+    {
+        Version = "test",
+        Rules =
+        [
+            new ConversionRule
+            {
+                RuleId = "service-city01",
+                Name = "Service City01",
+                Layer = "service",
+                Source = new SourceSelector
+                {
+                    ClassCode = "Host",
+                    KeyAttribute = "city",
+                    Conditions =
+                    [
+                        new SourceCondition { Attribute = "city", Operator = "equals", Value = "City01" }
+                    ]
+                },
+                Target = new TargetObject
+                {
+                    ClassCode = "C2M_ServiceResource",
+                    IdempotencyKey = "service:${source.city}"
+                }
+            },
+            new ConversionRule
+            {
+                RuleId = "supp-router",
+                Name = "Supp router",
+                Layer = "suppression",
+                Source = new SourceSelector
+                {
+                    ClassCode = "Host",
+                    Conditions =
+                    [
+                        new SourceCondition { Attribute = "role", Operator = "equals", Value = "router" }
+                    ]
+                },
+                Target = new TargetObject
+                {
+                    ClassCode = "C2M_SuppressionResource",
+                    IdempotencyKey = "supp:${source.role}"
+                }
+            }
+        ]
+    };
+    var rawEvent = new CmdbRawEvent
+    {
+        EventId = "tombstone-test",
+        Source = "test",
+        EventType = "UPDATE",
+        ClassCode = "Host",
+        CardId = "1001",
+        Attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["city"] = "City01",
+            ["role"] = "workstation"
+        }
+    };
+
+    var commands = new AggregationRuleEngine().BuildCommands(rawEvent, document);
+    Assert(commands.Count(command => command.CommandType == AggregationCommandTypes.EnsureMembership) == 1,
+        "matching layer must keep its ensure_membership command.");
+    var tombstone = commands.Single(command => command.CommandType == AggregationCommandTypes.RemoveSourceMembership);
+    Assert(tombstone.Layer == "suppression", "non-matching candidate layer must receive source membership tombstone.");
+    Assert(tombstone.Source.ClassCode == "Host" && tombstone.Source.CardId == "1001",
+        "source membership tombstone must keep stable source identity.");
+    Assert(string.IsNullOrWhiteSpace(tombstone.Target.ClassCode),
+        "source membership tombstone must not target a stale generated object.");
+}
+
+static void AssertZabbixMembershipMovesSourceBetweenTargets()
+{
+    var state = NewZabbixApplyStateStore();
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City01", "City01", "30001"), "suppression", includeSourceLeafManagedKey: false);
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City02", "City02", "30001"), "suppression", includeSourceLeafManagedKey: false);
+
+    var memberships = state.ListMemberships("suppression");
+    var city01 = memberships.Single(item => item.TargetManagedKey == "supp:City01");
+    var city02 = memberships.Single(item => item.TargetManagedKey == "supp:City02");
+    Assert(city01.SourceCount == 0 && city01.PendingSourceCount == 0,
+        "moving a source to a new dimension must remove it from the previous target membership.");
+    Assert(city02.SourceCount == 1 && city02.Sources.Single().SourceKeyValue == "City02",
+        "moving a source to a new dimension must keep it only in the new target membership.");
+
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City03", "City03", ""), "suppression", includeSourceLeafManagedKey: false);
+    memberships = state.ListMemberships("suppression");
+    city02 = memberships.Single(item => item.TargetManagedKey == "supp:City02");
+    var city03 = memberships.Single(item => item.TargetManagedKey == "supp:City03");
+    Assert(city02.SourceCount == 0 && city02.PendingSourceCount == 0,
+        "moving an unready source must remove the old active membership.");
+    Assert(city03.SourceCount == 0 && city03.PendingSourceCount == 1,
+        "unready moved source must be pending only in the current target.");
+}
+
+static void AssertZabbixMembershipRemovesSourceFromLayer()
+{
+    var state = NewZabbixApplyStateStore();
+    state.UpdateMembership(BuildMembershipCommand("service", "svc:City01", "City01", "30001"), "service");
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City01", "City01", "30001"), "suppression", includeSourceLeafManagedKey: false);
+
+    var removal = state.UpdateMembership(BuildSourceMembershipRemovalCommand("suppression"), "suppression", includeSourceLeafManagedKey: false);
+    Assert(removal.RemovedSourceMemberships == 1, "source tombstone must report removed suppression membership.");
+    Assert(state.ListMemberships("suppression").Single().SourceCount == 0,
+        "source tombstone must remove the source from every target in its layer.");
+    Assert(state.ListMemberships("service").Single().SourceCount == 1,
+        "source tombstone must not remove the same source from another layer.");
 }
 
 static void AssertZabbixManagedServiceMappingContract()
@@ -685,6 +803,39 @@ static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
     Assert(getParameters.GetProperty("output").EnumerateArray().Any(item => item.GetString() == "expression"),
         "Zabbix trigger.get must request trigger expressions.");
 
+    var batchHandler = new DiagnosticZabbixHandler();
+    var batchClient = new ZabbixClient(
+        new HttpClient(batchHandler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+    var manyHostIds = Enumerable.Range(1, 55).Select(index => $"host-{index:00}").ToArray();
+    var batchedTriggers = await batchClient.GetTriggersByHostIdsAsync(manyHostIds, includeDisabled: false, CancellationToken.None);
+    Assert(batchedTriggers.Count == 2, "Batched Zabbix trigger.get must merge duplicate trigger results.");
+    Assert(batchHandler.TriggerGetPayloads.Count == 3,
+        "Zabbix trigger.get by hostids must be split into batches.");
+    Assert(batchHandler.TriggerGetPayloads.All(payload => TriggerGetLookupCount(payload, "hostids") <= 25),
+        "Zabbix trigger.get hostid batches must stay within the safe batch size.");
+
+    var manyTriggerIds = Enumerable.Range(1, 55).Select(index => $"trigger-{index:00}").ToArray();
+    await batchClient.GetTriggersByIdsAsync(manyTriggerIds, includeDisabled: true, CancellationToken.None);
+    Assert(batchHandler.TriggerGetPayloads.Skip(3).Count() == 3,
+        "Zabbix trigger.get by triggerids must be split into batches.");
+    Assert(batchHandler.TriggerGetPayloads.Skip(3).All(payload => TriggerGetLookupCount(payload, "triggerids") <= 25),
+        "Zabbix trigger.get triggerid batches must stay within the safe batch size.");
+
+    await batchClient.GetTriggersByHostIdsAsync(manyHostIds, includeDisabled: false, batchSize: 10, cancellationToken: CancellationToken.None);
+    var configuredBatchPayloads = batchHandler.TriggerGetPayloads.Skip(6).ToArray();
+    Assert(configuredBatchPayloads.Length == 6,
+        "Zabbix trigger.get must honor an explicitly configured batch size.");
+    Assert(configuredBatchPayloads.All(payload => TriggerGetLookupCount(payload, "hostids") <= 10),
+        "Zabbix trigger.get configured batches must stay within the configured batch size.");
+
     var applied = await client.UpdateTriggerDependenciesAsync(
         "60002",
         ["60001", "77777"],
@@ -700,6 +851,15 @@ static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
         .Select(item => JsonString(item, "triggerid"))
         .ToArray();
     Assert(dependencyIds.SequenceEqual(["60001", "77777"]), "Zabbix trigger.update dependencies are invalid.");
+}
+
+static int TriggerGetLookupCount(string payload, string lookupField)
+{
+    using var document = JsonDocument.Parse(payload);
+    return document.RootElement
+        .GetProperty("params")
+        .GetProperty(lookupField)
+        .GetArrayLength();
 }
 
 static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
@@ -727,11 +887,11 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
             HostGroupName = "CMDB2Monitoring",
             HostName = "cmdb2monitoring-suppression-aggregates",
             HostVisibleName = "CMDB2Monitoring suppression aggregates",
-            ItemKey = "cmdb2monitoring.suppression.aggregate[abc]",
+            ItemKey = "cmdb2monitoring.suppression.aggregate.abc",
             ItemName = "CMDB2M suppression state: ВПН Хабы / City04",
             CalculationFormula = "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
             TriggerName = "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
-            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])<1",
+            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate.abc)<1",
             TriggerPriority = 3
         },
         CancellationToken.None);
@@ -744,7 +904,7 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
     using var itemDocument = JsonDocument.Parse(handler.ItemCreatePayload
         ?? throw new InvalidOperationException("Zabbix item.create payload was not captured."));
     var itemParameters = itemDocument.RootElement.GetProperty("params");
-    Assert(JsonString(itemParameters, "key_") == "cmdb2monitoring.suppression.aggregate[abc]",
+    Assert(JsonString(itemParameters, "key_") == "cmdb2monitoring.suppression.aggregate.abc",
         "Zabbix aggregate item key is invalid.");
     Assert(itemParameters.GetProperty("type").GetInt32() == 15, "Zabbix aggregate item must be a calculated item.");
     Assert(itemParameters.GetProperty("value_type").GetInt32() == 3, "Zabbix aggregate item must be numeric unsigned.");
@@ -754,7 +914,7 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
     using var triggerDocument = JsonDocument.Parse(handler.TriggerCreatePayload
         ?? throw new InvalidOperationException("Zabbix trigger.create payload was not captured."));
     var triggerParameters = triggerDocument.RootElement.GetProperty("params");
-    Assert(JsonString(triggerParameters, "expression") == "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])<1",
+    Assert(JsonString(triggerParameters, "expression") == "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate.abc)<1",
         "Zabbix aggregate trigger expression is invalid.");
     var tags = triggerParameters.GetProperty("tags")
         .EnumerateArray()
@@ -789,11 +949,11 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
             HostGroupName = "CMDB2Monitoring",
             HostName = "cmdb2monitoring-suppression-aggregates",
             HostVisibleName = "CMDB2Monitoring suppression aggregates",
-            ItemKey = "cmdb2monitoring.suppression.aggregate[abc]",
+            ItemKey = "cmdb2monitoring.suppression.aggregate.abc",
             ItemName = "CMDB2M suppression state: ВПН Хабы / City04",
             CalculationFormula = "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
             TriggerName = "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
-            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate[abc])<1",
+            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate.abc)<1",
             TriggerPriority = 3
         },
         CancellationToken.None);
@@ -805,6 +965,62 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
         "Zabbix aggregate item.update must not send immutable hostid.");
     Assert(JsonString(itemUpdateParameters, "params") == "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
         "Zabbix aggregate item.update formula is invalid.");
+
+    var aggregateItems = await updateClient.GetSuppressionAggregateItemsAsync(
+        "cmdb2monitoring-suppression-aggregates",
+        ["cmdb2monitoring.suppression.aggregate.abc", "cmdb2monitoring.suppression.aggregate.abc", ""],
+        CancellationToken.None);
+    Assert(aggregateItems.Count == 1, "Zabbix aggregate item diagnostics must de-duplicate requested keys.");
+    Assert(aggregateItems.Single().State == "1", "Zabbix aggregate item diagnostics must read unsupported state.");
+    Assert(aggregateItems.Single().Error.Contains("bad formula", StringComparison.Ordinal),
+        "Zabbix aggregate item diagnostics must read item error.");
+    using var itemGetDocument = JsonDocument.Parse(updateHandler.ItemGetPayload
+        ?? throw new InvalidOperationException("Zabbix item.get payload was not captured."));
+    var itemGetParameters = itemGetDocument.RootElement.GetProperty("params");
+    Assert(JsonString(itemGetParameters, "host") == "cmdb2monitoring-suppression-aggregates",
+        "Zabbix aggregate item diagnostics must query by aggregate host name.");
+    Assert(itemGetParameters.GetProperty("filter").GetProperty("key_").GetArrayLength() == 1,
+        "Zabbix aggregate item diagnostics must query unique item keys.");
+}
+
+static async Task AssertZabbixSuppressionAggregateThresholdUsesSelectedHostsAsync()
+{
+    var state = NewZabbixApplyStateStore();
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City31", "City31", "30011", "1001"), "suppression", includeSourceLeafManagedKey: false);
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City31", "City31", "39999", "1002"), "suppression", includeSourceLeafManagedKey: false);
+
+    var zabbixOptions = new ZabbixOptions
+    {
+        ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+        AuthMode = "Login",
+        User = "Admin",
+        Password = "zabbix",
+        RequestTimeoutMs = 5000
+    };
+    var client = new ZabbixClient(
+        new HttpClient(new DiagnosticZabbixHandler()),
+        new StaticOptionsMonitor<ZabbixOptions>(zabbixOptions));
+    var applier = new ZabbixTriggerDependencyApplier(
+        client,
+        state,
+        new StaticOptionsMonitor<ZabbixTriggerDependenciesOptions>(new ZabbixTriggerDependenciesOptions
+        {
+            Enabled = true,
+            AggregateStateTriggerIncludeNameRegex = ".*",
+            DependencyTriggerIncludeNameRegex = ".*"
+        }),
+        new StaticOptionsMonitor<ZabbixOptions>(zabbixOptions),
+        NullLogger<ZabbixTriggerDependencyApplier>.Instance);
+
+    var result = await applier.RunAsync(dryRun: true, CancellationToken.None);
+    Assert(result.Errors.Count == 0, "suppression aggregate dry-run must not fail for missing selected source triggers.");
+    var aggregate = result.Aggregates.Single(item => item.TargetManagedKey == "supp:City31");
+    Assert(aggregate.HostCount == 2, "suppression aggregate must still report all host bindings.");
+    Assert(aggregate.UnknownHostCount == 1, "suppression aggregate must count source-hosts without selected triggers as unknown.");
+    Assert(aggregate.RequiredHealthyHostCount == 1,
+        "suppression aggregate threshold must be based on hosts with selected supported triggers, not raw CMDBuild membership.");
+    Assert(aggregate.OwnProblemExpression.EndsWith("<1", StringComparison.Ordinal),
+        "suppression aggregate own trigger expression must use the selected-host threshold.");
 }
 
 static void AssertSemanticFingerprintIncludesDimensionField()
@@ -894,6 +1110,76 @@ static AggregationCommand BuildHostReadinessCommand(
     AggregationRuleEngine? engine = null)
 {
     return BuildHostReadinessPlan(attributes, engine).Command;
+}
+
+static ZabbixApplyStateStore NewZabbixApplyStateStore()
+{
+    var path = Path.Combine(
+        Path.GetTempPath(),
+        "cmdb2monitoring-tests",
+        $"zabbix-apply-state-{Guid.NewGuid():N}.json");
+    return new ZabbixApplyStateStore(
+        Options.Create(new ZabbixApplyStateOptions { FilePath = path }),
+        NullLogger<ZabbixApplyStateStore>.Instance);
+}
+
+static AggregationCommand BuildMembershipCommand(
+    string layer,
+    string targetKey,
+    string city,
+    string zabbixHostId,
+    string sourceCardId = "1001")
+{
+    return new AggregationCommand
+    {
+        CommandId = Guid.NewGuid().ToString("N"),
+        CommandType = AggregationCommandTypes.EnsureMembership,
+        Layer = layer,
+        RuleId = $"{layer}-{city}",
+        RuleName = $"{layer} {city}",
+        EventType = "UPDATE",
+        Source = new AggregationSourceObject
+        {
+            ClassCode = "Host",
+            CardId = sourceCardId,
+            KeyAttribute = "city",
+            KeyValue = city,
+            ZabbixHostId = zabbixHostId
+        },
+        Target = new AggregationTargetObject
+        {
+            ClassCode = layer.Equals("suppression", StringComparison.OrdinalIgnoreCase)
+                ? "C2M_SuppressionResource"
+                : "C2M_ServiceResource",
+            IdempotencyKey = targetKey,
+            CardDescription = $"{layer} {city}",
+            CreateInstance = true,
+            Attributes = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["name"] = city
+            }
+        }
+    };
+}
+
+static AggregationCommand BuildSourceMembershipRemovalCommand(string layer)
+{
+    return new AggregationCommand
+    {
+        CommandId = Guid.NewGuid().ToString("N"),
+        CommandType = AggregationCommandTypes.RemoveSourceMembership,
+        Layer = layer,
+        RuleId = $"source-membership-reconcile:{layer}:Host",
+        RuleName = $"Reconcile source membership {layer}/Host",
+        EventType = "UPDATE",
+        Source = new AggregationSourceObject
+        {
+            ClassCode = "Host",
+            CardId = "1001",
+            KeyAttribute = "_id",
+            KeyValue = "1001"
+        }
+    };
 }
 
 static AggregationCommandPlan BuildHostReadinessPlan(
@@ -1520,15 +1806,21 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     public string? ItemCreatePayload { get; private set; }
 
+    public string? ItemGetPayload { get; private set; }
+
     public string? ItemUpdatePayload { get; private set; }
 
     public string? TriggerGetPayload { get; private set; }
+
+    public IReadOnlyList<string> TriggerGetPayloads => triggerGetPayloads;
 
     public string? TriggerCreatePayload { get; private set; }
 
     public string? TriggerUpdatePayload { get; private set; }
 
     public string? HistoryPushPayload { get; private set; }
+
+    private readonly List<string> triggerGetPayloads = [];
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -1573,7 +1865,7 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             "host.get" => CaptureHostGet(body),
             "host.create" => CaptureHostCreate(body),
             "host.update" => CaptureHostUpdate(body),
-            "item.get" => CaptureItemGet(),
+            "item.get" => CaptureItemGet(body),
             "item.create" => CaptureItemCreate(body),
             "item.update" => CaptureItemUpdate(body),
             "trigger.get" => CaptureTriggerGet(body),
@@ -1700,8 +1992,9 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
         """);
     }
 
-    private HttpResponseMessage CaptureItemGet()
+    private HttpResponseMessage CaptureItemGet(string body)
     {
+        ItemGetPayload = body;
         return ExistingAggregateItem
             ? Json(HttpStatusCode.OK, """
             {
@@ -1710,10 +2003,14 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
                 {
                   "itemid": "44001",
                   "name": "CMDB2M suppression state: ВПН Хабы / City04",
-                  "key_": "cmdb2monitoring.suppression.aggregate[abc]",
+                  "key_": "cmdb2monitoring.suppression.aggregate.abc",
                   "type": "15",
                   "value_type": "3",
-                  "status": "0"
+                  "status": "0",
+                  "state": "1",
+                  "error": "bad formula: unsupported source trigger expression",
+                  "lastvalue": "0",
+                  "lastclock": "1778760000"
                 }
               ],
               "id": 22
@@ -1764,6 +2061,7 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
     private HttpResponseMessage CaptureTriggerGet(string body)
     {
         TriggerGetPayload = body;
+        triggerGetPayloads.Add(body);
         if (body.Contains("cmdb2monitoring:aggregate", StringComparison.Ordinal))
         {
             return EmptyArrayResponse();

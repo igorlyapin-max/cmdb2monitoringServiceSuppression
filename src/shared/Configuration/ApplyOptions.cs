@@ -10,6 +10,8 @@ public sealed class ApplyOptions
 
     public string Mode { get; init; } = "manual";
 
+    public bool CreateSuppressionServices { get; init; }
+
     public bool HasValidMode()
     {
         return string.Equals(Mode, "manual", StringComparison.OrdinalIgnoreCase)

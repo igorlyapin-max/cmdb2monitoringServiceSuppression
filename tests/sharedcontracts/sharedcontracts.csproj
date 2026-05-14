@@ -10,6 +10,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../../src/shared/Cmdb2MonitoringServiceSuppression.Shared.csproj" />
+    <ProjectReference Include="../../src/zabbixconfig2api/zabbixconfig2api.csproj" />
   </ItemGroup>
 
 </Project>

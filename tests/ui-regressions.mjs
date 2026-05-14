@@ -13,6 +13,7 @@ const zabbixConfigPath = path.join(repoRoot, 'src/zabbixconfig2api/appsettings.j
 const cmdbConfigBuilderPath = path.join(repoRoot, 'src/cmdbconfigbuilder/Program.cs');
 const zabbixProgramPath = path.join(repoRoot, 'src/zabbixconfig2api/Program.cs');
 const zabbixAggregationApplierPath = path.join(repoRoot, 'src/zabbixconfig2api/ZabbixAggregationApplier.cs');
+const zabbixTriggerDependencyApplierPath = path.join(repoRoot, 'src/zabbixconfig2api/ZabbixTriggerDependencyApplier.cs');
 
 const appText = fs.readFileSync(appPath, 'utf8');
 const serverText = fs.readFileSync(serverPath, 'utf8');
@@ -21,6 +22,7 @@ const stylesText = fs.readFileSync(stylesPath, 'utf8');
 const cmdbConfigBuilderText = fs.readFileSync(cmdbConfigBuilderPath, 'utf8');
 const zabbixProgramText = fs.readFileSync(zabbixProgramPath, 'utf8');
 const zabbixAggregationApplierText = fs.readFileSync(zabbixAggregationApplierPath, 'utf8');
+const zabbixTriggerDependencyApplierText = fs.readFileSync(zabbixTriggerDependencyApplierPath, 'utf8');
 const uiConfig = JSON.parse(fs.readFileSync(uiConfigPath, 'utf8'));
 const builderConfig = JSON.parse(fs.readFileSync(builderConfigPath, 'utf8'));
 const zabbixConfig = JSON.parse(fs.readFileSync(zabbixConfigPath, 'utf8'));
@@ -33,6 +35,7 @@ assertWebhookManagementContracts();
 assertPopulationDimensionUiContracts();
 assertTemplateTargetClassContracts();
 assertRuleDocumentNormalizationContracts();
+assertTemplateMaterializationContracts();
 assertTemplateRelationRegexContracts();
 assertRelationGraphContracts();
 
@@ -61,7 +64,8 @@ async function loadAppApi() {
     'renderRelationGraphRegexChip',
     'relationGraphRuntimeErrorDetails',
     'relationGraphEdgeGeometry',
-    'zabbixHostIdAttributeName'
+    'zabbixHostIdAttributeName',
+    'templateMaterializationPlan'
   ];
   const wrapped = `(async () => { ${startupDisabled}\nreturn { ${exportedNames.join(', ')} }; })()`;
   return vm.runInNewContext(wrapped, browserLikeContext(), { filename: appPath });
@@ -138,6 +142,44 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'Атрибуты создаваемого целевого объекта', 'template target attributes editor must exist.');
   assertIncludes(indexText, 'aggregation_type', 'template target attributes help must mention aggregation_type.');
   assertIncludes(indexText, 'zabbix_main_hostid', 'UI must show zabbix_main_hostid readiness attribute.');
+  assertIncludes(indexText, 'transitiveGroupDependencyDepthSelect',
+    'admin settings must expose transitive suppression group dependency depth.');
+  assertIncludes(indexText, 'ZabbixTriggerDependencies:TransitiveGroupDependencyDepth',
+    'admin settings must identify zabbixconfig2api as the source of transitive depth.');
+  assertIncludes(indexText, 'aggregateStateTriggerIncludeTagsInput',
+    'admin settings must show AggregateStateTriggerIncludeTags read-only.');
+  assertIncludes(indexText, 'aggregateStateTriggerExcludeTagsInput',
+    'admin settings must show AggregateStateTriggerExcludeTags read-only.');
+  assertIncludes(indexText, 'aggregateStateTriggerIncludeNameRegexInput',
+    'admin settings must show AggregateStateTriggerIncludeNameRegex read-only.');
+  assertIncludes(indexText, 'aggregateStateTriggerExcludeNameRegexInput',
+    'admin settings must show AggregateStateTriggerExcludeNameRegex read-only.');
+  assertIncludes(indexText, 'aggregateStateTriggerMinPriorityInput',
+    'admin settings must show AggregateStateTriggerMinPriority read-only.');
+  assertIncludes(indexText, 'zabbixRequestTimeoutMsInput',
+    'admin settings must show Zabbix request timeout read-only.');
+  assertIncludes(indexText, 'triggerGetBatchSizeInput',
+    'admin settings must show trigger.get batch size read-only.');
+  assertIncludes(indexText, 'maxSourceHostsPerAggregateInput',
+    'admin settings must show max source hosts per aggregate read-only.');
+  assertIncludes(indexText, 'maxAggregateFormulaLengthInput',
+    'admin settings must show max aggregate formula length read-only.');
+  assertIncludes(indexText, 'ZabbixTriggerDependencies:TriggerGetBatchSize',
+    'admin settings must identify the trigger.get batch size config key.');
+  assertIncludes(indexText, 'ZabbixTriggerDependencies:MaxSourceHostsPerAggregate',
+    'admin settings must identify the max source hosts per aggregate config key.');
+  assertIncludes(indexText, 'ZabbixTriggerDependencies:MaxAggregateFormulaLength',
+    'admin settings must identify the max aggregate formula length config key.');
+  assertIncludes(indexText, 'Zabbix:RequestTimeoutMs',
+    'admin settings must identify the Zabbix request timeout config key.');
+  assertIncludes(indexText, 'src/zabbixconfig2api/appsettings.json',
+    'admin settings must show where the transitive depth is changed.');
+  assertIncludes(indexText, 'не меняет потоковую обработку webhook/Kafka',
+    'admin settings must explain that transitive depth does not change streaming conversion.');
+  assertIncludes(indexText, 'Leaf/source-хосты не получают полную матрицу dependencies',
+    'admin settings must explain leaf-to-nearest-group suppression sizing.');
+  assertIncludes(indexText, 'Aggregate trigger группы становится PROBLEM',
+    'help must explain inherited upstream PROBLEM behavior for suppression groups.');
   assertNotIncludes(indexText, 'zabbix_hostid', 'visible UI must not mention legacy zabbix_hostid.');
   const suppressionApplyView = textBetween(indexText, 'id="suppressionZabbixApplyView"', 'id="templateApplyView"');
   assert(suppressionApplyView.includes('zabbixTriggerDependenciesApplyButton'),
@@ -172,12 +214,123 @@ function assertReadinessConfigContracts() {
 
   assert(zabbixConfig.ZabbixTriggerDependencies?.AutoReconcileOnMembershipChange === true,
     'zabbixconfig2api must auto-reconcile suppression trigger dependencies after membership changes.');
+  assert(zabbixConfig.Apply?.CreateSuppressionServices === false,
+    'zabbixconfig2api must not create Zabbix Services for suppression by default.');
   assert(Number.isInteger(zabbixConfig.ZabbixTriggerDependencies?.AutoReconcileDebounceSeconds),
     'suppression trigger dependency auto-reconcile debounce must be configured.');
+  assert(!('zabbixTriggerDependencies' in uiConfig),
+    'monitoring UI must not keep a separate transitive suppression group dependency depth setting.');
+  assert(zabbixConfig.ZabbixTriggerDependencies?.TransitiveGroupDependencyDepth === 2,
+    'zabbixconfig2api must default transitive suppression group dependency depth to 2.');
+  assert(zabbixConfig.ZabbixTriggerDependencies?.TriggerGetBatchSize === 25,
+    'zabbixconfig2api must default Zabbix trigger.get batch size to 25.');
+  assert(zabbixConfig.ZabbixTriggerDependencies?.MaxSourceHostsPerAggregate === 1000,
+    'zabbixconfig2api must default max source hosts per aggregate.');
+  assert(zabbixConfig.ZabbixTriggerDependencies?.MaxAggregateFormulaLength === 65000,
+    'zabbixconfig2api must default max aggregate formula length.');
+  assert(zabbixConfig.Zabbix?.RequestTimeoutMs === 60000,
+    'zabbixconfig2api must use a Zabbix request timeout large enough for dependency reconciliation by default.');
+  assert(zabbixConfig.ZabbixTriggerDependencies?.AggregateStateTriggerMinPriority === 3,
+    'suppression aggregate group state selector must ignore low-priority secondary triggers by default.');
+  assert(zabbixConfig.ZabbixTriggerDependencies?.DependencyTriggerMinPriority === 0,
+    'suppression dependency coverage selector must keep all active source triggers by default.');
+  const aggregateStateTags = zabbixConfig.ZabbixTriggerDependencies?.AggregateStateTriggerIncludeTags ?? [];
+  assert(aggregateStateTags.some((tag) => tag.Tag === 'scope' && tag.Value === 'availability'),
+    'suppression aggregate state selector must include scope=availability triggers.');
+  assert(!aggregateStateTags.some((tag) => tag.Tag === 'component' && tag.Value === 'health'),
+    'suppression aggregate state selector must not require component=health triggers by default.');
+  assert(Array.isArray(zabbixConfig.ZabbixTriggerDependencies?.DependencyTriggerIncludeTags),
+    'suppression dependency selector must be independently configurable.');
+  assertNotIncludes(appText, 'transitiveGroupDependencyDepth: state.transitiveGroupDependencyDepth',
+    'UI must not send a local transitive depth override to zabbixconfig2api.');
+  assertNotIncludes(appText, 'config.zabbixTriggerDependencies',
+    'UI must not read transitive depth from monitoring-ui-api config.');
+  assertIncludes(appText, 'syncTransitiveGroupDependencyDepthFromPayload(result)',
+    'UI must take the effective transitive depth from zabbixconfig2api status/result.');
+  assertIncludes(appText, 'zabbixTransitiveGroupDependencyDepth(payload)',
+    'UI must show the effective transitive suppression group dependency depth in dependency diagnostics.');
+  assertIncludes(appText, 'zabbixAggregateStateReasonText',
+    'UI must show whether suppression group state comes from own source hosts or upstream causes.');
+  assertIncludes(appText, 'upstream-группы',
+    'UI must render upstream cause groups in trigger dependency diagnostics.');
+  assertIncludes(appText, 'unsupportedAggregateItemCount',
+    'UI must show unsupported aggregate calculated item count in dependency diagnostics.');
+  assertIncludes(appText, 'renderUnsupportedAggregateItems',
+    'UI must render unsupported aggregate calculated item samples.');
+  assertIncludes(appText, 'zabbixAggregateItemStateText',
+    'UI must render calculated item state/error details for aggregate samples.');
+  assertIncludes(appText, 'aggregateStateTriggerSelector',
+    'UI must show the selector used for suppression group state.');
+  assertIncludes(appText, 'renderAggregateStateTriggerSettings',
+    'UI must render read-only aggregate state trigger selector settings.');
+  assertIncludes(appText, 'renderZabbixTriggerDependencyRuntimeSettings',
+    'UI must render read-only Zabbix trigger dependency runtime settings.');
+  assertIncludes(appText, 'zabbixRequestTimeoutText',
+    'UI must show the configured Zabbix request timeout in dependency diagnostics.');
+  assertIncludes(appText, 'triggerGetBatchSize',
+    'UI must show the configured trigger.get batch size in dependency diagnostics.');
+  assertIncludes(appText, 'zabbixLimitText',
+    'UI must show aggregate formula complexity values against configured limits.');
+  assertIncludes(appText, 'renderZabbixAggregateComplexityMessages',
+    'UI must render aggregate formula complexity messages per aggregate sample.');
+  assertIncludes(appText, 'aggregateStateTriggerSettings',
+    'UI must consume aggregate state trigger selector settings from zabbixconfig2api status.');
+  assertIncludes(appText, 'dependencyTriggerSelector',
+    'UI must show the selector used for source trigger dependency coverage.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'BuildUpstreamProblemExpression',
+    'suppression aggregate triggers must include upstream group conditions.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'TrySelectAggregateStateTrigger',
+    'suppression aggregate state trigger selection must be separate from dependency selection.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'AggregateStateTriggerIncludeTags { get; init; } = []',
+    'aggregate state include tags must come from configuration, not from a code-level default list that the .NET binder appends to.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'TrySelectDependencyTrigger',
+    'suppression source trigger dependency selection must be separate from aggregate state selection.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'LoadAggregateItemDiagnosticsAsync',
+    'suppression dependency reconcile must load calculated item diagnostics after Zabbix recalculation.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'EvaluateAggregateComplexityLimits',
+    'suppression dependency reconcile must guard aggregate formula complexity before publishing.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'AggregateComplexityWarningRatio',
+    'suppression dependency reconcile must warn before aggregate complexity reaches hard limits.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'MaxSourceHostsPerAggregate',
+    'suppression dependency reconcile must enforce max source-host count per aggregate.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'MaxAggregateFormulaLength',
+    'suppression dependency reconcile must enforce max aggregate formula length.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'UnsupportedAggregateItems',
+    'suppression dependency result must expose unsupported aggregate item diagnostics.');
+  assertNotIncludes(zabbixTriggerDependencyApplierText, 'AggregateTriggerMinPriority',
+    'legacy shared aggregate trigger selector must not return.');
+  assertNotIncludes(zabbixTriggerDependencyApplierText, 'ZabbixTriggerDependencyRunRequest',
+    'zabbixconfig2api must not accept per-request transitive depth overrides.');
+  assertNotIncludes(zabbixTriggerDependencyApplierText, 'EffectiveTransitiveGroupDependencyDepth',
+    'transitive depth must come directly from zabbixconfig2api options.');
+  assertNotIncludes(zabbixTriggerDependencyApplierText, 'dependentAggregate.ToTriggerInfo()',
+    'suppression aggregate triggers must not be blocked by Zabbix dependencies on upstream groups.');
+  assertNotIncludes(zabbixTriggerDependencyApplierText, 'AddTransitiveGroupDependencies',
+    'group-to-group propagation must use aggregate expressions instead of extra trigger dependency edges.');
   assertIncludes(zabbixProgramText, 'ZabbixTriggerDependencyReconcileScheduler',
     'zabbixconfig2api must register a suppression trigger dependency reconcile scheduler.');
+  assertIncludes(zabbixProgramText, 'aggregateStateTriggerSettings',
+    'zabbixconfig2api status must expose aggregate state trigger selector settings for read-only UI.');
+  assertIncludes(zabbixProgramText, 'triggerGetBatchSize',
+    'zabbixconfig2api status must expose trigger.get batch size for read-only UI.');
+  assertIncludes(zabbixProgramText, 'zabbixRequestTimeoutMs',
+    'zabbixconfig2api status must expose Zabbix request timeout for read-only UI.');
+  assertIncludes(zabbixProgramText, 'maxSourceHostsPerAggregate',
+    'zabbixconfig2api status must expose max source hosts per aggregate for read-only UI.');
+  assertIncludes(zabbixProgramText, 'maxAggregateFormulaLength',
+    'zabbixconfig2api status must expose max aggregate formula length for read-only UI.');
+  assertIncludes(zabbixProgramText, 'HasAggregateStateSelector',
+    'zabbixconfig2api must validate that aggregate state selector is explicit.');
+  assertIncludes(zabbixProgramText, 'HasValidTriggerSelectorRegex',
+    'zabbixconfig2api must validate trigger selector regex settings on startup.');
   assertIncludes(zabbixAggregationApplierText, 'RequestSuppressionTriggerDependencyReconcile(command, layer)',
     'suppression Zabbix apply must request trigger dependency reconcile after membership changes.');
+  assertIncludes(zabbixAggregationApplierText, 'ShouldCreateManagedServices(layer, options)',
+    'suppression Zabbix apply must gate Zabbix Services creation behind configuration.');
+  assertIncludes(indexText, 'Zabbix Services по умолчанию не создаются',
+    'suppression Zabbix apply UI must explain that suppression does not create Zabbix Services by default.');
+  assertIncludes(appText, 'suppression membership',
+    'suppression Zabbix apply UI must render membership-oriented status.');
   assertIncludes(zabbixProgramText, 'PendingSources',
     'zabbixconfig2api must retain unready source cards as pending membership diagnostics.');
   assertIncludes(appText, 'pendingSourceCount',
@@ -343,6 +496,12 @@ function assertTemplateTargetClassContracts() {
     .filter((code) => String(code).toLowerCase() === 'description');
   assert(editableDescriptionCodes.length === 1 && editableDescriptionCodes[0] === 'Description',
     `static rule target attributes must show only one Description field, got ${JSON.stringify(editableDescriptionCodes)}.`);
+  const suppressionInstanceAttrs = api.targetObjectEditableAttributes('suppression', 'C2M_SuppressionNetworkAccessZone', { includeIdentity: false })
+    .map((item) => item.code);
+  assert(!suppressionInstanceAttrs.includes('Code') && !suppressionInstanceAttrs.includes('Description') && !suppressionInstanceAttrs.includes('name'),
+    'static suppression rules for existing target instances must not expose identity fields.');
+  assert(suppressionInstanceAttrs.includes('aggregation_type') && suppressionInstanceAttrs.includes('threshold') && suppressionInstanceAttrs.includes('n'),
+    'static suppression rules for existing target instances must expose aggregation fields.');
 }
 
 function assertRuleDocumentNormalizationContracts() {
@@ -357,6 +516,91 @@ function assertRuleDocumentNormalizationContracts() {
   const ids = normalized.rules.map((rule) => rule.rule_id);
   assert(new Set(ids).size === ids.length, 'normalizeRuleDocument must make rule_id values unique.');
   assert(ids.every((id) => id && id !== 'rule'), 'generic rule_id placeholders must be replaced deterministically.');
+}
+
+function assertTemplateMaterializationContracts() {
+  api.state.prefix = 'C2M_';
+  api.state.classes = [];
+  api.state.domains = [];
+  api.state.suggestedDomains = [];
+  api.state.cmdbClasses = [
+    { code: 'ARM', description: 'АРМ' },
+    { code: 'NTbook', description: 'Ноутбук' },
+    { code: 'routerG', description: 'Маршрутизатор' }
+  ];
+  api.state.cmdbClassSchemas = api.state.cmdbClasses.map((item) => ({
+    code: item.code,
+    attributes: [{ code: 'locationFloorBuildingCity', type: 'string', description: 'City' }]
+  }));
+  api.state.cmdbClassInstances = [
+    { layer: 'Source', classCode: 'ARM', cards: [] },
+    { layer: 'Source', classCode: 'NTbook', cards: [{ Code: 'ntbook-1', locationFloorBuildingCity: 'City01' }] },
+    { layer: 'Source', classCode: 'routerG', cards: [{ Code: 'router-1', locationFloorBuildingCity: 'City01' }] }
+  ];
+  api.state.ruleDocuments.suppression = { version: '1', layer: 'suppression', rules: [] };
+  api.state.templateDocuments.suppression = {
+    version: '1',
+    layer: 'suppression',
+    templates: [
+      materializationTemplate('workplaces', 'Рабочие места', '(?i)^(АРМ|Ноутбук)$', 'C2M_SuppressionResource'),
+      {
+        ...materializationTemplate('routers', 'МаршрутизаторыSupp', '(?i)^Маршрутизатор$', 'C2M_SuppressionNetworkAccessZone'),
+        managed_relations: [{
+          kind: 'template',
+          relation_role: 'suppresses',
+          target_template_id: 'workplaces',
+          attributes: {
+            match: {
+              mode: 'exact',
+              source_variable: 'dimension_key',
+              target_variable: 'dimension_key'
+            }
+          }
+        }]
+      }
+    ]
+  };
+
+  const plan = api.templateMaterializationPlan('suppression', { safe: true });
+  assert(plan.errors.length === 0,
+    `empty source class in a broad template regex must not block materialization when other candidates produce rules: ${plan.errors.join('; ')}`);
+  assert(plan.warnings.some((item) => item.includes('ARM') && item.includes('нет карточек')),
+    'empty source class must be reported as a warning.');
+  assert(plan.generatedRules.some((rule) => rule.generated_from_template === 'workplaces' && ruleSource(rule) === 'NTbook'),
+    'template target rules must still be generated for source classes with dimension values.');
+  const routerRule = plan.generatedRules.find((rule) => rule.generated_from_template === 'routers');
+  assert(routerRule && (routerRule.relations ?? []).length === 1,
+    'template-template relation must materialize after skipping an empty unrelated source class.');
+}
+
+function materializationTemplate(templateId, name, sourceRegex, targetClass) {
+  return {
+    template_id: templateId,
+    name,
+    layer: 'suppression',
+    enabled: true,
+    source_class_regex: sourceRegex,
+    population_dimension: {
+      enabled: true,
+      type: 'source_field',
+      source_field: 'locationFloorBuildingCity',
+      key_template: '${template.id}:${dimension.key}',
+      name_template: '${dimension.value}',
+      max_rules: 1000
+    },
+    target: {
+      class_code: targetClass,
+      name_template: '${dimension.name}',
+      description_template: name,
+      population_source_key_template: '${template.id}:${dimension.key}',
+      initial_user_values: {}
+    },
+    variables: []
+  };
+}
+
+function ruleSource(rule) {
+  return rule.source?.class_code ?? rule.sourceClass ?? '';
 }
 
 function assertTemplateRelationRegexContracts() {

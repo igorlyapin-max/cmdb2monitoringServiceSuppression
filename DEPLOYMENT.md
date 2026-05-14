@@ -107,7 +107,11 @@ Debug__Level=Basic
 `zabbix_main_hostid` is the CMDBuild card attribute that marks a source object as
 ready for the Zabbix side of the pipeline. `CREATE` and `UPDATE` events without
 this value must not create service/suppression membership. `DELETE` must remove
-only previously recorded managed membership and otherwise be a no-op.
+only previously recorded managed membership and otherwise be a no-op. If an
+`UPDATE` changes the population dimension or makes the source card stop matching
+all rules for a layer, the pipeline publishes source-membership reconciliation:
+`zabbixconfig2api` removes that source from stale targets in the same layer
+before trigger dependencies are recalculated.
 
 ## Service-Specific Settings
 
@@ -281,7 +285,8 @@ new command during a short troubleshooting window.
   "AuthMode": "Token",
   "ApiToken": "secret://AAA.LOCAL/PROD/zabbix-api-token",
   "User": "",
-  "Password": ""
+  "Password": "",
+  "RequestTimeoutMs": 60000
 },
 "Apply": {
   "Mode": "auto",
@@ -294,37 +299,91 @@ new command during a short troubleshooting window.
 "ZabbixTriggerDependencies": {
   "Enabled": true,
   "IncludeDisabledTriggers": false,
+  "AutoReconcileOnMembershipChange": true,
+  "AutoReconcileDebounceSeconds": 10,
+  "TransitiveGroupDependencyDepth": 2,
+  "TriggerGetBatchSize": 25,
+  "MaxSourceHostsPerAggregate": 1000,
+  "MaxAggregateFormulaLength": 65000,
   "MaxDependenciesPerRun": 10000,
   "SampleLimit": 100,
   "AggregateHostGroupName": "CMDB2Monitoring",
   "AggregateHostName": "cmdb2monitoring-suppression-aggregates",
   "AggregateHostVisibleName": "CMDB2Monitoring suppression aggregates",
   "AggregateItemKeyPrefix": "cmdb2monitoring.suppression.aggregate",
+  "AggregateStateTriggerIncludeTags": [
+    { "Tag": "scope", "Value": "availability" }
+  ],
+  "AggregateStateTriggerExcludeTags": [],
+  "AggregateStateTriggerIncludeNameRegex": "",
+  "AggregateStateTriggerExcludeNameRegex": "",
+  "AggregateStateTriggerMinPriority": 3,
+  "DependencyTriggerIncludeTags": [],
+  "DependencyTriggerExcludeTags": [],
+  "DependencyTriggerIncludeNameRegex": "",
+  "DependencyTriggerExcludeNameRegex": "",
+  "DependencyTriggerMinPriority": 0,
+  "SampleSourceTriggersPerAggregate": 20,
   "AggregateTriggerPriority": 3
 }
 ```
 
 In auto mode `zabbixconfig2api` consumes
 `KafkaTopics:ZabbixServiceApplyPlans` and
-`KafkaTopics:ZabbixSuppressionApplyPlans` and upserts managed Zabbix Services.
-Operators can verify the result in Zabbix under `Monitoring -> Services` by
-service name or by tags such as `cmdb2monitoring:managed=true` and
-`cmdb2monitoring:layer=service|suppression`.
+`KafkaTopics:ZabbixSuppressionApplyPlans`. Service-layer commands upsert managed
+Zabbix Services; operators can verify them in Zabbix under `Monitoring ->
+Services` by service name or by tags such as `cmdb2monitoring:managed=true` and
+`cmdb2monitoring:layer=service`. Suppression commands update persisted
+membership for aggregate triggers and trigger dependencies; operators verify
+that contour in `Каскадное подавление -> Применить в Zabbix -> Зависимости
+триггеров` and on the technical aggregate host.
 
 The apply state file keeps source membership for target services and the set of
 managed Zabbix trigger dependencies. Keep this path on durable storage if
 `zabbixconfig2api` can restart; without it the service can rebuild desired
 dependencies from membership, but it cannot distinguish old managed trigger
 dependencies from manual Zabbix dependencies.
+Membership state is keyed by `layer + source class + source card id`, not by the
+population dimension. A source moving between dimensions is moved between target
+memberships; if it no longer matches any rule in a layer, a
+`remove_source_membership` command removes it from every target in that layer.
 
 `ZabbixTriggerDependencies` controls the suppression dependency reconciliation:
 dry-run and apply read suppression membership, find active triggers for
-`zabbix_main_hostid` source hosts, create one managed aggregate trigger per
-suppression object on `AggregateHostName`, push the calculated aggregate state
-through `history.push`, and update `trigger.dependencies` through
-`trigger.update`. `IncludeDisabledTriggers=false` limits the model to enabled
-triggers. `MaxDependenciesPerRun` is a guard against accidental many-to-many
-explosions caused by broad suppression rules.
+`zabbix_main_hostid` source hosts, create one managed calculated item and one
+managed aggregate trigger per suppression object on `AggregateHostName`, and
+update `trigger.dependencies` through `trigger.update`. Runtime state is
+calculated by Zabbix; the service does not push aggregate state through
+`history.push`.
+
+Two trigger selectors are intentionally separate. `AggregateStateTrigger*`
+chooses source-host triggers whose expressions are embedded into the calculated
+item and therefore define when a suppression group becomes Problem. The default
+uses enabled triggers tagged `scope=availability` with priority at least `3`;
+`component=health` is not required.
+The aggregation denominator is the number of source hosts whose selected,
+supported trigger expressions actually enter the calculated item. Source cards
+with host bindings but without selected group-state triggers are reported as
+unknown/skipped and do not make the group fail by themselves.
+Keep this selector explicit in configuration: `zabbixconfig2api` validates that
+it has include tags or an include-name regex. To intentionally select every
+enabled source trigger for group state, set
+`AggregateStateTriggerIncludeNameRegex` to `.*`; leaving the selector empty is
+treated as a configuration error.
+`DependencyTrigger*` chooses dependent leaf/source triggers that receive
+dependencies on the nearest suppression group; the default keeps all enabled
+triggers with priority `0+`. `TransitiveGroupDependencyDepth` (`1..3`) controls
+how many upstream group causes are included into aggregate trigger expressions.
+`TriggerGetBatchSize` controls how many hostid/triggerid values are sent in one
+Zabbix `trigger.get` request during dry-run/apply. `Zabbix:RequestTimeoutMs`
+controls the timeout of each JSON-RPC request; the local default is `60000` ms.
+Both values are visible in the Monitoring UI read-only. If reconciliation times
+out, reduce `TriggerGetBatchSize` or increase `RequestTimeoutMs`, then reload or
+restart `zabbixconfig2api`. `MaxSourceHostsPerAggregate` and
+`MaxAggregateFormulaLength` protect Zabbix calculated items and aggregate trigger
+expressions from oversized suppression groups; dry-run warns at 80% and blocks
+above the configured limits. `MaxDependenciesPerRun` is a guard against
+accidental many-to-many explosions caused by broad suppression rules.
 
 ### cmdbaggregation2cmdbuild
 

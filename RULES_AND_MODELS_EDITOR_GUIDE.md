@@ -480,27 +480,50 @@ Runtime services только читают опубликованную конф
 Меню `Сервисный слой -> Применить в Zabbix` и `Каскадное подавление ->
 Применить в Zabbix` выполняют current-card apply только для своего слоя и пишут
 команды в отдельный Zabbix topic. Dry-run показывает planned objects, связи,
-source membership, наличие `zabbix_main_hostid` и ожидаемые problem tags.
+source membership и наличие `zabbix_main_hostid`. Problem tags относятся к
+сервисному слою; suppression по умолчанию работает как membership для
+aggregate triggers/dependencies.
 
-При публикации `zabbixconfig2api` создает или обновляет managed Zabbix Services.
-Если несколько source-карточек попали в один target, например несколько
-`VPN_HUB` в `ВПН филиалов`, applier хранит membership по target-объекту и
-добавляет source-card identity в ключ дедупликации. Поэтому повторная source
-карточка не должна затирать предыдущую.
+При публикации сервисного слоя `zabbixconfig2api` создает или обновляет managed
+Zabbix Services. Если несколько source-карточек попали в один target, например
+несколько `VPN_HUB` в `ВПН филиалов`, applier хранит membership по
+target-объекту и добавляет source-card identity в ключ дедупликации. Поэтому
+повторная source карточка не должна затирать предыдущую.
 
 Для source-карточки с `zabbix_main_hostid` создается отдельный source leaf service.
 У leaf service выставляются `problem_tags` по
 `cmdb2monitoring:source_hostid=<zabbix_main_hostid>`, а на Zabbix host добавляется
 такой же managed tag с сохранением уже существующих host tags. После этого
 Zabbix Services может сопоставить реальные проблемы хоста с leaf service и
-поднять статус вверх по дереву service/suppression.
+поднять статус вверх по дереву service.
+
+При публикации suppression по умолчанию действует
+`Apply:CreateSuppressionServices=false`: `zabbixconfig2api` не создает Zabbix
+Services, source leaf services, problem tags и host tags. Он только обновляет
+persisted membership и связи в `ZabbixApplyState:FilePath`. Затем блок
+`Зависимости триггеров` строит technical aggregate triggers, calculated items и
+dependencies source-host triggers. Флаг `Apply:CreateSuppressionServices=true`
+оставлен как совместимость для лабораторного перехода, но штатная модель
+suppression не должна создавать параллельное дерево в `Monitoring -> Services`.
 
 Если `zabbix_main_hostid` пустой, карточка считается неготовой к Zabbix membership:
 dry-run покажет отсутствующую привязку, а publish не создаст source leaf и
 удалит прежнее активное membership этой source-карточки, если оно уже было
 записано. Карточка остается в статусе ожидания `zabbix_main_hostid` в
 membership-диагностике, чтобы оператор видел, что правило совпало, но Zabbix
-host еще не готов для source leaf/problem tags.
+host еще не готов. Для service это означает отсутствие source leaf/problem
+tags; для suppression - отсутствие участия этой source-карточки в aggregate
+triggers и trigger dependencies.
+
+Membership ведется как текущее состояние source-карточки, а не как накопительный
+список всех прошлых попаданий в правила. Устойчивая identity:
+`layer + source class + source card id`; `dimension.key`, `dimension.value` и
+`sourceKeyValue` определяют только текущий target. Если карточка переехала из
+`City08` в `City12`, следующая matching-команда удалит ее из старых target того
+же layer и добавит в новый. Если карточка перестала соответствовать всем
+правилам layer, `cmdbconfigbuilder` публикует `remove_source_membership`, а
+`zabbixconfig2api` удаляет эту source-карточку из всех membership target этого
+layer. Сервисный слой и suppression слой чистятся независимо.
 
 Webhook может не содержать `zabbix_main_hostid`, даже если значение уже есть в
 карточке. Перед сопоставлением правил `cmdbconfigbuilder` догружает из CMDBuild
@@ -517,12 +540,12 @@ fingerprint, поэтому dedup не должен скрывать штатн�
 Эта логика строит service impact model. Она не закрывает и не скрывает зависимые
 problem events сама по себе, и отдельный разовый контур подавления активных
 событий из cmdb2monitoring не используется. Для production-подавления модель
-suppression должна быть развернута в Zabbix как service topology и trigger
+suppression должна быть развернута в Zabbix как aggregate triggers и trigger
 dependencies, чтобы подавление работало штатными механизмами Zabbix после
 появления или изменения событий.
 
-В `Каскадное подавление -> Применить в Zabbix` после публикации suppression
-модели используется блок `Зависимости триггеров`:
+В `Каскадное подавление -> Применить в Zabbix` после обновления suppression
+membership используется блок `Зависимости триггеров`:
 
 1. `Dry-run dependencies` берет сохраненное source membership и связи
    suppression-объектов, затем показывает, какие aggregate triggers и trigger
@@ -537,28 +560,75 @@ dependencies, чтобы подавление работало штатными 
 4. Для каждого suppression-объекта создается единый managed aggregate trigger
    на техническом host `cmdb2monitoring-suppression-aggregates` и managed
    calculated item. Сервис публикует формулу, а текущее состояние рассчитывает
-   Zabbix по выбранным triggers source-host. По умолчанию выбираются triggers с
-   тегами `scope=availability` или `component=health`; в формулу попадает их
-   раскрытое Zabbix expression. Поэтому ICMP, HTTP, agent-проверки и другие
-   проверки используют то же условие, по которому source-host дает Problem.
+   Zabbix по triggers source-host, которые прошли selector состояния группы.
+   Это отдельный selector, не равный списку triggers, на которые будут
+   поставлены dependencies. По умолчанию в состояние группы попадают enabled
+   triggers с тегом `scope=availability` и priority `3+`; тег
+   `component=health` не обязателен. В формулу попадает раскрытое Zabbix
+   expression. Поэтому корневые ICMP, HTTP, agent-проверки и другие проверки
+   доступности используют то же условие, по которому source-host дает Problem,
+   а низкоприоритетные вторичные симптомы не ломают calculated item.
 5. `aggregation_type` управляет выражением trigger над healthy-count calculated
    item: `all` срабатывает, если здоровы не все source-host, `any` - только если
    нет ни одного здорового source-host, `threshold` - если здоровых меньше
-   заданного процента, `n_of_m` - если здоровых меньше `n`.
-6. Triggers source-хостов дочернего объекта и aggregate trigger самого
-   дочернего объекта получают dependencies на aggregate trigger родительского
-   объекта. Прямые dependencies на отдельные triggers source-хостов причины не
-   создаются.
+   заданного процента, `n_of_m` - если здоровых меньше `n`. В расчет порога
+   входят только source-hosts, по которым selector состояния группы выбрал хотя
+   бы один поддержанный trigger и этот trigger попал в calculated item. Карточки
+   с `zabbix_main_hostid`, но без выбранного trigger, показываются в diagnostics
+   как unknown/skipped и не считаются отказавшими детьми. Например, если в
+   группе `Рабочие места / City31` 12 CMDBuild-карточек, но в формулу вошли
+   только 3 host trigger, режим `all` требует здоровья этих 3 host trigger.
+6. Calculated item хранит только собственный healthy-count объекта. Aggregate
+   trigger группы срабатывает, если отказали собственные source-hosts по
+   `aggregation_type` или если upstream-группа в пределах глубины `N` уже в
+   Problem. Глубина задается только в конфигурации `zabbixconfig2api`:
+   `ZabbixTriggerDependencies:TransitiveGroupDependencyDepth`; по умолчанию `2`,
+   допустимо `1..3`. UI показывает эффективное значение из статуса сервиса и не
+   отправляет локальный override, поэтому ручной dry-run/apply и автоматический
+   reconcile используют одно значение. В деталях dependencies UI показывает
+   причину состояния: `own`, `upstream`, `own+upstream` или `ok`, а также список
+   upstream-групп.
+   В этом же блоке UI показывает read-only лимиты Zabbix API:
+   `Zabbix:RequestTimeoutMs` и
+   `ZabbixTriggerDependencies:TriggerGetBatchSize`. Timeout ограничивает один
+   JSON-RPC запрос, batch size задает размер пачки hostid/triggerid для
+   `trigger.get`; при timeout уменьшайте batch или увеличивайте timeout в
+   конфигурации `zabbixconfig2api`. Лимиты
+   `ZabbixTriggerDependencies:MaxSourceHostsPerAggregate` и
+   `ZabbixTriggerDependencies:MaxAggregateFormulaLength` защищают Zabbix от
+   слишком больших calculated formulas и aggregate trigger expressions:
+   предупреждение появляется с 80% лимита, превышение блокирует публикацию.
+   В таком случае сузьте регулярное выражение/условия выборки, разбейте шаблон
+   по dimension или уменьшите транзитивную глубину `N`.
+7. Triggers source-хостов дочернего объекта получают dependencies на aggregate
+   trigger ближайшего родительского объекта. Aggregate triggers групп не
+   получают Zabbix dependencies на upstream-группы: иначе Zabbix заблокирует
+   переход промежуточной группы в Problem, и нижние leaf-события не будут
+   подавлены ближайшей группой. Связь group-to-group передается только через
+   выражение aggregate trigger в пределах глубины `N`.
+   Source/leaf triggers зависят только от ближайшей группы, а не от полной
+   матрицы верхних причин. Прямые dependencies на отдельные triggers
+   source-хостов причины не создаются. Покрытие leaf/source triggers настраивает
+   отдельный dependency selector; по умолчанию он берет все enabled triggers
+   (`min priority 0`, без обязательных тегов), чтобы suppression-группа
+   подавляла не только ICMP, но и любые реальные симптомы downstream-хоста.
    В Zabbix это не создает отдельную запись `Show suppressed problems`: пока
    родительский trigger находится в Problem, dependent trigger не переходит в
    Problem и будет переоценен только после восстановления родителя и прихода
    новой метрики.
-7. При публикации сохраняются ручные Zabbix dependencies; удаляются только
+8. При публикации сохраняются ручные Zabbix dependencies; удаляются только
    устаревшие зависимости, которые ранее были записаны этим сервисом как
    managed.
-8. Если у source-карточки нет `zabbix_main_hostid`, нет membership или нет активных
+9. Если у source-карточки нет `zabbix_main_hostid`, нет membership или нет активных
    triggers, dry-run покажет предупреждение и по этому участку зависимость не
    будет создана.
+10. Если после публикации Zabbix возвращает unsupported calculated item, блок
+   dependencies показывает счетчик `Unsupported aggregate items` и список
+   проблемных aggregate items с target-именем, item key/id и текстом ошибки
+   Zabbix. Чаще всего причина в том, что selector состояния группы захватил
+   trigger, expression которого нельзя использовать внутри calculated item.
+   Исправьте selector состояния группы, а dependency selector оставьте широким,
+   если leaf-проблемы должны подавляться полностью.
 
 После применения suppression membership из Kafka сервис автоматически запускает
 тот же пересчет aggregate triggers и dependencies с небольшой задержкой

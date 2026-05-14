@@ -515,6 +515,11 @@ static IReadOnlyList<string> PublishTopicsForCommand(
 
 static string CommandKafkaKey(AggregationCommand command)
 {
+    if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveSourceMembership, StringComparison.OrdinalIgnoreCase))
+    {
+        return $"{command.Layer}:{command.Source.ClassCode}:{command.Source.CardId}";
+    }
+
     return command.Target.CardId.Length > 0
         ? command.Target.CardId
         : command.Target.IdempotencyKey;
@@ -1162,6 +1167,11 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
     private static string TargetObjectKey(AggregationCommand command)
     {
+        if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveSourceMembership, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{command.Layer}:{command.Source.ClassCode}:{command.Source.CardId}";
+        }
+
         if (!string.IsNullOrWhiteSpace(command.Target.CardId))
         {
             return command.Target.CardId;
@@ -1172,6 +1182,11 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
     private static string TargetObjectName(AggregationCommand command)
     {
+        if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveSourceMembership, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Очистить membership {command.Source.ClassCode}/{command.Source.CardId} ({command.Layer})";
+        }
+
         if (!string.IsNullOrWhiteSpace(command.Target.CardDescription))
         {
             return command.Target.CardDescription;
@@ -1194,6 +1209,11 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
     private static string ActionLabel(AggregationCommand command)
     {
+        if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveSourceMembership, StringComparison.OrdinalIgnoreCase))
+        {
+            return "удалить source membership";
+        }
+
         if (string.Equals(command.CommandType, AggregationCommandTypes.RemoveMembership, StringComparison.OrdinalIgnoreCase))
         {
             return "удалить связь";
@@ -1604,7 +1624,9 @@ public sealed class RuleEngineWorker(
         CancellationToken cancellationToken)
     {
         var topics = PublishTopicsForCommand(options, plan.Command, targets);
-        var key = plan.Command.Target.CardId.Length > 0
+        var key = string.Equals(plan.Command.CommandType, AggregationCommandTypes.RemoveSourceMembership, StringComparison.OrdinalIgnoreCase)
+            ? $"{plan.Command.Layer}:{plan.Command.Source.ClassCode}:{plan.Command.Source.CardId}"
+            : plan.Command.Target.CardId.Length > 0
             ? plan.Command.Target.CardId
             : plan.Command.Target.IdempotencyKey;
         foreach (var topic in topics)

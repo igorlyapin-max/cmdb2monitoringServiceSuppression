@@ -148,6 +148,13 @@ If a class already exists under a different superclass than the generated model
 expects, apply fails that class explicitly instead of silently treating it as
 ready; the existing CMDBuild class must be manually moved or recreated in the
 correct branch.
+The universal schema does not derive domains from current customer source
+classes in conversion rules or templates. Domains named like
+`C2M_ServiceNetworkAccessZonePopulatedFromVPNHUB` are installation-specific
+source-link extensions, not part of the base model. Runtime membership is
+carried by rule-generated commands; if an installation needs CMDBuild audit
+relations from managed objects back to customer source cards, those source-link
+domains must be added explicitly outside the universal schema workflow.
 
 ## Service and suppression aggregation rules
 
@@ -216,11 +223,17 @@ links:
   over the calculated healthy-host count. The aggregate trigger also includes
   upstream aggregate Problem expressions up to
   `ZabbixTriggerDependencies:TransitiveGroupDependencyDepth` (`1..3`, default
-  `2`). This is a `zabbixconfig2api` setting; the Monitoring UI only displays
-  the effective value from service status and does not send per-run overrides.
+  `2`). This is a `zabbixconfig2api` setting managed from
+  `Администрирование -> Микросервисы` in the Monitoring UI: the panel writes the
+  allowlisted fields to `src/zabbixconfig2api/appsettings.json` and then calls
+  the normal `zabbixconfig2api` configuration reload endpoint with the shared
+  Bearer token. If the administrator changes `N` in the UI but has not applied
+  the settings yet, manual dependency dry-run/apply sends that value as a
+  one-run override; automatic reconcile continues to use the saved
+  microservice setting until the UI settings are applied.
   `ZabbixTriggerDependencies:TriggerGetBatchSize` controls Zabbix `trigger.get`
   batch size for dry-run/apply, and `Zabbix:RequestTimeoutMs` controls the
-  timeout of one JSON-RPC request; both are shown read-only in the UI.
+  timeout of one JSON-RPC request; both are editable in the same UI panel.
   `MaxSourceHostsPerAggregate` and `MaxAggregateFormulaLength` guard oversized
   calculated formulas and aggregate trigger expressions before publication. This
   avoids a full dependency matrix from every leaf to every upper cause. The UI
@@ -232,11 +245,93 @@ links:
   `integration`, and `infrastructure`; the field is used for grouping and
   reporting, while state calculation remains controlled by `aggregation_type`,
   `threshold`, and `n`.
+- Manual service objects that are not produced by source aggregation are
+  managed in `Сервисный слой -> Объекты сервиса`. The page creates concrete
+  CMDBuild cards for services, SLA policies, SLA calendars, and regular SLA
+  downtime windows. It also creates direct relations between those manual
+  objects: service-to-service dependency, service-to-aggregate containment,
+  service-to-aggregate dependency, service-to-SLA policy,
+  SLA policy-to-calendar, and SLA policy-to-downtime. Use this page for direct
+  manual links such as `Сервис рабочих мест -> Ноутбуки` (`Содержит`) and
+  `Сервис рабочих мест -> Маршрутизаторы филиалов` (`Зависит от`). To avoid
+  linking one service to every city aggregate manually, choose `Сервис содержит
+  агрегаты шаблона` or `Сервис зависит от агрегатов шаблона` and select the
+  aggregate template once; the UI expands it to all current generated cards and
+  posts the CMDBuild relations. If the template has no generated aggregate
+  cards yet, the UI still saves the service-to-template link as a pending
+  intent in the service template document and shows it in the existing relation
+  list and relation graph. Rerun this action after the template produces new
+  dimensions to materialize the pending link into concrete CMDBuild relations.
+  If existing aggregate cards were created by an older template id that is no
+  longer present in the template file, the selector also exposes
+  `Шаблон из текущих правил` so those already-created aggregates can still be
+  linked without recreating them. Template
+  links and rule links remain in the standard
+  `Сервисный слой -> Управление связями` block. The service-object relation
+  editor filters generated template aggregate cards by default with
+  `Фильтровать правила и классы из шаблонов`; clear it to select generated
+  aggregates such as `Рабочие места / City14`. Option labels include the
+  generating rule/template name to make those aggregates searchable. These
+  objects are operational
+  CMDBuild cards, not conversion rule configuration; the UI refreshes them from
+  CMDBuild when the menu is opened and stores the refreshed list in the local
+  CMDBuild cache. Direct `Содержит` links from `ServicePlatformService` to
+  service aggregates use `aggregates_to` domains in reverse CMDBuild
+  orientation: aggregate -> service. The schema creates these domains for all
+  concrete service managed aggregate classes, for example
+  `ServiceFleetAggregatesToPlatformService`,
+  `ServiceNetworkAccessZoneAggregatesToPlatformService`, and
+  `ServiceComputeClusterAggregatesToPlatformService`.
+- `ServiceSlaPolicy` is the CMDBuild-owned SLA object for the service layer.
+  Service objects link to it through `has_sla_policy`; the policy stores
+  `sla_target`, `reporting_period`, optional legacy/external `calendar`,
+  optional `timezone`, and optional `zabbix_sla_name`. Use reusable policies such as
+  `24x7 monthly 99.9` or `business-hours monthly 99.5` instead of hardcoding
+  SLA values in conversion rules. Source cards may help populate a policy link,
+  but the authoritative SLA configuration is the CMDBuild policy object.
+- `ServiceSlaCalendar` is the reusable CMDBuild object for SLA calendars.
+  SLA policies link to it through `has_sla_calendar`. Use `calendar_code` as
+  the stable key. For a CMDBuild-managed calendar, fill the seven weekday fields
+  (`monday_hours` ... `sunday_hours`) in `HH:mm-HH:mm` format, for example
+  `09:00-18:00`; leave a day empty when it is outside SLA time. Several
+  intervals may be separated with semicolon:
+  `09:00-13:00;14:00-18:00`. Use `zabbix_calendar_name` or
+  `external_calendar_id` when the publisher must bind to an existing
+  Zabbix/customer calendar. If a policy has no `has_sla_calendar` relation, the
+  calendar remains manual/external and is not managed from CMDBuild. The text
+  `ServiceSlaPolicy.calendar` field is kept only as a compatibility fallback.
+- `ServiceSlaDowntime` stores regular SLA excluded downtime windows in CMDBuild.
+  SLA policies link to these windows through `has_regular_downtime`. One-time
+  operational downtimes can remain manual in Zabbix: the SLA publisher reads
+  the current Zabbix SLA, replaces only excluded downtime entries whose names
+  start with `ZabbixSla:ManagedExcludedDowntimePrefix`, and preserves the rest.
+  `ZabbixSla:DowntimePublicationHorizonMonths` controls how many months ahead
+  regular CMDBuild windows are expanded. `ZabbixSla:DefaultPolicyKey` is used
+  when a service has no explicit `has_sla_policy` relation. These `ZabbixSla`
+  settings are managed from `Administration -> SLA` in the Monitoring UI through
+  the same config-file write plus Bearer-protected reload flow.
+- SLA publication is launched from `Сервисный слой -> Применить в Zabbix`,
+  directly after `Опубликовать граф сервиса в Zabbix`; `Administration -> SLA` keeps
+  settings only. Dry-run shows which CMDBuild services will be tagged with
+  `cmdb2monitoring:sla_policy`, which SLA objects will be created/updated, and
+  how many managed downtime windows will be sent. Publish the service topology
+  first through `Сервисный слой -> Применить в Zabbix -> Опубликовать граф сервиса в Zabbix`; SLA
+  publication then updates SLA tags only on existing managed Zabbix Services and
+  creates or updates Zabbix SLA objects selected by those tags. The SLA
+  publisher does not create standalone Zabbix Service nodes. If a service is
+  missing from the Zabbix tree, or exists without parents/children, dry-run
+  reports a blocking topology problem and apply is refused until the service
+  model is published/reconciled.
 - `ServicePlatformService.sla_target` is an optional decimal availability
   target for SLA reporting. Values are percentages from 0 to 100, for example
   `99`, `99.5`, `99.9`, `99.95`, or `99.99`; use `99.9` for 99.9%, not
   `0.999`. As with `threshold`, both `99.9` and `99,9` must be accepted from
   CMDBuild input and normalized to `99.9` before sending data toward Zabbix.
+- Managed source leaf service names are built from source-card display fields
+  such as `zabbix_service_name`, `monitoring_name`, `Code`, `name`,
+  `Description`, or `hostname`, with CMDBuild card id only as fallback. They are
+  not built from `source_key_value`; names like `NTbook / 177140` are stale
+  results from older publications and are corrected by the next service apply.
 - There are no decimal fields in the suppression schema at this stage.
   Suppression relation `priority` is an integer.
 - Lookup-driven checks are stored in the CMDBuild attribute `validationRules`
@@ -346,6 +441,12 @@ Suppression schema is intentionally uniform:
   `n` when these attributes exist; `threshold` is used by
   `aggregation_type=threshold`, and `n` is the N parameter for `n_of_m` while M
   is the current active child count.
+- `Создать на основе...` in static rules creates an editable draft from an
+  existing service or suppression rule. It copies the source class, selection
+  filters, priority, and allowed target attributes, attempts to map the target
+  class between service/suppression layers, and records `derived_from` for
+  audit. It does not save automatically and does not copy managed relations;
+  the operator must press `Применить` and copy needed relations separately.
 - Population template editing exposes the same user-owned target attributes for
   generated aggregate cards: service and suppression templates can set
   `is_critical`, `aggregation_type`, `threshold`, and `n` when these attributes
@@ -364,6 +465,11 @@ Suppression schema is intentionally uniform:
 - Auto-population templates are a separate configuration layer above ordinary
   binding rules. The runtime services still execute ordinary rules; the UI
   materializes templates into rules marked with `generated_from_template`.
+- `Создать на основе...` in template editing is copy-on-create, not live
+  inheritance. The UI shows a preview of copied, changed, dropped, and manual
+  fields, creates a draft with a new template ID and `derived_from`, and leaves
+  saving explicit. Template managed relations are intentionally not copied with
+  the template; use the relation-management copy action for links.
 - A template selects candidate customer source classes with a regex matched
   against class code, display name, and inheritance path. This is intended for
   repeated service/suppression structures where hundreds of source classes have
@@ -503,6 +609,17 @@ Suppression schema is intentionally uniform:
   relations. Changing a template regex, target, variables, or filters is an
   in-place version change followed by reconcile: only missing, changed, or
   obsolete managed artifacts are touched.
+- The default delete mode is configured in `Администрирование -> Основные`.
+  The default is `Удалить созданные правила и объекты`: generated rules are
+  removed from the configuration and target cards are added to pending
+  `templateDeletionPlans`. The template apply screen always shows the
+  `удаление объектов CMDBuild` block; its `Применить планы удаления в CMDBuild`
+  button becomes active when pending plans exist. Saving the conversion folder
+  never deletes cards by itself. Use `Отвязать правила и сохранить объекты`
+  only when the target cards must remain and ownership should become static.
+  The detached-rule cleanup block offers removal only for rules detached by
+  that keep-objects mode; it must not offer ordinary manual static rules or
+  active generated template rules.
 - Relations created between templates, and relations between a template and a
   static CMDBuild class/card, must use the same ownership contract as generated
   rules: stable `managed_key` without template version, payload
@@ -534,6 +651,29 @@ Suppression schema is intentionally uniform:
   are still paired by source/target template variable matching. Template-to-rule
   relations use the same filter block only on the template/source side because
   the target is one concrete rule.
+- `Создать на основе...` in relation management copies a link as a draft:
+  source/target endpoints are mapped to the current layer when a corresponding
+  template or rule exists, and role, description, regex matching, and generated
+  rule filters are copied. Direction is still explicit; the operator must check
+  the preview and press `Добавить связь`.
+- For a branch workplace service, model relation roles as follows:
+  `Сервис рабочих мест -> Ноутбуки` uses `Содержит`;
+  `Сервис рабочих мест -> Маршрутизаторы филиалов`,
+  `Маршрутизаторы филиалов -> ВПН хаб`, and
+  `ВПН хаб -> Маршрутизаторы ядра` use `Зависит от`. In this layout the
+  workplace service contains notebooks and depends on the network chain
+  `Маршрутизаторы филиалов -> ВПН хаб -> Маршрутизаторы ядра`. If more detailed
+  diagnostics are needed, model `Ноутбуки -> Маршрутизаторы филиалов` as
+  `Зависит от`; then the service is affected through the notebook/workplace
+  layer instead of appearing to fail directly because of a router.
+  `Рабочее место филиал / City14 -> Рабочие места / City14` uses `Содержит`
+  because it is service composition; `Рабочие места / City14 ->
+  Маршрутизаторы филиала / City14 -> ВПН филиалов -> Маршрутизаторы ядра` uses
+  `Зависит от` because each right-hand object is an availability cause for the
+  left-hand object; links to AD, DNS, DHCP, VDI, applications, carrier links,
+  or provider services use `Использует` when they are external functional
+  supports rather than contained parts. Attach SLA through `has_sla_policy` on
+  the business/service aggregate, not on every endpoint.
 
 ## Administrator instruction: regex examples
 
@@ -605,17 +745,24 @@ successful reload the UI refreshes the applier health data so the displayed
 running configuration version is updated. The `cmdbconfigbuilder` health card
 also shows the conversion rule version loaded by the microservice and compares
 it with the current service/suppression rule versions in the UI. The top-level
-`События` menu lists
-only managed Kafka topics returned by `cmdbconfigbuilder` and opens the last
-five events of the selected topic by default. Kafka topics are identified by
-`KafkaTopics:ManagedIdentifier`, `KafkaTopics:ManagedPrefix`, and the explicit
-topic settings; foreign customer topics are not shown.
+`События` menu lists only managed Kafka topics returned by `cmdbconfigbuilder`
+and opens the last five events of the selected topic by default. Kafka topics
+are identified by `KafkaTopics:ManagedIdentifier`,
+`KafkaTopics:ManagedPrefix`, and the explicit topic settings; foreign customer
+topics are not shown.
 
-The `Администрирование -> Основные` menu shows the Zabbix readiness attribute
-name: `zabbix_main_hostid`. This is the CMDBuild card attribute that signals that the
-source object already has a corresponding Zabbix host and can enter the service
-or suppression model. The same menu shows the server folder used to store
-conversion rules, templates, and managed relations.
+For interactive schema/catalog work, `monitoring-ui-api` forwards its configured
+CMDBuild BaseUrl/auth to `cmdbaggregation2cmdbuild`. The schema page also has
+`CMDBuild доступ`; credentials entered there are stored only in the browser
+session and override CMDBuild auth for manual UI requests. They do not affect
+Kafka workers or automatic processing.
+
+The `Администрирование -> Основные` menu shows local UI settings, the Zabbix
+readiness attribute name `zabbix_main_hostid`, and the server folder used to
+store conversion rules, templates, and managed relations. Local UI settings are
+stored in browser storage only after pressing `Сохранить настройки`.
+Microservice-owned settings such as `ZabbixTriggerDependencies:*` are managed
+separately in `Администрирование -> Микросервисы`.
 
 The top-level `Синхронизация с источниками данных` menu is split by source:
 
@@ -629,25 +776,53 @@ The top-level `Синхронизация с источниками данных
   shows connection version, endpoint, and error details.
 - `Сервисный слой -> Применить в Zabbix` and
   `Каскадное подавление -> Применить в Zabbix` run the same current-card
-  evaluation only for one layer and publish only to that layer's Zabbix topic.
-  Each screen has its own dry-run action, publication action, Zabbix status,
+  evaluation only for one layer. `Проверить граф ...` builds the full desired
+  graph without writes. Publication reuses the same graph check and blocks
+  before any Zabbix write or Kafka publish when it finds orphan visible service
+  nodes, cycles, conflicting managed keys, or source-read/auth errors. With
+  `backend.zabbixCommandApplyUrl` configured in `monitoring-ui-api`,
+  publication applies the checked graph directly via
+  `zabbixconfig2api /commands/apply`; otherwise it publishes only to that
+  layer's Zabbix topic. Each screen has its own graph check, publication action, Zabbix status,
   counters, errors, reconcile summary, and live progress for long operations:
   completed source classes, current class card progress, built/published
   commands, duplicate skips, remaining work, and the planned Zabbix objects and
   relations that the command set would ensure. The planned object list is
   paginated in the UI; per-object action, attributes, sources, and relations are
-  hidden in expandable details. These actions do not publish to the CMDBuild
+  hidden in expandable details. Long operations can be cancelled by operation
+  id from the same screen. These actions do not publish to the CMDBuild
   aggregation topic.
+- Service-layer publication also includes manual `ServicePlatformService`
+  objects and their CMDBuild relations to service aggregates or other services.
+  `ServiceSlaPolicy`, `ServiceSlaCalendar`, and `ServiceSlaDowntime` are used by
+  SLA publication and are not created as Zabbix service-tree nodes.
 - With `zabbixconfig2api` in auto apply mode, service-layer topics are applied
   to Zabbix as managed Services. The expected UI location in Zabbix is
   `Monitoring -> Services` / service tree. Managed services are tagged with
   `cmdb2monitoring:managed=true`, `cmdb2monitoring:layer`, `cmdb2monitoring:class`,
   and `cmdb2monitoring:key`; existing CMDBuild cards also get
-  `cmdb2monitoring:card_id`. If a relation points to a service that has not been
-  created yet, the object is applied with a `partial` warning and the publish
-  action can be rerun after the missing object appears. Zabbix-only
-  current-card publishing keeps source-card identity in duplicate keys so several
-  source cards that map to the same target service do not hide membership.
+  `cmdb2monitoring:card_id`. The service-tree role is stored separately from
+  the display name in `cmdb2monitoring:role`, and tree visibility is stored in
+  `cmdb2monitoring:visibility`. Business service cards are root services;
+  generated aggregates are visible children; source leaf services are technical
+  internal binding nodes. The publisher must not infer topology from Russian
+  or customer-specific words in `name`, and must not add suffixes such as
+  `(Сервис)` or counters to user names. Current-card publication is ordered
+  top-down: `cmdbconfigbuilder` derives `parent_managed_keys` from the full
+  desired graph and direct apply uses `zabbixconfig2api /commands/apply-graph`.
+  The UI requires a successful graph check in the current session before
+  enabling publication, and the backend repeats blocking graph validation before
+  any Zabbix commands are sent.
+  The applier updates membership state, upserts service nodes with parents,
+  upserts source leaf nodes with parents, reconciles final children/relations,
+  and verifies the actual Zabbix services after publication. Routine streaming
+  webhook commands that lack parent metadata do
+  not clear already published parents, so a later source-card update cannot
+  detach an aggregate back to the Zabbix root. When a service-object-to-template
+  link is saved, streaming service commands generated by that template also
+  carry the saved parent key. Zabbix-only current-card
+  publishing keeps source-card identity in duplicate keys so several source
+  cards that map to the same target service do not hide membership.
 - Source membership is persisted by `zabbixconfig2api`
   (`ZabbixApplyState:FilePath`). In the service layer, a source card with
   `zabbix_main_hostid` produces a source leaf service under the managed target
@@ -655,6 +830,13 @@ The top-level `Синхронизация с источниками данных
   `cmdb2monitoring:source_hostid=<zabbix_main_hostid>`, and the applier adds the
   same tag to the Zabbix host while preserving existing host tags. This is how
   Zabbix Services can associate real host problems with managed service objects.
+  Technical leaf services such as `NTbook / ctest2-NTbook-003` are expected only
+  under their aggregate, for example `Рабочие места (Сервис) / City31`; if they
+  appear in the root, refresh the stale report in `Сервисный слой -> Применить в
+  Zabbix` and rerun service publication after fixing the reported missing
+  children. The same report also shows visible non-root managed services without
+  parents; those nodes must be connected to a business service or explicitly
+  marked internal before the topology is considered clean.
   In suppression, `Apply:CreateSuppressionServices=false` by default: commands
   update only suppression membership and relations in state; they do not create
   Zabbix Services, source leaf services, problem tags, or host tags. Aggregate
@@ -682,7 +864,7 @@ The top-level `Синхронизация с источниками данных
   The suppression model is reflected in Zabbix through technical aggregate
   triggers and trigger dependencies, not through a parallel Zabbix Services
   tree. In `Каскадное подавление -> Применить в Zabbix`, first run
-  `Обновить membership подавления`; then the `Зависимости триггеров` block
+  `Опубликовать граф подавления в Zabbix`; then the `Зависимости триггеров` block
   ensures managed aggregate triggers and calculated items for suppression
   objects and builds dependencies from persisted membership:
   triggers of child/dependent source hosts depend on the aggregate trigger of
@@ -724,13 +906,16 @@ The top-level `Синхронизация с источниками данных
   but CMDBuild needs one managed webhook set for that class. Rule IDs shown in
   this view are diagnostic labels only.
 - `Конфигурации конвертации` saves and loads service/suppression rule documents,
-  rule templates, and managed relations through `monitoring-ui-api`, which is the
-  only writer for the configured server folder. The current format writes
+  rule templates, managed relations, and pending service-object-to-template
+  links through `monitoring-ui-api`, which is the only writer for the configured
+  server folder. The current format writes
   separate JSON files for service rules, suppression rules, service templates,
   suppression templates, shared templates, and a manifest; relations created by
   `Создать/обновить правила по шаблонам и связям` are stored as
-  `managed_relations` inside the rule/template documents. This folder can later
-  be placed under Git control. Saves use manifest `version`/`etag` conflict
+  `managed_relations` inside the rule/template documents, while pending
+  service links to aggregate templates are stored in `service-templates.json` as
+  `serviceObjectTemplateRelations`. This folder can later be placed under Git
+  control. Saves use manifest `version`/`etag` conflict
   checks and atomic temp-file rename writes, with the manifest written last.
   For operators, `Сохранить в папку` is the publication step for conversion
   configuration: applier services reread that shared folder on reload, and the
@@ -741,7 +926,10 @@ The top-level `Синхронизация с источниками данных
   templates. It loads the needed source cards, calculates `dimension.*`, shows
   generated-rule and managed-relation create/update/remove counts, target
   attributes, and blocking errors such as empty dimensions, missing
-  domains/targets, or duplicate generated rule IDs.
+  domains/targets, or duplicate generated rule IDs. A source class with
+  successfully loaded but empty cards is only a warning; a missing source
+  field/path is still blocking because the template is incompatible with that
+  source schema.
 - Each source separates `Провести синхронизацию` from `Загрузить локальный
   кэш`. Synchronization reads the real source and stores an IndexedDB browser
   cache; loading the cache restores the last stored snapshot without rereading a

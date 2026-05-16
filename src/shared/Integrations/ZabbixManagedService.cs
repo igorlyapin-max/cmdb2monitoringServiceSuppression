@@ -37,9 +37,15 @@ public sealed record ZabbixManagedServiceDefinition
 
     public int Weight { get; init; }
 
+    public string Role { get; init; } = ZabbixManagedServiceRoles.Aggregate;
+
+    public string Visibility { get; init; } = ZabbixManagedServiceVisibility.Child;
+
     public IReadOnlyList<ZabbixManagedServiceRelation> Relations { get; init; } = [];
 
     public IReadOnlyList<string> ChildManagedKeys { get; init; } = [];
+
+    public IReadOnlyList<string> ParentManagedKeys { get; init; } = [];
 
     public IReadOnlyList<ZabbixProblemTag> ProblemTags { get; init; } = [];
 
@@ -72,6 +78,84 @@ public sealed record ZabbixServiceInfo
     public IReadOnlyList<ZabbixServiceInfo> Children { get; init; } = [];
 
     public IReadOnlyList<ZabbixServiceInfo> Parents { get; init; } = [];
+}
+
+public sealed record ZabbixManagedServiceDeleteResult
+{
+    public string ManagedKey { get; init; } = "";
+
+    public string ServiceId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string Action { get; init; } = "";
+
+    public string Message { get; init; } = "";
+}
+
+public sealed record ZabbixSlaDefinition
+{
+    public string PolicyKey { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public decimal Slo { get; init; }
+
+    public int Period { get; init; } = ZabbixSlaPeriods.Monthly;
+
+    public string Timezone { get; init; } = "UTC";
+
+    public long EffectiveDate { get; init; }
+
+    public int Status { get; init; } = ZabbixSlaStatuses.Enabled;
+
+    public string Description { get; init; } = "";
+
+    public string ManagedExcludedDowntimePrefix { get; init; } = "CMDB2M REG:";
+
+    public IReadOnlyList<ZabbixSlaServiceTag> ServiceTags { get; init; } = [];
+
+    public IReadOnlyList<ZabbixSlaSchedulePeriod> Schedule { get; init; } = [];
+
+    public IReadOnlyList<ZabbixSlaExcludedDowntime> ExcludedDowntimes { get; init; } = [];
+}
+
+public sealed record ZabbixSlaServiceTag(string Tag, string Value, int Operator = ZabbixSlaServiceTagOperators.Equal);
+
+public sealed record ZabbixSlaSchedulePeriod(int PeriodFrom, int PeriodTo);
+
+public sealed record ZabbixSlaExcludedDowntime(string Name, long PeriodFrom, long PeriodTo);
+
+public sealed record ZabbixSlaInfo
+{
+    public string SlaId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public decimal Slo { get; init; }
+
+    public int Period { get; init; }
+
+    public string Timezone { get; init; } = "";
+
+    public int Status { get; init; }
+
+    public IReadOnlyList<ZabbixSlaServiceTag> ServiceTags { get; init; } = [];
+
+    public IReadOnlyList<ZabbixSlaSchedulePeriod> Schedule { get; init; } = [];
+
+    public IReadOnlyList<ZabbixSlaExcludedDowntime> ExcludedDowntimes { get; init; } = [];
+}
+
+public sealed record ZabbixSlaApplyResult
+{
+    public string SlaId { get; init; } = "";
+
+    public string Action { get; init; } = "";
+
+    public int ManagedExcludedDowntimes { get; init; }
+
+    public int PreservedManualExcludedDowntimes { get; init; }
 }
 
 public sealed record ZabbixHostInfo
@@ -219,6 +303,33 @@ public static class ZabbixProblemTagOperators
     public const int Contains = 2;
 }
 
+public static class ZabbixSlaPeriods
+{
+    public const int Daily = 0;
+
+    public const int Weekly = 1;
+
+    public const int Monthly = 2;
+
+    public const int Quarterly = 3;
+
+    public const int Annually = 4;
+}
+
+public static class ZabbixSlaStatuses
+{
+    public const int Enabled = 0;
+
+    public const int Disabled = 1;
+}
+
+public static class ZabbixSlaServiceTagOperators
+{
+    public const int Equal = 0;
+
+    public const int Like = 2;
+}
+
 public static class ZabbixManagedServiceTags
 {
     public const string Managed = "cmdb2monitoring:managed";
@@ -247,9 +358,39 @@ public static class ZabbixManagedServiceTags
 
     public const string SourceLeaf = "cmdb2monitoring:source_leaf";
 
+    public const string Role = "cmdb2monitoring:role";
+
+    public const string Visibility = "cmdb2monitoring:visibility";
+
     public const string Aggregate = "cmdb2monitoring:aggregate";
 
     public const string AggregateKind = "cmdb2monitoring:aggregate_kind";
+
+    public const string SlaPolicy = "cmdb2monitoring:sla_policy";
+
+    public const string SlaTarget = "cmdb2monitoring:sla_target";
+}
+
+public static class ZabbixManagedServiceRoles
+{
+    public const string RootService = "root_service";
+
+    public const string ServiceGroup = "service_group";
+
+    public const string Aggregate = "aggregate";
+
+    public const string SourceLeaf = "source_leaf";
+
+    public const string Internal = "internal";
+}
+
+public static class ZabbixManagedServiceVisibility
+{
+    public const string Root = "root";
+
+    public const string Child = "child";
+
+    public const string Internal = "internal";
 }
 
 public static class ZabbixManagedServiceMapper
@@ -269,7 +410,9 @@ public static class ZabbixManagedServiceMapper
         var description = FirstAttribute(command.Target.Attributes, "description", "Description")
             ?? command.Target.CardDescription
             ?? "";
-        var tags = BuildTags(command, layer, managedKey);
+        var role = ServiceRole(command, layer);
+        var visibility = ServiceVisibility(command.Target.Attributes, role);
+        var tags = BuildTags(command, layer, managedKey, role, visibility);
 
         return new ZabbixManagedServiceDefinition
         {
@@ -289,6 +432,8 @@ public static class ZabbixManagedServiceMapper
             Algorithm = ServiceAlgorithm(command.Target.Attributes),
             SortOrder = ClampInt(FirstAttribute(command.Target.Attributes, "sortorder", "sort_order"), 0, 0, 999),
             Weight = ClampInt(FirstAttribute(command.Target.Attributes, "weight"), 0, 0, 1_000_000),
+            Role = role,
+            Visibility = visibility,
             Relations = command.Target.Relations
                 .Select(relation => new ZabbixManagedServiceRelation
                 {
@@ -296,6 +441,10 @@ public static class ZabbixManagedServiceMapper
                     TargetClassCode = relation.TargetClassCode,
                     TargetLookup = relation.TargetLookup
                 })
+                .ToArray(),
+            ParentManagedKeys = command.Target.ParentManagedKeys
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.Ordinal)
                 .ToArray(),
             ChildManagedKeys = (childManagedKeys ?? [])
                 .Where(key => !string.IsNullOrWhiteSpace(key))
@@ -317,7 +466,9 @@ public static class ZabbixManagedServiceMapper
                 new KeyValuePair<string, string>(ZabbixManagedServiceTags.Layer, layer),
                 new KeyValuePair<string, string>(ZabbixManagedServiceTags.Class, command.Source.ClassCode),
                 new KeyValuePair<string, string>(ZabbixManagedServiceTags.Key, managedKey),
-                new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceLeaf, "true")
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.SourceLeaf, "true"),
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.Role, ZabbixManagedServiceRoles.SourceLeaf),
+                new KeyValuePair<string, string>(ZabbixManagedServiceTags.Visibility, ZabbixManagedServiceVisibility.Internal)
             })
             .GroupBy(item => item.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => Trim(group.Last().Value, 255), StringComparer.Ordinal);
@@ -342,6 +493,8 @@ public static class ZabbixManagedServiceMapper
             Name = Trim(name, 255),
             Description = Trim($"CMDBuild source object for Zabbix problem binding: {name}", 2048),
             Algorithm = ZabbixServiceAlgorithms.MostCriticalOfChildren,
+            Role = ZabbixManagedServiceRoles.SourceLeaf,
+            Visibility = ZabbixManagedServiceVisibility.Internal,
             Tags = tags,
             ProblemTags = ProblemTagsForSource(command.Source)
         };
@@ -401,6 +554,56 @@ public static class ZabbixManagedServiceMapper
             : $"{target.ClassCode}:{target.CardId}";
     }
 
+    public static string ServiceRole(AggregationCommand command, string layer)
+    {
+        var explicitRole = FirstAttribute(
+            command.Target.Attributes,
+            "cmdb2monitoring_role",
+            "zabbix_service_role",
+            "service_role");
+        if (!string.IsNullOrWhiteSpace(explicitRole))
+        {
+            return NormalizeRole(explicitRole);
+        }
+
+        var hasSource = !string.IsNullOrWhiteSpace(command.Source.ClassCode)
+            || !string.IsNullOrWhiteSpace(command.Source.CardId);
+        return ServiceRoleForTarget(layer, command.Target.ClassCode, hasSource);
+    }
+
+    public static string ServiceRoleForTarget(string layer, string classCode, bool hasSource)
+    {
+        if (string.Equals(layer, "service", StringComparison.OrdinalIgnoreCase)
+            && RemoveKnownManagedPrefix(classCode).Equals("ServicePlatformService", StringComparison.OrdinalIgnoreCase))
+        {
+            return ZabbixManagedServiceRoles.RootService;
+        }
+
+        return hasSource
+            ? ZabbixManagedServiceRoles.Aggregate
+            : ZabbixManagedServiceRoles.ServiceGroup;
+    }
+
+    public static string ServiceVisibility(IReadOnlyDictionary<string, object?> attributes, string role)
+    {
+        var explicitVisibility = FirstAttribute(
+            attributes,
+            "cmdb2monitoring_visibility",
+            "zabbix_service_visibility",
+            "service_visibility");
+        if (!string.IsNullOrWhiteSpace(explicitVisibility))
+        {
+            return NormalizeVisibility(explicitVisibility, role);
+        }
+
+        return role switch
+        {
+            ZabbixManagedServiceRoles.RootService => ZabbixManagedServiceVisibility.Root,
+            ZabbixManagedServiceRoles.SourceLeaf or ZabbixManagedServiceRoles.Internal => ZabbixManagedServiceVisibility.Internal,
+            _ => ZabbixManagedServiceVisibility.Child
+        };
+    }
+
     private static string ServiceDisplayName(AggregationCommand command, string managedKey)
     {
         return FirstAttribute(command.Target.Attributes, "zabbix_service_name", "zabbix_name", "monitoring_name")
@@ -433,14 +636,18 @@ public static class ZabbixManagedServiceMapper
     private static Dictionary<string, string> BuildTags(
         AggregationCommand command,
         string layer,
-        string managedKey)
+        string managedKey,
+        string role,
+        string visibility)
     {
         var tags = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [ZabbixManagedServiceTags.Managed] = "true",
             [ZabbixManagedServiceTags.Layer] = layer,
             [ZabbixManagedServiceTags.Class] = command.Target.ClassCode,
-            [ZabbixManagedServiceTags.Key] = managedKey
+            [ZabbixManagedServiceTags.Key] = managedKey,
+            [ZabbixManagedServiceTags.Role] = role,
+            [ZabbixManagedServiceTags.Visibility] = visibility
         };
 
         AddTag(tags, ZabbixManagedServiceTags.CardId, command.Target.CardId);
@@ -455,6 +662,8 @@ public static class ZabbixManagedServiceMapper
         AddTag(tags, "cmdb2monitoring:is_critical", FirstAttribute(command.Target.Attributes, "is_critical"));
         AddTag(tags, "cmdb2monitoring:threshold", FirstAttribute(command.Target.Attributes, "threshold"));
         AddTag(tags, "cmdb2monitoring:n", FirstAttribute(command.Target.Attributes, "n"));
+        AddTag(tags, ZabbixManagedServiceTags.SlaPolicy, FirstAttribute(command.Target.Attributes, "sla_policy_key", "sla_policy", "SlaPolicy"));
+        AddTag(tags, ZabbixManagedServiceTags.SlaTarget, FirstAttribute(command.Target.Attributes, "sla_target"));
         return tags;
     }
 
@@ -469,15 +678,49 @@ public static class ZabbixManagedServiceMapper
 
     private static string SourceLeafDisplayName(AggregationSourceObject source)
     {
-        var key = string.IsNullOrWhiteSpace(source.KeyValue) || source.KeyValue.Equals(source.CardId, StringComparison.OrdinalIgnoreCase)
-            ? source.CardId
-            : source.KeyValue;
+        var key = FirstSourceAttribute(
+                source.Attributes,
+                "zabbix_service_name",
+                "monitoring_name",
+                "Code",
+                "code",
+                "Name",
+                "name",
+                "Description",
+                "description",
+                "hostName",
+                "HostName",
+                "hostname",
+                "host_name")
+            ?? source.CardId;
         if (string.IsNullOrWhiteSpace(key))
         {
             key = "unknown";
         }
 
         return $"{source.ClassCode} / {key}";
+    }
+
+    private static string? FirstSourceAttribute(IReadOnlyDictionary<string, string> attributes, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (attributes.TryGetValue(name, out var exactValue) && !string.IsNullOrWhiteSpace(exactValue))
+            {
+                return exactValue;
+            }
+        }
+
+        foreach (var pair in attributes)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Value)
+                && names.Any(name => string.Equals(name, pair.Key, StringComparison.OrdinalIgnoreCase)))
+            {
+                return pair.Value;
+            }
+        }
+
+        return null;
     }
 
     private static int ServiceAlgorithm(IReadOnlyDictionary<string, object?> attributes)
@@ -551,6 +794,44 @@ public static class ZabbixManagedServiceMapper
         }
 
         return Math.Clamp(parsed, min, max);
+    }
+
+    private static string NormalizeRole(string value)
+    {
+        var normalized = value.Trim().ToLowerInvariant()
+            .Replace("-", "_", StringComparison.Ordinal)
+            .Replace(" ", "_", StringComparison.Ordinal);
+        return normalized switch
+        {
+            "root" or "business_service" or "root_service" => ZabbixManagedServiceRoles.RootService,
+            "group" or "visible_group" or "service_group" => ZabbixManagedServiceRoles.ServiceGroup,
+            "aggregate" or "aggregate_group" => ZabbixManagedServiceRoles.Aggregate,
+            "source_leaf" or "leaf" => ZabbixManagedServiceRoles.SourceLeaf,
+            "internal" or "technical" => ZabbixManagedServiceRoles.Internal,
+            _ => normalized
+        };
+    }
+
+    private static string NormalizeVisibility(string value, string role)
+    {
+        var normalized = value.Trim().ToLowerInvariant()
+            .Replace("-", "_", StringComparison.Ordinal)
+            .Replace(" ", "_", StringComparison.Ordinal);
+        return normalized switch
+        {
+            "root" => ZabbixManagedServiceVisibility.Root,
+            "internal" or "hidden" or "technical" => ZabbixManagedServiceVisibility.Internal,
+            "child" or "visible" => ZabbixManagedServiceVisibility.Child,
+            _ => ServiceVisibility(new Dictionary<string, object?>(StringComparer.Ordinal), role)
+        };
+    }
+
+    private static string RemoveKnownManagedPrefix(string code)
+    {
+        var normalized = code.Trim();
+        return normalized.StartsWith("C2M_", StringComparison.OrdinalIgnoreCase)
+            ? normalized["C2M_".Length..]
+            : normalized;
     }
 
     private static string Trim(string value, int maxLength)

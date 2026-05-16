@@ -85,6 +85,18 @@ public sealed record ConversionRule
 
     [JsonPropertyName("priority")]
     public int Priority { get; init; } = 100;
+
+    [JsonPropertyName("generated_from_template")]
+    public string GeneratedFromTemplate { get; init; } = "";
+
+    [JsonPropertyName("template_generation")]
+    public RuleTemplateGeneration TemplateGeneration { get; init; } = new();
+}
+
+public sealed record RuleTemplateGeneration
+{
+    [JsonPropertyName("template_id")]
+    public string TemplateId { get; init; } = "";
 }
 
 public sealed record SourceSelector

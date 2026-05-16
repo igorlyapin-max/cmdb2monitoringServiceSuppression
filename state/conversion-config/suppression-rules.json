@@ -782,7 +782,7 @@
       },
       "relations": [
         {
-          "domain_code": "C2M_SuppressionNetworkAccessZoneSuppressesSuppressionComputeCluster",
+          "domain_code": "C2M_SuppressionNetworkAccessZoneSuppressesSuppresse87c1be4",
           "target_class_code": "C2M_SuppressionComputeCluster",
           "target_lookup": "981926",
           "managed_relation_key": "suppression-rule-ipad-relation-rule-suppresses-iphone",
@@ -885,7 +885,7 @@
       },
       "relations": [
         {
-          "domain_code": "C2M_SuppressionComputeClusterSuppressesSuppressionNetworkAccessZone",
+          "domain_code": "C2M_SuppressionComputeClusterSuppressesSuppressiond6087971",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "980357",
           "managed_relation_key": "suppression-rule-irouter-relation-rule-suppresses-ipad",
@@ -16295,7 +16295,10 @@
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "card_id": "",
           "idempotency_key": "supp:City51",
-          "card_description": "Маршрутизаторы города City51"
+          "card_description": "Маршрутизаторы города City51",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-supp-routerg-city52",
@@ -16303,7 +16306,10 @@
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "card_id": "",
           "idempotency_key": "supp:City52",
-          "card_description": "Маршрутизаторы города City52"
+          "card_description": "Маршрутизаторы города City52",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         }
       ]
     },
@@ -16325,7 +16331,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City04",
-          "card_description": "Подавление для City04"
+          "card_description": "Подавление для City04",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city05",
@@ -16333,7 +16342,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City05",
-          "card_description": "Подавление для City05"
+          "card_description": "Подавление для City05",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city06",
@@ -16341,7 +16353,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City06",
-          "card_description": "Подавление для City06"
+          "card_description": "Подавление для City06",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city07",
@@ -16349,7 +16364,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City07",
-          "card_description": "Подавление для City07"
+          "card_description": "Подавление для City07",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city08",
@@ -16357,7 +16375,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City08",
-          "card_description": "Подавление для City08"
+          "card_description": "Подавление для City08",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city09",
@@ -16365,7 +16386,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City09",
-          "card_description": "Подавление для City09"
+          "card_description": "Подавление для City09",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city10",
@@ -16373,7 +16397,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City10",
-          "card_description": "Подавление для City10"
+          "card_description": "Подавление для City10",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city11",
@@ -16381,7 +16408,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City11",
-          "card_description": "Подавление для City11"
+          "card_description": "Подавление для City11",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city13",
@@ -16389,7 +16419,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City13",
-          "card_description": "Подавление для City13"
+          "card_description": "Подавление для City13",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city14",
@@ -16397,7 +16430,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City14",
-          "card_description": "Подавление для City14"
+          "card_description": "Подавление для City14",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city15",
@@ -16405,7 +16441,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City15",
-          "card_description": "Подавление для City15"
+          "card_description": "Подавление для City15",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city16",
@@ -16413,7 +16452,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City16",
-          "card_description": "Подавление для City16"
+          "card_description": "Подавление для City16",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city17",
@@ -16421,7 +16463,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City17",
-          "card_description": "Подавление для City17"
+          "card_description": "Подавление для City17",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city18",
@@ -16429,7 +16474,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City18",
-          "card_description": "Подавление для City18"
+          "card_description": "Подавление для City18",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city19",
@@ -16437,7 +16485,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City19",
-          "card_description": "Подавление для City19"
+          "card_description": "Подавление для City19",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city20",
@@ -16445,7 +16496,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City20",
-          "card_description": "Подавление для City20"
+          "card_description": "Подавление для City20",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city21",
@@ -16453,7 +16507,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City21",
-          "card_description": "Подавление для City21"
+          "card_description": "Подавление для City21",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city22",
@@ -16461,7 +16518,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City22",
-          "card_description": "Подавление для City22"
+          "card_description": "Подавление для City22",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city23",
@@ -16469,7 +16529,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City23",
-          "card_description": "Подавление для City23"
+          "card_description": "Подавление для City23",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city24",
@@ -16477,7 +16540,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City24",
-          "card_description": "Подавление для City24"
+          "card_description": "Подавление для City24",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city25",
@@ -16485,7 +16551,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City25",
-          "card_description": "Подавление для City25"
+          "card_description": "Подавление для City25",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city26",
@@ -16493,7 +16562,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City26",
-          "card_description": "Подавление для City26"
+          "card_description": "Подавление для City26",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city27",
@@ -16501,7 +16573,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City27",
-          "card_description": "Подавление для City27"
+          "card_description": "Подавление для City27",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city28",
@@ -16509,7 +16584,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City28",
-          "card_description": "Подавление для City28"
+          "card_description": "Подавление для City28",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city29",
@@ -16517,7 +16595,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City29",
-          "card_description": "Подавление для City29"
+          "card_description": "Подавление для City29",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city30",
@@ -16525,7 +16606,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City30",
-          "card_description": "Подавление для City30"
+          "card_description": "Подавление для City30",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city31",
@@ -16533,7 +16617,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City31",
-          "card_description": "Подавление для City31"
+          "card_description": "Подавление для City31",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city32",
@@ -16541,7 +16628,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City32",
-          "card_description": "Подавление для City32"
+          "card_description": "Подавление для City32",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city33",
@@ -16549,7 +16639,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City33",
-          "card_description": "Подавление для City33"
+          "card_description": "Подавление для City33",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city34",
@@ -16557,7 +16650,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City34",
-          "card_description": "Подавление для City34"
+          "card_description": "Подавление для City34",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city35",
@@ -16565,7 +16661,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City35",
-          "card_description": "Подавление для City35"
+          "card_description": "Подавление для City35",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city36",
@@ -16573,7 +16672,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City36",
-          "card_description": "Подавление для City36"
+          "card_description": "Подавление для City36",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city37",
@@ -16581,7 +16683,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City37",
-          "card_description": "Подавление для City37"
+          "card_description": "Подавление для City37",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city38",
@@ -16589,7 +16694,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City38",
-          "card_description": "Подавление для City38"
+          "card_description": "Подавление для City38",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city39",
@@ -16597,7 +16705,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City39",
-          "card_description": "Подавление для City39"
+          "card_description": "Подавление для City39",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city40",
@@ -16605,7 +16716,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City40",
-          "card_description": "Подавление для City40"
+          "card_description": "Подавление для City40",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city41",
@@ -16613,7 +16727,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City41",
-          "card_description": "Подавление для City41"
+          "card_description": "Подавление для City41",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city43",
@@ -16621,7 +16738,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City43",
-          "card_description": "Подавление для City43"
+          "card_description": "Подавление для City43",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city44",
@@ -16629,7 +16749,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City44",
-          "card_description": "Подавление для City44"
+          "card_description": "Подавление для City44",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city45",
@@ -16637,7 +16760,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City45",
-          "card_description": "Подавление для City45"
+          "card_description": "Подавление для City45",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city46",
@@ -16645,7 +16771,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City46",
-          "card_description": "Подавление для City46"
+          "card_description": "Подавление для City46",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city47",
@@ -16653,7 +16782,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City47",
-          "card_description": "Подавление для City47"
+          "card_description": "Подавление для City47",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city49",
@@ -16661,7 +16793,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City49",
-          "card_description": "Подавление для City49"
+          "card_description": "Подавление для City49",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city50",
@@ -16669,7 +16804,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City50",
-          "card_description": "Подавление для City50"
+          "card_description": "Подавление для City50",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city51",
@@ -16677,7 +16815,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City51",
-          "card_description": "Подавление для City51"
+          "card_description": "Подавление для City51",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city52",
@@ -16685,7 +16826,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City52",
-          "card_description": "Подавление для City52"
+          "card_description": "Подавление для City52",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         },
         {
           "rule_id": "suppression-rule-arm-city53",
@@ -16693,7 +16837,10 @@
           "target_class_code": "C2M_SuppressionResource",
           "card_id": "",
           "idempotency_key": "rule:City53",
-          "card_description": "Подавление для City53"
+          "card_description": "Подавление для City53",
+          "status": "",
+          "applied_at": "",
+          "delete_result": null
         }
       ]
     }
@@ -26497,6 +26644,1116 @@
               "managed_key": "suppression-template-rule-rule-tkgk-dimension-city04-c2m-suppressionresource",
               "rule_id": "suppression-rule-tkgk-city04",
               "artifact_fingerprint": "d5fb7d71:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city48-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city48",
+              "artifact_fingerprint": "3b41b6f9:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city29-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city29",
+              "artifact_fingerprint": "61e6585e:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city42-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city42",
+              "artifact_fingerprint": "a7af12b3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city22-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city22",
+              "artifact_fingerprint": "72463f35:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city36-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city36",
+              "artifact_fingerprint": "55a6c130:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city38-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city38",
+              "artifact_fingerprint": "3f43b3fe:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city20-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city20",
+              "artifact_fingerprint": "1cfe4077:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city12-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city12",
+              "artifact_fingerprint": "805b4d36:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city49-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city49",
+              "artifact_fingerprint": "375af2d8:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city09-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city09",
+              "artifact_fingerprint": "68345edc:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city07-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city07",
+              "artifact_fingerprint": "93603912:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city39-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city39",
+              "artifact_fingerprint": "d3a7465f:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city41-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city41",
+              "artifact_fingerprint": "b47f23d0:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city33-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city33",
+              "artifact_fingerprint": "e1ae5f15:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city24-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city24",
+              "artifact_fingerprint": "bc2261f3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city52-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city52",
+              "artifact_fingerprint": "f674c932:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city43-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city43",
+              "artifact_fingerprint": "fc66ab92:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city18-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city18",
+              "artifact_fingerprint": "f9356d7c:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city35-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city35",
+              "artifact_fingerprint": "eb3ba0d3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "application_id": "suppression-2026-05-15t16-19-30-083z-829857d5-395922",
+      "layer": "suppression",
+      "applied_at": "2026-05-15T16:19:30.083Z",
+      "reconcile": {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 152,
+        "removed": 0,
+        "relations": {
+          "created": 2,
+          "updated": 0,
+          "unchanged": 101,
+          "removed": 2,
+          "total": 103
+        }
+      },
+      "templates": [
+        {
+          "template_id": "supp",
+          "template_name": "МаршрутизаторыSupp",
+          "template_version": 8,
+          "content_hash": "ecf38c97:1359",
+          "candidate_count": 1,
+          "candidates": [
+            "routerG"
+          ],
+          "generated_rules": [
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city09-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city09",
+              "artifact_fingerprint": "53e04dcc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city11-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city11",
+              "artifact_fingerprint": "cbdc656c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city24-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city24",
+              "artifact_fingerprint": "eee80cec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city37-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city37",
+              "artifact_fingerprint": "5ddf1cec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city25-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city25",
+              "artifact_fingerprint": "d04f658c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city26-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city26",
+              "artifact_fingerprint": "afb11ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city27-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city27",
+              "artifact_fingerprint": "da367e4c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city28-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city28",
+              "artifact_fingerprint": "aa9cbd6c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city29-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city29",
+              "artifact_fingerprint": "8c04160c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city30-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city30",
+              "artifact_fingerprint": "f2907bcc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city33-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city33",
+              "artifact_fingerprint": "f5e2866c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city36-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city36",
+              "artifact_fingerprint": "7a4050c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city38-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city38",
+              "artifact_fingerprint": "1641c2cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city41-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city41",
+              "artifact_fingerprint": "40dff34c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city45-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city45",
+              "artifact_fingerprint": "9f1a76cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city47-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city47",
+              "artifact_fingerprint": "e9a9f00c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city48-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city48",
+              "artifact_fingerprint": "7dc5acac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city49-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city49",
+              "artifact_fingerprint": "64913a4c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city50-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city50",
+              "artifact_fingerprint": "a570180c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city23-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city23",
+              "artifact_fingerprint": "7239e7cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city04-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city04",
+              "artifact_fingerprint": "1f29efac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city05-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city05",
+              "artifact_fingerprint": "982b9d4c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city07-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city07",
+              "artifact_fingerprint": "e2bb168c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city08-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city08",
+              "artifact_fingerprint": "dadea02c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city10-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city10",
+              "artifact_fingerprint": "8a89238c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city13-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city13",
+              "artifact_fingerprint": "2ae3d5ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city20-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city20",
+              "artifact_fingerprint": "86eb766c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city21-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city21",
+              "artifact_fingerprint": "6852cf0c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city22-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city22",
+              "artifact_fingerprint": "a2fe7b2c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city03-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city03",
+              "artifact_fingerprint": "7abe800c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city14-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city14",
+              "artifact_fingerprint": "f285ba0c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city15-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city15",
+              "artifact_fingerprint": "33d8fbec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city18-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city18",
+              "artifact_fingerprint": "ae3a6a8c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city19-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city19",
+              "artifact_fingerprint": "ef8dac6c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city12-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city12",
+              "artifact_fingerprint": "800652cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city16-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city16",
+              "artifact_fingerprint": "e802e94c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city17-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city17",
+              "artifact_fingerprint": "92e06c2c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city31-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city31",
+              "artifact_fingerprint": "bdbfdaac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city32-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city32",
+              "artifact_fingerprint": "9fa76e8c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city34-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city34",
+              "artifact_fingerprint": "5a8d124c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city35-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city35",
+              "artifact_fingerprint": "25bc712c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city39-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city39",
+              "artifact_fingerprint": "e17121ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city40-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city40",
+              "artifact_fingerprint": "5a1465ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city42-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city42",
+              "artifact_fingerprint": "f935ecec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city43-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city43",
+              "artifact_fingerprint": "17fb4c8c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city44-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city44",
+              "artifact_fingerprint": "2618c92c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city46-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city46",
+              "artifact_fingerprint": "fdfd806c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city06-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city06",
+              "artifact_fingerprint": "f70ea6ec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city02-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city02",
+              "artifact_fingerprint": "8f12106c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city01-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city01",
+              "artifact_fingerprint": "302f06cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            }
+          ]
+        },
+        {
+          "template_id": "rule",
+          "template_name": "Рабочие места",
+          "template_version": 4,
+          "content_hash": "d7add520:976",
+          "candidate_count": 3,
+          "candidates": [
+            "ARM",
+            "NTbook",
+            "TKGK"
+          ],
+          "generated_rules": [
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city07-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city07",
+              "artifact_fingerprint": "626aac52:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city27-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city27",
+              "artifact_fingerprint": "6cecebd0:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city02-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city02",
+              "artifact_fingerprint": "bc35bb77:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city22-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city22",
+              "artifact_fingerprint": "510ffff5:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city23-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city23",
+              "artifact_fingerprint": "f9bb7b54:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city49-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city49",
+              "artifact_fingerprint": "9c192718:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city53-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city53",
+              "artifact_fingerprint": "16581853:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city51-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city51",
+              "artifact_fingerprint": "23493691:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city15-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city15",
+              "artifact_fingerprint": "51fcac11:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city33-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city33",
+              "artifact_fingerprint": "bb0ba8d5:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city19-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city19",
+              "artifact_fingerprint": "8e5b009d:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city41-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city41",
+              "artifact_fingerprint": "aae97210:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city45-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city45",
+              "artifact_fingerprint": "f7cc8894:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city31-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city31",
+              "artifact_fingerprint": "62699c17:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city32-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city32",
+              "artifact_fingerprint": "48687df4:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city36-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city36",
+              "artifact_fingerprint": "f972e670:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city01-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city01",
+              "artifact_fingerprint": "75c5bf14:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city09-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city09",
+              "artifact_fingerprint": "91047c1c:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city29-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city29",
+              "artifact_fingerprint": "ec9fa89e:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city14-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city14",
+              "artifact_fingerprint": "782fdd30:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city40-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city40",
+              "artifact_fingerprint": "aabbf7b1:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city12-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city12",
+              "artifact_fingerprint": "7d7d3f76:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city04-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city04",
+              "artifact_fingerprint": "88e9b531:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city34-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city34",
+              "artifact_fingerprint": "f3ee5eb2:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city16-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city16",
+              "artifact_fingerprint": "c4e7aff2:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city10-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city10",
+              "artifact_fingerprint": "25fc7cb4:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city44-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city44",
+              "artifact_fingerprint": "db341635:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city25-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city25",
+              "artifact_fingerprint": "9d337412:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city52-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city52",
+              "artifact_fingerprint": "91dc1272:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city08-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city08",
+              "artifact_fingerprint": "26a9f9bd:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city03-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city03",
+              "artifact_fingerprint": "253943d6:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city38-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city38",
+              "artifact_fingerprint": "435a933e:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city28-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city28",
+              "artifact_fingerprint": "b84e6f3f:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city50-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city50",
+              "artifact_fingerprint": "9dd437b0:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city48-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city48",
+              "artifact_fingerprint": "780ab4b9:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city11-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city11",
+              "artifact_fingerprint": "6d6b5395:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city05-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city05",
+              "artifact_fingerprint": "2aca2f90:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city18-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city18",
+              "artifact_fingerprint": "6fd429bc:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city20-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city20",
+              "artifact_fingerprint": "bad1d237:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city42-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city42",
+              "artifact_fingerprint": "96d07673:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city26-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city26",
+              "artifact_fingerprint": "d9898071:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city47-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city47",
+              "artifact_fingerprint": "db3a2556:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city13-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city13",
+              "artifact_fingerprint": "ce797d57:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city30-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city30",
+              "artifact_fingerprint": "abf9f636:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city35-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city35",
+              "artifact_fingerprint": "e30c1493:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city17-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city17",
+              "artifact_fingerprint": "3b6fdd3:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city39-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city39",
+              "artifact_fingerprint": "e0aa891f:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city43-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city43",
+              "artifact_fingerprint": "182a0ed2:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city37-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city37",
+              "artifact_fingerprint": "d3f0951:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city06-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city06",
+              "artifact_fingerprint": "29cd23f3:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city24-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city24",
+              "artifact_fingerprint": "452d32b3:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city21-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city21",
+              "artifact_fingerprint": "9e2c0396:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city46-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city46",
+              "artifact_fingerprint": "af3884f7:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city15-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city15",
+              "artifact_fingerprint": "d96e3f51:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city21-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city21",
+              "artifact_fingerprint": "a1b48156:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city27-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city27",
+              "artifact_fingerprint": "5d12d890:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city25-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city25",
+              "artifact_fingerprint": "a9baa2d2:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city26-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city26",
+              "artifact_fingerprint": "49b370b1:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city47-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city47",
+              "artifact_fingerprint": "9219116:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city53-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city53",
+              "artifact_fingerprint": "a989e593:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city13-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city13",
+              "artifact_fingerprint": "8dda2197:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city06-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city06",
+              "artifact_fingerprint": "6ea033:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city46-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city46",
+              "artifact_fingerprint": "9655f037:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city50-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city50",
+              "artifact_fingerprint": "62512a70:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city28-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city28",
+              "artifact_fingerprint": "50cc077f:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city08-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city08",
+              "artifact_fingerprint": "c0371afd:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city19-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city19",
+              "artifact_fingerprint": "a637e4dd:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city16-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city16",
+              "artifact_fingerprint": "cad66b2:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city05-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city05",
+              "artifact_fingerprint": "31a6b950:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city14-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city14",
+              "artifact_fingerprint": "159eb7f0:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city45-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city45",
+              "artifact_fingerprint": "fb0154:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city40-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city40",
+              "artifact_fingerprint": "c0b8dff1:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city31-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city31",
+              "artifact_fingerprint": "c1bc7f57:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city23-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city23",
+              "artifact_fingerprint": "6c2db714:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city51-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city51",
+              "artifact_fingerprint": "497f69d1:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city37-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city37",
+              "artifact_fingerprint": "8c8e7891:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city44-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city44",
+              "artifact_fingerprint": "2e4ec575:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city34-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city34",
+              "artifact_fingerprint": "760fe72:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city11-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city11",
+              "artifact_fingerprint": "c4b50dd5:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city32-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city32",
+              "artifact_fingerprint": "64c19fb4:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city30-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city30",
+              "artifact_fingerprint": "f909e4f6:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city04-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city04",
+              "artifact_fingerprint": "d5fb7d71:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city10-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city10",
+              "artifact_fingerprint": "dc46a674:803",
               "source_class_code": "TKGK",
               "target_class_code": "C2M_SuppressionResource"
             },

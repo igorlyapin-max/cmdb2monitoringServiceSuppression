@@ -20,11 +20,19 @@ public sealed class ZabbixTriggerDependencyApplier(
     private const int MaxUpstreamNamesInTriggerDescription = 4;
     private const decimal AggregateComplexityWarningRatio = 0.8m;
 
-    public async Task<ZabbixTriggerDependencyRunResult> RunAsync(
+    public Task<ZabbixTriggerDependencyRunResult> RunAsync(
         bool dryRun,
         CancellationToken cancellationToken)
     {
-        var currentOptions = options.CurrentValue;
+        return RunAsync(dryRun, request: null, cancellationToken);
+    }
+
+    public async Task<ZabbixTriggerDependencyRunResult> RunAsync(
+        bool dryRun,
+        ZabbixTriggerDependencyRunRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var currentOptions = ApplyRunOverrides(options.CurrentValue, request);
         var currentZabbixOptions = zabbixOptions.CurrentValue;
         var result = new ZabbixTriggerDependencyRunResult
         {
@@ -96,6 +104,51 @@ public sealed class ZabbixTriggerDependencyApplier(
             result.Errors.Add(ex.Message);
             return Complete(result);
         }
+    }
+
+    private static ZabbixTriggerDependenciesOptions ApplyRunOverrides(
+        ZabbixTriggerDependenciesOptions source,
+        ZabbixTriggerDependencyRunRequest? request)
+    {
+        if (request?.TransitiveGroupDependencyDepth is not { } transitiveDepth)
+        {
+            return source;
+        }
+
+        if (transitiveDepth is < 1 or > 3)
+        {
+            throw new InvalidOperationException("ZabbixTriggerDependencies:TransitiveGroupDependencyDepth must be between 1 and 3.");
+        }
+
+        return new ZabbixTriggerDependenciesOptions
+        {
+            Enabled = source.Enabled,
+            IncludeDisabledTriggers = source.IncludeDisabledTriggers,
+            AutoReconcileOnMembershipChange = source.AutoReconcileOnMembershipChange,
+            AutoReconcileDebounceSeconds = source.AutoReconcileDebounceSeconds,
+            TransitiveGroupDependencyDepth = transitiveDepth,
+            TriggerGetBatchSize = source.TriggerGetBatchSize,
+            MaxSourceHostsPerAggregate = source.MaxSourceHostsPerAggregate,
+            MaxAggregateFormulaLength = source.MaxAggregateFormulaLength,
+            MaxDependenciesPerRun = source.MaxDependenciesPerRun,
+            SampleLimit = source.SampleLimit,
+            AggregateHostGroupName = source.AggregateHostGroupName,
+            AggregateHostName = source.AggregateHostName,
+            AggregateHostVisibleName = source.AggregateHostVisibleName,
+            AggregateItemKeyPrefix = source.AggregateItemKeyPrefix,
+            AggregateStateTriggerIncludeTags = source.AggregateStateTriggerIncludeTags,
+            AggregateStateTriggerExcludeTags = source.AggregateStateTriggerExcludeTags,
+            AggregateStateTriggerIncludeNameRegex = source.AggregateStateTriggerIncludeNameRegex,
+            AggregateStateTriggerExcludeNameRegex = source.AggregateStateTriggerExcludeNameRegex,
+            AggregateStateTriggerMinPriority = source.AggregateStateTriggerMinPriority,
+            DependencyTriggerIncludeTags = source.DependencyTriggerIncludeTags,
+            DependencyTriggerExcludeTags = source.DependencyTriggerExcludeTags,
+            DependencyTriggerIncludeNameRegex = source.DependencyTriggerIncludeNameRegex,
+            DependencyTriggerExcludeNameRegex = source.DependencyTriggerExcludeNameRegex,
+            DependencyTriggerMinPriority = source.DependencyTriggerMinPriority,
+            SampleSourceTriggersPerAggregate = source.SampleSourceTriggersPerAggregate,
+            AggregateTriggerPriority = source.AggregateTriggerPriority
+        };
     }
 
     private async Task BuildDesiredPlanAsync(
@@ -1675,6 +1728,11 @@ public sealed class ZabbixTriggerTagSelector
     public string Tag { get; init; } = "";
 
     public string Value { get; init; } = "";
+}
+
+public sealed class ZabbixTriggerDependencyRunRequest
+{
+    public int? TransitiveGroupDependencyDepth { get; init; }
 }
 
 public sealed class ZabbixTriggerDependencyRunResult

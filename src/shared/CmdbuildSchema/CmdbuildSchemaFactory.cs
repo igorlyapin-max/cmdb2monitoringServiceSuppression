@@ -2,8 +2,13 @@ namespace Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
 
 public sealed class CmdbuildSchemaFactory
 {
+    private const int MaxCmdbuildDomainCodeLength = 58;
+    private const int DomainCodeHashLength = 8;
     private const string ServiceAggregationLookupCode = "ServiceAggregationType";
     private const string ServiceTypeLookupCode = "ServiceType";
+    private const string ServiceSlaReportingPeriodLookupCode = "ServiceSlaReportingPeriod";
+    private const string ServiceSlaDowntimeTypeLookupCode = "ServiceSlaDowntimeType";
+    private const string ServiceSlaDowntimeScheduleLookupCode = "ServiceSlaDowntimeSchedule";
 
     public CmdbuildSchemaDefinition Build(CmdbuildSchemaOptions options)
     {
@@ -68,6 +73,9 @@ public sealed class CmdbuildSchemaFactory
         yield return BuildClass(prefix, "ServiceUserEndpointFleet", BuilderLayer.Service, options, "endpoint_fleet");
         yield return BuildClass(prefix, "ServiceWorkplaceGroup", BuilderLayer.Service, options, "workplace_group");
         yield return BuildClass(prefix, "ServicePlatformService", BuilderLayer.Service, options, "platform_service");
+        yield return BuildClass(prefix, "ServiceSlaCalendar", BuilderLayer.Service, options, "sla_calendar");
+        yield return BuildClass(prefix, "ServiceSlaPolicy", BuilderLayer.Service, options, "sla_policy");
+        yield return BuildClass(prefix, "ServiceSlaDowntime", BuilderLayer.Service, options, "sla_downtime");
         yield return BuildClass(prefix, "ServiceDatabaseService", BuilderLayer.Service, options, "database_service");
         yield return BuildClass(prefix, "ServiceStoragePool", BuilderLayer.Service, options, "storage_pool");
     }
@@ -274,6 +282,7 @@ public sealed class CmdbuildSchemaFactory
         {
             Domain(prefix, language, BuilderLayer.Service, "ServiceResourceMemberOfFleet", "member_of", classes["ServiceResource"], classes["ServiceUserEndpointFleet"]),
             Domain(prefix, language, BuilderLayer.Service, "ServiceFleetAggregatesToWorkplaceGroup", "aggregates_to", classes["ServiceUserEndpointFleet"], classes["ServiceWorkplaceGroup"]),
+            Domain(prefix, language, BuilderLayer.Service, "ServiceFleetAggregatesToPlatformService", "aggregates_to", classes["ServiceUserEndpointFleet"], classes["ServicePlatformService"]),
             Domain(prefix, language, BuilderLayer.Service, "ServiceWorkplaceGroupAggregatesToPlatformService", "aggregates_to", classes["ServiceWorkplaceGroup"], classes["ServicePlatformService"]),
             Domain(prefix, language, BuilderLayer.Service, "ServicePlatformDependsOnDatabase", "service_depends_on", classes["ServicePlatformService"], classes["ServiceDatabaseService"]),
             Domain(prefix, language, BuilderLayer.Service, "ServicePlatformDependsOnStoragePool", "service_depends_on", classes["ServicePlatformService"], classes["ServiceStoragePool"]),
@@ -295,9 +304,109 @@ public sealed class CmdbuildSchemaFactory
             Domain(prefix, language, BuilderLayer.Suppression, "SuppressionProxyGroupSuppressesResource", "depends_on", classes["SuppressionProxyGroup"], classes["SuppressionResource"])
         };
 
+        AddServiceSlaPolicyDomains(prefix, language, classes, domains);
+        AddServiceSlaCalendarDomains(prefix, language, classes, domains);
+        AddServiceSlaDowntimeDomains(prefix, language, classes, domains);
+        AddUniversalServiceContainmentDomains(prefix, language, classes, domains);
         AddUniversalServiceDependencyDomains(prefix, language, classes, domains);
         AddUniversalSuppressionSuppressDomains(prefix, language, classes, domains);
         return domains;
+    }
+
+    private static void AddServiceSlaPolicyDomains(
+        string prefix,
+        SchemaLanguage language,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
+        List<CmdbuildDomainDefinition> domains)
+    {
+        if (!classes.TryGetValue("ServiceSlaPolicy", out var slaPolicy))
+        {
+            return;
+        }
+
+        var existingPairs = domains
+            .Select(domain => DomainPairKey(domain.SourceClassCode, domain.TargetClassCode, domain.RelationType))
+            .ToHashSet(StringComparer.Ordinal);
+        var existingDomainCodes = domains
+            .Select(domain => domain.Code)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var source in ServiceTopologyClasses(prefix, classes))
+        {
+            const string relationType = "has_sla_policy";
+            var pairKey = DomainPairKey(source.Code, slaPolicy.Code, relationType);
+            if (existingPairs.Contains(pairKey))
+            {
+                continue;
+            }
+
+            var sourcePart = NormalizeDomainPart(RemoveManagedPrefix(prefix, source.Code));
+            if (string.IsNullOrWhiteSpace(sourcePart))
+            {
+                continue;
+            }
+
+            var baseCode = UniqueDomainBaseCode(prefix, $"{sourcePart}HasSlaPolicy", existingDomainCodes);
+            domains.Add(Domain(prefix, language, BuilderLayer.Service, baseCode, relationType, source, slaPolicy));
+            existingPairs.Add(pairKey);
+        }
+    }
+
+    private static void AddServiceSlaCalendarDomains(
+        string prefix,
+        SchemaLanguage language,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
+        List<CmdbuildDomainDefinition> domains)
+    {
+        if (!classes.TryGetValue("ServiceSlaPolicy", out var slaPolicy)
+            || !classes.TryGetValue("ServiceSlaCalendar", out var slaCalendar))
+        {
+            return;
+        }
+
+        var exists = domains.Any(domain =>
+            domain.SourceClassCode == slaPolicy.Code
+            && domain.TargetClassCode == slaCalendar.Code
+            && domain.RelationType == "has_sla_calendar");
+        if (!exists)
+        {
+            domains.Add(Domain(
+                prefix,
+                language,
+                BuilderLayer.Service,
+                "ServiceSlaPolicyHasSlaCalendar",
+                "has_sla_calendar",
+                slaPolicy,
+                slaCalendar));
+        }
+    }
+
+    private static void AddServiceSlaDowntimeDomains(
+        string prefix,
+        SchemaLanguage language,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
+        List<CmdbuildDomainDefinition> domains)
+    {
+        if (!classes.TryGetValue("ServiceSlaPolicy", out var slaPolicy)
+            || !classes.TryGetValue("ServiceSlaDowntime", out var slaDowntime))
+        {
+            return;
+        }
+
+        var exists = domains.Any(domain =>
+            domain.SourceClassCode == slaPolicy.Code
+            && domain.TargetClassCode == slaDowntime.Code
+            && domain.RelationType == "has_regular_downtime");
+        if (!exists)
+        {
+            domains.Add(Domain(
+                prefix,
+                language,
+                BuilderLayer.Service,
+                "ServiceSlaPolicyHasRegularDowntime",
+                "has_regular_downtime",
+                slaPolicy,
+                slaDowntime));
+        }
     }
 
     private static void AddUniversalServiceDependencyDomains(
@@ -306,10 +415,7 @@ public sealed class CmdbuildSchemaFactory
         IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
         List<CmdbuildDomainDefinition> domains)
     {
-        var serviceClasses = classes.Values
-            .Where(definition => definition.Layer == BuilderLayer.Service && !definition.IsSuperclass)
-            .OrderBy(definition => definition.Code, StringComparer.Ordinal)
-            .ToArray();
+        var serviceClasses = ServiceTopologyClasses(prefix, classes).ToArray();
         var existingPairs = domains
             .Select(domain => DomainPairKey(domain.SourceClassCode, domain.TargetClassCode, domain.RelationType))
             .ToHashSet(StringComparer.Ordinal);
@@ -343,6 +449,68 @@ public sealed class CmdbuildSchemaFactory
                 existingPairs.Add(pairKey);
             }
         }
+    }
+
+    private static void AddUniversalServiceContainmentDomains(
+        string prefix,
+        SchemaLanguage language,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes,
+        List<CmdbuildDomainDefinition> domains)
+    {
+        if (!classes.TryGetValue("ServicePlatformService", out var platformService))
+        {
+            return;
+        }
+
+        const string relationType = "aggregates_to";
+        var serviceClasses = ServiceTopologyClasses(prefix, classes)
+            .Where(definition => !definition.Code.Equals(platformService.Code, StringComparison.Ordinal))
+            .ToArray();
+        var existingPairs = domains
+            .Select(domain => DomainPairKey(domain.SourceClassCode, domain.TargetClassCode, domain.RelationType))
+            .ToHashSet(StringComparer.Ordinal);
+        var existingDomainCodes = domains
+            .Select(domain => domain.Code)
+            .ToHashSet(StringComparer.Ordinal);
+        const string targetPart = "PlatformService";
+
+        foreach (var source in serviceClasses)
+        {
+            var pairKey = DomainPairKey(source.Code, platformService.Code, relationType);
+            if (existingPairs.Contains(pairKey))
+            {
+                continue;
+            }
+
+            var sourcePart = NormalizeDomainPart(RemoveManagedPrefix(prefix, source.Code));
+            if (string.IsNullOrWhiteSpace(sourcePart))
+            {
+                continue;
+            }
+
+            var baseCode = UniqueDomainBaseCode(
+                prefix,
+                $"{sourcePart}AggregatesTo{targetPart}",
+                existingDomainCodes);
+            domains.Add(Domain(prefix, language, BuilderLayer.Service, baseCode, relationType, source, platformService));
+            existingPairs.Add(pairKey);
+        }
+    }
+
+    private static IEnumerable<CmdbuildClassDefinition> ServiceTopologyClasses(
+        string prefix,
+        IReadOnlyDictionary<string, CmdbuildClassDefinition> classes)
+    {
+        return classes.Values
+            .Where(definition => definition.Layer == BuilderLayer.Service
+                && !definition.IsSuperclass
+                && !IsServiceSupportClass(prefix, definition.Code))
+            .OrderBy(definition => definition.Code, StringComparer.Ordinal);
+    }
+
+    private static bool IsServiceSupportClass(string prefix, string code)
+    {
+        return RemoveManagedPrefix(prefix, code) is "ServiceSlaCalendar" or "ServiceSlaPolicy" or "ServiceSlaDowntime";
     }
 
     private static void AddUniversalSuppressionSuppressDomains(
@@ -413,14 +581,36 @@ public sealed class CmdbuildSchemaFactory
 
         for (var suffix = 0; ; suffix++)
         {
-            var candidateBase = suffix == 0
+            var rawCandidateBase = suffix == 0
                 ? normalized
                 : $"{normalized}{suffix + 1}";
+            var candidateBase = ShortenDomainBaseCode(prefix, rawCandidateBase);
             if (existingDomainCodes.Add(prefix + candidateBase))
             {
                 return candidateBase;
             }
         }
+    }
+
+    private static string ShortenDomainBaseCode(string prefix, string baseCode)
+    {
+        var maxBaseLength = Math.Max(
+            DomainCodeHashLength + 1,
+            MaxCmdbuildDomainCodeLength - (prefix ?? "").Length);
+        if (baseCode.Length <= maxBaseLength)
+        {
+            return baseCode;
+        }
+
+        var hash = ShortHash(baseCode);
+        var stemLength = Math.Max(1, maxBaseLength - hash.Length);
+        return baseCode[..stemLength] + hash;
+    }
+
+    private static string ShortHash(string value)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
+        return System.Convert.ToHexString(bytes).ToLowerInvariant()[..DomainCodeHashLength];
     }
 
     private static IReadOnlyList<CmdbuildDomainDefinition> BuildSuggestedDomains(
@@ -441,10 +631,9 @@ public sealed class CmdbuildSchemaFactory
 
             foreach (var domain in SuggestDomainsForCustomClass(prefix, options.Language, entity.Layer, baseCode, customClass, classes))
             {
-                if (seen.Add(domain.Code))
-                {
-                    result.Add(domain);
-                }
+                var domainBaseCode = RemoveManagedPrefix(prefix, domain.Code);
+                var uniqueBaseCode = UniqueDomainBaseCode(prefix, domainBaseCode, seen);
+                result.Add(domain with { Code = prefix + uniqueBaseCode });
             }
         }
 
@@ -477,12 +666,7 @@ public sealed class CmdbuildSchemaFactory
             }
 
             var domainBaseCode = $"{RemoveManagedPrefix(prefix, managedClass.Code)}PopulatedFrom{customerDomainPart}";
-            var domainCode = prefix + domainBaseCode;
-            if (!seen.Add(domainCode))
-            {
-                continue;
-            }
-
+            domainBaseCode = UniqueDomainBaseCode(prefix, domainBaseCode, seen);
             result.Add(SourceLinkDomain(prefix, options.Language, domainBaseCode, managedClass, customerClassCode));
         }
 
@@ -682,6 +866,24 @@ public sealed class CmdbuildSchemaFactory
                 Code = ServiceTypeLookupCode,
                 DisplayName = Text.LookupName(ServiceTypeLookupCode, language),
                 Values = ServiceTypeLookupValues(language).ToArray()
+            },
+            new CmdbuildLookupDefinition
+            {
+                Code = ServiceSlaReportingPeriodLookupCode,
+                DisplayName = Text.LookupName(ServiceSlaReportingPeriodLookupCode, language),
+                Values = ServiceSlaReportingPeriodLookupValues(language).ToArray()
+            },
+            new CmdbuildLookupDefinition
+            {
+                Code = ServiceSlaDowntimeTypeLookupCode,
+                DisplayName = Text.LookupName(ServiceSlaDowntimeTypeLookupCode, language),
+                Values = ServiceSlaDowntimeTypeLookupValues(language).ToArray()
+            },
+            new CmdbuildLookupDefinition
+            {
+                Code = ServiceSlaDowntimeScheduleLookupCode,
+                DisplayName = Text.LookupName(ServiceSlaDowntimeScheduleLookupCode, language),
+                Values = ServiceSlaDowntimeScheduleLookupValues(language).ToArray()
             }
         ];
     }
@@ -708,6 +910,45 @@ public sealed class CmdbuildSchemaFactory
                 Code = code,
                 DisplayName = Text.LookupValueName(ServiceTypeLookupCode, code, language),
                 Help = Text.LookupValueHelp(ServiceTypeLookupCode, code, language)
+            };
+        }
+    }
+
+    private static IEnumerable<CmdbuildLookupValueDefinition> ServiceSlaReportingPeriodLookupValues(SchemaLanguage language)
+    {
+        foreach (var code in new[] { "daily", "weekly", "monthly", "quarterly", "yearly" })
+        {
+            yield return new CmdbuildLookupValueDefinition
+            {
+                Code = code,
+                DisplayName = Text.LookupValueName(ServiceSlaReportingPeriodLookupCode, code, language),
+                Help = Text.LookupValueHelp(ServiceSlaReportingPeriodLookupCode, code, language)
+            };
+        }
+    }
+
+    private static IEnumerable<CmdbuildLookupValueDefinition> ServiceSlaDowntimeTypeLookupValues(SchemaLanguage language)
+    {
+        foreach (var code in new[] { "regular" })
+        {
+            yield return new CmdbuildLookupValueDefinition
+            {
+                Code = code,
+                DisplayName = Text.LookupValueName(ServiceSlaDowntimeTypeLookupCode, code, language),
+                Help = Text.LookupValueHelp(ServiceSlaDowntimeTypeLookupCode, code, language)
+            };
+        }
+    }
+
+    private static IEnumerable<CmdbuildLookupValueDefinition> ServiceSlaDowntimeScheduleLookupValues(SchemaLanguage language)
+    {
+        foreach (var code in new[] { "daily", "weekly", "monthly" })
+        {
+            yield return new CmdbuildLookupValueDefinition
+            {
+                Code = code,
+                DisplayName = Text.LookupValueName(ServiceSlaDowntimeScheduleLookupCode, code, language),
+                Help = Text.LookupValueHelp(ServiceSlaDowntimeScheduleLookupCode, code, language)
             };
         }
     }
@@ -811,6 +1052,64 @@ public sealed class CmdbuildSchemaFactory
                     ServiceTypeValidationScript(language));
                 yield return Attribute("sla_target", Text.AttrName("sla_target", language), "decimal", false, Text.AttrHelp("sla_target", language));
                 break;
+            case ("sla_policy", BuilderLayer.Service):
+                yield return Attribute(
+                    "sla_target",
+                    Text.AttrName("sla_target", language),
+                    "decimal",
+                    true,
+                    Text.AttrHelp("sla_target", language),
+                    validationRules: SlaTargetValidationScript(language));
+                yield return Attribute(
+                    "reporting_period",
+                    Text.AttrName("reporting_period", language),
+                    "lookup",
+                    true,
+                    Text.AttrHelp("reporting_period", language),
+                    ServiceSlaReportingPeriodLookupCode);
+                yield return Attribute("calendar", Text.AttrName("calendar", language), "text", false, Text.AttrHelp("calendar", language));
+                yield return Attribute("timezone", Text.AttrName("timezone", language), "string", false, Text.AttrHelp("timezone", language));
+                yield return Attribute("zabbix_sla_name", Text.AttrName("zabbix_sla_name", language), "string", false, Text.AttrHelp("zabbix_sla_name", language));
+                break;
+            case ("sla_calendar", BuilderLayer.Service):
+                yield return Attribute("calendar_code", Text.AttrName("calendar_code", language), "string", true, Text.AttrHelp("calendar_code", language));
+                yield return Attribute("calendar_type", Text.AttrName("calendar_type", language), "string", false, Text.AttrHelp("calendar_type", language));
+                yield return Attribute("monday_hours", Text.AttrName("monday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("monday_hours", language));
+                yield return Attribute("tuesday_hours", Text.AttrName("tuesday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("tuesday_hours", language));
+                yield return Attribute("wednesday_hours", Text.AttrName("wednesday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("wednesday_hours", language));
+                yield return Attribute("thursday_hours", Text.AttrName("thursday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("thursday_hours", language));
+                yield return Attribute("friday_hours", Text.AttrName("friday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("friday_hours", language));
+                yield return Attribute("saturday_hours", Text.AttrName("saturday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("saturday_hours", language));
+                yield return Attribute("sunday_hours", Text.AttrName("sunday_hours", language), "string", false, Text.AttrHelp("calendar_day_hours", language), validationRules: CalendarDayHoursValidationScript("sunday_hours", language));
+                yield return Attribute("timezone", Text.AttrName("timezone", language), "string", false, Text.AttrHelp("timezone", language));
+                yield return Attribute("zabbix_calendar_name", Text.AttrName("zabbix_calendar_name", language), "string", false, Text.AttrHelp("zabbix_calendar_name", language));
+                yield return Attribute("external_calendar_id", Text.AttrName("external_calendar_id", language), "string", false, Text.AttrHelp("external_calendar_id", language));
+                break;
+            case ("sla_downtime", BuilderLayer.Service):
+                yield return Attribute(
+                    "downtime_type",
+                    Text.AttrName("downtime_type", language),
+                    "lookup",
+                    true,
+                    Text.AttrHelp("downtime_type", language),
+                    ServiceSlaDowntimeTypeLookupCode);
+                yield return Attribute(
+                    "schedule_type",
+                    Text.AttrName("schedule_type", language),
+                    "lookup",
+                    true,
+                    Text.AttrHelp("schedule_type", language),
+                    ServiceSlaDowntimeScheduleLookupCode);
+                yield return Attribute("start_time", Text.AttrName("start_time", language), "string", true, Text.AttrHelp("start_time", language));
+                yield return Attribute("duration_minutes", Text.AttrName("duration_minutes", language), "integer", true, Text.AttrHelp("duration_minutes", language));
+                yield return Attribute("day_of_week", Text.AttrName("day_of_week", language), "integer", false, Text.AttrHelp("day_of_week", language));
+                yield return Attribute("day_of_month", Text.AttrName("day_of_month", language), "integer", false, Text.AttrHelp("day_of_month", language));
+                yield return Attribute("valid_from", Text.AttrName("valid_from", language), "date", false, Text.AttrHelp("valid_from", language));
+                yield return Attribute("valid_to", Text.AttrName("valid_to", language), "date", false, Text.AttrHelp("valid_to", language));
+                yield return Attribute("reason", Text.AttrName("reason", language), "text", false, Text.AttrHelp("reason", language));
+                yield return Attribute("timezone", Text.AttrName("timezone", language), "string", false, Text.AttrHelp("timezone", language));
+                yield return Attribute("zabbix_downtime_name", Text.AttrName("zabbix_downtime_name", language), "string", false, Text.AttrHelp("zabbix_downtime_name", language));
+                break;
             case ("proxy_group", BuilderLayer.Suppression):
                 yield return Attribute("fallback_supported", Text.AttrName("fallback_supported", language), "boolean", false, Text.AttrHelp("fallback_supported", language));
                 break;
@@ -835,6 +1134,11 @@ public sealed class CmdbuildSchemaFactory
         if (relationType is "depends_on_network" or "runs_on_compute" or "depends_on" or "monitored_via")
         {
             attributes.Add(Attribute("priority", Text.AttrName("priority", language), "integer", false, Text.AttrHelp("priority", language)));
+            attributes.Add(Attribute("source", Text.AttrName("source", language), "string", false, Text.AttrHelp("source", language)));
+        }
+
+        if (relationType is "has_sla_policy" or "has_sla_calendar" or "has_regular_downtime")
+        {
             attributes.Add(Attribute("source", Text.AttrName("source", language), "string", false, Text.AttrHelp("source", language)));
         }
 
@@ -928,6 +1232,11 @@ return true;
 
     private static string ServiceTypeValidationScript(SchemaLanguage language)
     {
+        return SlaTargetValidationScript(language);
+    }
+
+    private static string SlaTargetValidationScript(SchemaLanguage language)
+    {
         var message = language == SchemaLanguage.En
             ? "sla_target, when filled, must be a percentage from 0 to 100. Use 99.9 for 99.9%, not 0.999."
             : "sla_target, если заполнен, должен быть процентом от 0 до 100. Используйте 99.9 для 99.9%, не 0.999.";
@@ -954,6 +1263,52 @@ if (value === null || value === undefined || String(value).trim() === '') {
 }
 var parsed = Number(String(value).replace(',', '.'));
 return parsed >= 0 && parsed <= 100 ? true : '{{message}}';
+""";
+    }
+
+    private static string CalendarDayHoursValidationScript(string attributeCode, SchemaLanguage language)
+    {
+        var message = language == SchemaLanguage.En
+            ? "Calendar day hours must be empty or use HH:mm-HH:mm format. Several intervals are separated with semicolon, for example 09:00-13:00;14:00-18:00."
+            : "Часы дня календаря должны быть пустыми или в формате HH:mm-HH:mm. Несколько интервалов разделяются точкой с запятой, например 09:00-13:00;14:00-18:00.";
+
+        return $$"""
+var read = function (name) {
+  if (typeof api !== 'undefined' && api.getValue) {
+    return api.getValue(name);
+  }
+  if (typeof record !== 'undefined' && record.get) {
+    return record.get(name);
+  }
+  if (typeof values !== 'undefined') {
+    return values[name];
+  }
+  if (typeof data !== 'undefined') {
+    return data[name];
+  }
+  return null;
+};
+var value = read('{{attributeCode}}');
+if (value === null || value === undefined || String(value).trim() === '') {
+  return true;
+}
+var intervalPattern = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
+var minutes = function (part) {
+  var pieces = part.split(':');
+  return Number(pieces[0]) * 60 + Number(pieces[1]);
+};
+var intervals = String(value).split(';');
+for (var i = 0; i < intervals.length; i += 1) {
+  var interval = intervals[i].trim();
+  if (!intervalPattern.test(interval)) {
+    return '{{message}}';
+  }
+  var bounds = interval.split('-');
+  if (minutes(bounds[0]) >= minutes(bounds[1])) {
+    return '{{message}}';
+  }
+}
+return true;
 """;
     }
 

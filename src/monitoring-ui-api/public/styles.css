@@ -263,6 +263,7 @@ p {
 .control-row {
   align-items: end;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -392,6 +393,51 @@ textarea {
 
 .template-editor-wide {
   grid-column: 1 / -1;
+}
+
+.derive-copy-panel {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.derive-copy-row {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1fr) max-content;
+}
+
+.derive-copy-preview {
+  color: var(--muted);
+  display: grid;
+  font-size: 12px;
+  gap: 6px;
+  line-height: 1.45;
+  min-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.derive-copy-preview strong {
+  color: var(--text);
+}
+
+.derive-copy-preview ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.derive-copy-preview .error {
+  color: var(--danger);
+}
+
+.derive-copy-preview .warn {
+  color: #92400e;
 }
 
 .relation-editor-grid {
@@ -766,6 +812,10 @@ textarea {
 
 .relation-graph-node.manual {
   border-left: 4px solid #6941c6;
+}
+
+.relation-graph-node.service-object {
+  border-left: 4px solid #b45309;
 }
 
 .relation-graph-node.online-found {
@@ -1593,8 +1643,24 @@ textarea {
   color: var(--accent-strong);
 }
 
+.danger-button {
+  border: 1px solid #f3b4b4;
+  border-radius: 6px;
+  background: #fff5f5;
+  color: #9f1239;
+  cursor: pointer;
+  min-height: 38px;
+  padding: 8px 14px;
+}
+
+.danger-button:hover {
+  border-color: #d14343;
+  color: #7f1d1d;
+}
+
 .primary-button:disabled,
-.secondary-button:disabled {
+.secondary-button:disabled,
+.danger-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -1955,11 +2021,12 @@ textarea {
 }
 
 .domain-row summary {
+  row-gap: 8px;
   grid-template-areas:
     "toggle apply title count"
-    "toggle apply labels count"
-    "toggle apply route count"
-    "toggle apply relation count";
+    "toggle apply labels labels"
+    "toggle apply route route"
+    "toggle apply relation relation";
   grid-template-columns: max-content max-content minmax(0, 1fr) max-content;
 }
 
@@ -2052,6 +2119,10 @@ textarea {
   color: #b42318;
 }
 
+.error-text {
+  color: #b42318;
+}
+
 .subsection-title {
   border-top: 1px solid var(--line);
   margin-top: 16px;
@@ -2072,11 +2143,21 @@ textarea {
 }
 
 .row-route {
+  display: block;
   grid-area: route;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .row-relation {
+  display: block;
   grid-area: relation;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .suggestion-mark {
@@ -2651,6 +2732,10 @@ code {
   }
 
   .template-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .derive-copy-row {
     grid-template-columns: 1fr;
   }
 

@@ -7,7 +7,7 @@ const CACHE_KEYS = {
   webhooks: 'webhooks.check',
   conversionConfig: 'conversion.config'
 };
-const GENERAL_SETTINGS_STORAGE_KEY = 'cmdb2monitoring.serviceSuppression.generalSettings.v1';
+const GENERAL_SETTINGS_STORAGE_KEY = 'cmdb2monitoring.serviceSuppression.generalSettings.v2';
 const POPULATION_SOURCE_KEY_ATTRIBUTE = 'population_source_key';
 const TARGET_CARD_IDENTITY_ATTRIBUTES = [
   'Code',
@@ -46,6 +46,7 @@ const TEMPLATE_DELETE_MODES = {
   detachRulesKeepObjects: 'detach_rules_keep_objects',
   deleteRulesAndObjects: 'delete_rules_and_objects'
 };
+const DEFAULT_TEMPLATE_DELETE_MODE = TEMPLATE_DELETE_MODES.deleteRulesAndObjects;
 const LINK_RELATION_VIEW_CONFIG = {
   serviceTemplateTemplateRelations: { layer: 'service', kind: 'template_template' },
   serviceTemplateRuleRelations: { layer: 'service', kind: 'template_rule' },
@@ -91,6 +92,169 @@ const LEGACY_SEEDED_RULE_IDS = new Set([
   'suppression-network-zone-by-subnet'
 ]);
 const REQUIRED_WEBHOOK_EVENTS = ['CREATE', 'UPDATE', 'DELETE'];
+const LAYER_KEYS = ['service', 'suppression'];
+const SERVICE_SUPPRESSION_CLASS_SUFFIX_PAIRS = [
+  ['ServiceResource', 'SuppressionResource'],
+  ['ServiceWorkplaceGroup', 'SuppressionResource'],
+  ['ServiceNetworkAccessZone', 'SuppressionNetworkAccessZone'],
+  ['ServiceComputeCluster', 'SuppressionComputeCluster'],
+  ['ServiceStoragePool', 'SuppressionStoragePool']
+];
+const SERVICE_OBJECT_TYPE_DEFINITIONS = [
+  {
+    key: 'service',
+    label: 'Сервис',
+    classBase: 'ServicePlatformService',
+    description: 'Ручной сервисный объект без source-агрегации.',
+    attributes: ['Code', 'name', 'description', 'service_type', 'sla_target'],
+    defaults: { service_type: 'business' }
+  },
+  {
+    key: 'sla_policy',
+    label: 'Политика SLA',
+    classBase: 'ServiceSlaPolicy',
+    description: 'Переиспользуемый профиль SLA для сервисных объектов.',
+    attributes: ['Code', 'name', 'description', 'sla_target', 'reporting_period', 'calendar', 'timezone', 'zabbix_sla_name'],
+    defaults: { sla_target: '99.9', reporting_period: 'monthly' }
+  },
+  {
+    key: 'sla_calendar',
+    label: 'Календарь SLA',
+    classBase: 'ServiceSlaCalendar',
+    description: 'Переиспользуемый календарь рабочих часов SLA.',
+    attributes: ['Code', 'name', 'description', 'calendar_code', 'calendar_type', 'monday_hours', 'tuesday_hours', 'wednesday_hours', 'thursday_hours', 'friday_hours', 'saturday_hours', 'sunday_hours', 'timezone', 'zabbix_calendar_name', 'external_calendar_id'],
+    defaults: {
+      calendar_type: 'business',
+      monday_hours: '09:00-18:00',
+      tuesday_hours: '09:00-18:00',
+      wednesday_hours: '09:00-18:00',
+      thursday_hours: '09:00-18:00',
+      friday_hours: '09:00-18:00',
+      timezone: 'Europe/Moscow'
+    }
+  },
+  {
+    key: 'sla_downtime',
+    label: 'Downtime SLA',
+    classBase: 'ServiceSlaDowntime',
+    description: 'Регулярное окно исключения SLA, управляемое из CMDBuild.',
+    attributes: ['Code', 'name', 'description', 'downtime_type', 'schedule_type', 'start_time', 'duration_minutes', 'day_of_week', 'day_of_month', 'valid_from', 'valid_to', 'reason', 'timezone', 'zabbix_downtime_name'],
+    defaults: {
+      downtime_type: 'regular',
+      schedule_type: 'weekly',
+      start_time: '02:00',
+      duration_minutes: '120',
+      day_of_week: '7',
+      timezone: 'Europe/Moscow'
+    }
+  }
+];
+const SERVICE_AGGREGATE_TYPE_DEFINITIONS = [
+  {
+    key: 'service_workplace_group',
+    label: 'Группа рабочих мест',
+    classBase: 'ServiceWorkplaceGroup'
+  },
+  {
+    key: 'service_user_endpoint_fleet',
+    label: 'Парк пользовательских endpoint',
+    classBase: 'ServiceUserEndpointFleet'
+  },
+  {
+    key: 'service_network_access_zone',
+    label: 'Сетевая зона доступа',
+    classBase: 'ServiceNetworkAccessZone'
+  },
+  {
+    key: 'service_database_service',
+    label: 'Сервис базы данных',
+    classBase: 'ServiceDatabaseService'
+  },
+  {
+    key: 'service_compute_cluster',
+    label: 'Вычислительный кластер',
+    classBase: 'ServiceComputeCluster'
+  },
+  {
+    key: 'service_storage_pool',
+    label: 'Пул хранения',
+    classBase: 'ServiceStoragePool'
+  }
+];
+const SERVICE_OBJECT_RELATION_DEFINITIONS = [
+  {
+    key: 'service_contains_workplace_group',
+    label: 'Сервис содержит сервисный агрегат',
+    relationType: 'aggregates_to',
+    domainDirection: 'target_to_source',
+    sourceTypes: ['service'],
+    targetTypes: ['service_workplace_group', 'service_user_endpoint_fleet', 'service_network_access_zone', 'service_database_service', 'service_compute_cluster', 'service_storage_pool', 'service_template'],
+    hint: 'Для состава сервиса: например "Сервис рабочих мест" содержит агрегат "Ноутбуки", "Рабочие места", сетевую зону, БД, вычислительный кластер или пул хранения. В CMDBuild domain aggregates_to хранится в обратной ориентации: агрегат -> сервис.'
+  },
+  {
+    key: 'service_depends_on_aggregate',
+    label: 'Сервис зависит от агрегата',
+    relationType: 'service_depends_on',
+    domainDirection: 'source_to_target',
+    sourceTypes: ['service'],
+    targetTypes: ['service_workplace_group', 'service_user_endpoint_fleet', 'service_network_access_zone', 'service_database_service', 'service_compute_cluster', 'service_storage_pool', 'service_template'],
+    hint: 'Для технической причины доступности: например "Сервис рабочих мест" зависит от "Маршрутизаторы филиалов".'
+  },
+  {
+    key: 'service_contains_template',
+    label: 'Сервис содержит агрегаты шаблона',
+    relationType: 'aggregates_to',
+    domainDirection: 'target_to_source',
+    sourceTypes: ['service'],
+    targetTypes: ['service_template'],
+    hint: 'Для массового состава сервиса: выберите один шаблон, например "Рабочие места (Сервис)", и UI создаст связи "Содержит" ко всем уже созданным агрегатам этого шаблона.'
+  },
+  {
+    key: 'service_depends_on_template',
+    label: 'Сервис зависит от агрегатов шаблона',
+    relationType: 'service_depends_on',
+    domainDirection: 'source_to_target',
+    sourceTypes: ['service'],
+    targetTypes: ['service_template'],
+    hint: 'Для массовой технической зависимости: выберите один шаблон, и UI создаст связи "Зависит от" ко всем уже созданным агрегатам этого шаблона.'
+  },
+  {
+    key: 'service_depends_on_service',
+    label: 'Сервис зависит от сервиса',
+    relationType: 'service_depends_on',
+    domainDirection: 'source_to_target',
+    sourceTypes: ['service'],
+    targetTypes: ['service'],
+    hint: 'Для ручной зависимости между сервисными объектами.'
+  },
+  {
+    key: 'service_has_sla_policy',
+    label: 'Сервис использует SLA-политику',
+    relationType: 'has_sla_policy',
+    domainDirection: 'source_to_target',
+    sourceTypes: ['service'],
+    targetTypes: ['sla_policy'],
+    hint: 'Назначает сервису конкретную SLA-политику.'
+  },
+  {
+    key: 'policy_has_calendar',
+    label: 'SLA-политика использует календарь',
+    relationType: 'has_sla_calendar',
+    domainDirection: 'source_to_target',
+    sourceTypes: ['sla_policy'],
+    targetTypes: ['sla_calendar'],
+    hint: 'Привязывает к SLA-политике переиспользуемый календарь рабочих часов.'
+  },
+  {
+    key: 'policy_has_downtime',
+    label: 'SLA-политика имеет регулярный downtime',
+    relationType: 'has_regular_downtime',
+    domainDirection: 'source_to_target',
+    sourceTypes: ['sla_policy'],
+    targetTypes: ['sla_downtime'],
+    hint: 'Привязывает к SLA-политике регулярное окно исключения.'
+  }
+];
 
 const wideChoiceMenuState = {
   field: null,
@@ -118,6 +282,23 @@ const state = {
     Suppression: ''
   },
   customEntities: [],
+  serviceObjectEditor: {
+    type: 'service',
+    selectedObject: '',
+    values: {},
+    relationKind: 'service_contains_workplace_group',
+    relationSource: '',
+    relationTarget: '',
+    filterTemplateRules: true,
+    selectedRelation: '',
+    relations: [],
+    relationsLoaded: false,
+    relationsLoading: false,
+    relationMessage: '',
+    relationError: '',
+    message: '',
+    error: ''
+  },
   cmdbClasses: [],
   cmdbClassSchemas: [],
   cmdbDomains: [],
@@ -127,6 +308,17 @@ const state = {
   cmdbClassSchemaError: '',
   cmdbDomainError: '',
   cmdbClassInstanceError: '',
+  cmdbuildAuth: {
+    authMode: 'Login',
+    username: '',
+    password: '',
+    apiToken: '',
+    promptVisible: false,
+    message: '',
+    error: '',
+    configUsername: '',
+    configBaseUrlConfigured: false
+  },
   maxTraversalDepth: 2,
   transitiveGroupDependencyDepth: 2,
   ruleExamples: {
@@ -150,6 +342,10 @@ const state = {
     service: [],
     suppression: []
   },
+  ruleEditorDerivedFrom: {
+    service: null,
+    suppression: null
+  },
   ruleEditorFilterTemplateRules: {
     service: true,
     suppression: true
@@ -169,6 +365,10 @@ const state = {
   templateEditorTargetValues: {
     service: {},
     suppression: {}
+  },
+  templateEditorDerivedFrom: {
+    service: null,
+    suppression: null
   },
   templatePopulationPreviewLoads: new Set(),
   templateEditorSelected: {
@@ -193,6 +393,7 @@ const state = {
   linkRelationContext: { layer: 'service', kind: 'template_template' },
   linkRelationStatus: { message: '', type: '' },
   linkRelationHideTemplateLinks: true,
+  linkRelationDerivedFrom: null,
   relationGraph: {
     layer: 'service',
     direction: 'configured',
@@ -220,7 +421,15 @@ const state = {
       result: null,
       status: null,
       progress: null,
-      planPage: 1
+      lastGraphCheckOk: false,
+      lastGraphCheckAt: '',
+      planPage: 1,
+      staleReport: null,
+      staleReportError: '',
+      loadingStaleReport: false,
+      cleanupStateApplying: false,
+      deletingStaleCmdbuild: false,
+      deletingStaleZabbix: false
     },
     suppression: {
       applying: false,
@@ -230,7 +439,15 @@ const state = {
       result: null,
       status: null,
       progress: null,
-      planPage: 1
+      lastGraphCheckOk: false,
+      lastGraphCheckAt: '',
+      planPage: 1,
+      staleReport: null,
+      staleReportError: '',
+      loadingStaleReport: false,
+      cleanupStateApplying: false,
+      deletingStaleCmdbuild: false,
+      deletingStaleZabbix: false
     }
   },
   zabbixTriggerDependencies: {
@@ -240,6 +457,27 @@ const state = {
     error: '',
     result: null,
     status: null
+  },
+  zabbixSla: {
+    applying: false,
+    loadingStatus: false,
+    message: '',
+    error: '',
+    status: null,
+    result: null
+  },
+  zabbixConfigSettings: {
+    loading: false,
+    applying: false,
+    message: '',
+    error: '',
+    settings: null,
+    configFile: '',
+    resolvedConfigFile: '',
+    reload: null,
+    uiOverrides: {
+      transitiveGroupDependencyDepth: null
+    }
   },
   ruleEditorTargetValues: {
     service: {},
@@ -314,6 +552,11 @@ const state = {
   syncConversionConfigError: '',
   conversionConfigStorageUpdatedAt: '',
   conversionConfigCacheUpdatedAt: '',
+  defaultTemplateDeleteMode: DEFAULT_TEMPLATE_DELETE_MODE,
+  templateDeletionApplying: {
+    service: false,
+    suppression: false
+  },
   generalSettingsMessage: '',
   generalSettingsError: '',
   openClassRows: new Set(),
@@ -322,6 +565,8 @@ const state = {
   loading: false,
   error: ''
 };
+
+restoreCmdbuildAuthSession();
 
 document.querySelectorAll('.nav-item').forEach((button) => {
   button.addEventListener('click', () => {
@@ -405,6 +650,25 @@ document.querySelector('#buildPreviewButton').addEventListener('click', async ()
   await loadPreview();
 });
 
+document.querySelector('#cmdbuildAuthToggleButton')?.addEventListener('click', () => {
+  state.cmdbuildAuth.promptVisible = !state.cmdbuildAuth.promptVisible;
+  state.cmdbuildAuth.error = '';
+  renderCmdbuildAuthPanel();
+});
+
+document.querySelector('#cmdbuildAuthSaveButton')?.addEventListener('click', async () => {
+  applyCmdbuildAuthInputs();
+  await loadPreview({ refreshCmdbDomains: true });
+});
+
+document.querySelector('#cmdbuildAuthClearButton')?.addEventListener('click', () => {
+  clearCmdbuildAuthSession();
+  state.cmdbuildAuth.promptVisible = true;
+  state.cmdbuildAuth.message = 'Учетные данные CMDBuild для текущей вкладки сброшены.';
+  state.cmdbuildAuth.error = '';
+  renderCmdbuildAuthPanel();
+});
+
 document.querySelector('#sendSelectedButton').addEventListener('click', async () => {
   await applySelectedSchema();
 });
@@ -428,12 +692,38 @@ document.querySelector('#maxTraversalDepthSelect').addEventListener('change', (e
   renderConversionConfigSyncView();
 });
 
+document.querySelector('#transitiveGroupDependencyDepthSelect')?.addEventListener('change', (event) => {
+  const value = clampNumber(Number(event.target.value), state.transitiveGroupDependencyDepth, 1, 3);
+  event.target.value = String(value);
+  setZabbixConfigUiOverrideTransitiveDepth(value);
+  state.zabbixConfigSettings.error = '';
+  state.zabbixConfigSettings.message = `В UI выбран N=${value}; значение будет использовано для ручного dry-run/apply зависимостей и сохранится после "Применить настройки UI".`;
+  renderMicroserviceSettingsView();
+});
+
+document.querySelector('#templateDeleteModeDefaultSelect')?.addEventListener('change', (event) => {
+  state.defaultTemplateDeleteMode = normalizeTemplateDeleteMode(event.target.value);
+  event.target.value = state.defaultTemplateDeleteMode;
+  applyTemplateDeleteModeDefaultToEditors();
+  state.generalSettingsMessage = `Режим удаления шаблона по умолчанию: ${templateDeleteModeLabel(state.defaultTemplateDeleteMode)}.`;
+  state.generalSettingsError = '';
+  renderGeneralSettingsView();
+});
+
 document.querySelector('#saveGeneralSettingsButton').addEventListener('click', () => {
   saveGeneralSettings();
 });
 
 document.querySelector('#loadGeneralSettingsButton').addEventListener('click', () => {
   loadGeneralSettings();
+});
+
+document.querySelector('#refreshZabbixGeneralSettingsButton')?.addEventListener('click', () => {
+  void loadZabbixConfigSettings();
+});
+
+document.querySelector('#applyZabbixGeneralSettingsButton')?.addEventListener('click', () => {
+  void applyZabbixConfigSettings('general');
 });
 
 document.querySelector('#syncSourcesButton').addEventListener('click', async () => {
@@ -528,7 +818,94 @@ document.querySelector('#addEntityButton').addEventListener('click', async () =>
   }
 });
 
-document.querySelector('#customEntityList').addEventListener('click', async (event) => {
+document.querySelector('#serviceObjectType')?.addEventListener('change', (event) => {
+  state.serviceObjectEditor.type = serviceObjectTypeDefinition(event.target.value)?.key || 'service';
+  state.serviceObjectEditor.selectedObject = '';
+  state.serviceObjectEditor.values = {};
+  state.serviceObjectEditor.message = '';
+  state.serviceObjectEditor.error = '';
+  renderServiceObjectsView();
+});
+
+document.querySelector('#serviceObjectSelect')?.addEventListener('change', (event) => {
+  loadSelectedServiceObjectIntoEditor(event.target.value);
+});
+
+document.querySelector('#serviceObjectAttributeList')?.addEventListener('input', (event) => {
+  updateServiceObjectEditorValue(event.target);
+});
+
+document.querySelector('#serviceObjectAttributeList')?.addEventListener('change', (event) => {
+  updateServiceObjectEditorValue(event.target);
+});
+
+document.querySelector('#createServiceObjectButton')?.addEventListener('click', () => {
+  void createServiceObject();
+});
+
+document.querySelector('#newServiceObjectButton')?.addEventListener('click', () => {
+  resetServiceObjectEditor();
+});
+
+document.querySelector('#refreshServiceObjectsButton')?.addEventListener('click', async () => {
+  await loadPreview({ refreshCmdbDomains: true, renderLoading: false });
+  await refreshServiceObjectsFromCmdb();
+});
+
+document.querySelector('#serviceObjectRelationSelect')?.addEventListener('change', (event) => {
+  loadSelectedServiceObjectRelationIntoEditor(event.target.value);
+});
+
+document.querySelector('#serviceObjectRelationKind')?.addEventListener('change', (event) => {
+  state.serviceObjectEditor.relationKind = serviceObjectRelationDefinition(event.target.value)?.key
+    || SERVICE_OBJECT_RELATION_DEFINITIONS[0].key;
+  state.serviceObjectEditor.selectedRelation = '';
+  state.serviceObjectEditor.relationSource = '';
+  state.serviceObjectEditor.relationTarget = '';
+  renderServiceObjectRelationEditor();
+});
+
+document.querySelector('#serviceObjectRelationSource')?.addEventListener('change', () => {
+  state.serviceObjectEditor.relationSource = document.querySelector('#serviceObjectRelationSource')?.value ?? '';
+  renderServiceObjectRelationEditor();
+});
+
+document.querySelector('#serviceObjectRelationTarget')?.addEventListener('change', () => {
+  state.serviceObjectEditor.relationTarget = document.querySelector('#serviceObjectRelationTarget')?.value ?? '';
+  renderServiceObjectRelationEditor();
+});
+
+document.querySelector('#serviceObjectRelationFilterTemplateRules')?.addEventListener('change', (event) => {
+  state.serviceObjectEditor.filterTemplateRules = event.target.checked;
+  state.serviceObjectEditor.selectedRelation = '';
+  state.serviceObjectEditor.relationSource = '';
+  state.serviceObjectEditor.relationTarget = '';
+  renderServiceObjectRelationEditor();
+});
+
+document.querySelector('#createServiceObjectRelationButton')?.addEventListener('click', () => {
+  void createServiceObjectRelation();
+});
+
+document.querySelector('#newServiceObjectRelationButton')?.addEventListener('click', () => {
+  resetServiceObjectRelationEditor();
+});
+
+document.querySelector('#refreshServiceObjectRelationsButton')?.addEventListener('click', () => {
+  void refreshServiceObjectRelations();
+});
+
+document.querySelector('#customEntityList').addEventListener('click', handleCustomEntityListClick);
+document.querySelector('#serviceObjectList')?.addEventListener('click', (event) => {
+  const editButton = event.target.closest('[data-service-object-edit]');
+  if (!editButton) {
+    return;
+  }
+
+  loadSelectedServiceObjectIntoEditor(editButton.dataset.serviceObjectEdit);
+});
+
+async function handleCustomEntityListClick(event) {
   const button = event.target.closest('[data-remove-entity]');
   if (!button) {
     return;
@@ -539,7 +916,7 @@ document.querySelector('#customEntityList').addEventListener('click', async (eve
     state.customEntities.splice(index, 1);
     await loadPreview();
   }
-});
+}
 
 document.querySelector('#schemaView').addEventListener('click', async (event) => {
   if (event.target.closest('[data-apply-select]')) {
@@ -697,12 +1074,49 @@ document.querySelectorAll('[data-template-delete]').forEach((button) => {
   });
 });
 
+document.querySelectorAll('[data-derive-source]').forEach((select) => {
+  select.addEventListener('change', () => {
+    const kind = select.dataset.deriveSource;
+    const layerKey = select.closest('[data-rule-editor-layer]')?.dataset.ruleEditorLayer
+      || select.closest('[data-template-editor-layer]')?.dataset.templateEditorLayer
+      || state.linkRelationContext?.layer
+      || 'service';
+    renderDeriveCopyControl(kind, layerKey);
+  });
+});
+
+document.querySelectorAll('[data-derive-create]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const kind = button.dataset.deriveCreate;
+    const layerKey = button.closest('[data-rule-editor-layer]')?.dataset.ruleEditorLayer
+      || button.closest('[data-template-editor-layer]')?.dataset.templateEditorLayer
+      || state.linkRelationContext?.layer
+      || 'service';
+    applyDeriveCopyDraft(kind, layerKey);
+  });
+});
+
 document.querySelector('#applyTemplatesButton')?.addEventListener('click', () => {
   void applyTemplatesToRuleDocuments();
 });
 
 document.querySelector('#runTemplateAuditButton')?.addEventListener('click', () => {
   void runTemplateAudit();
+});
+
+document.addEventListener('click', (event) => {
+  const applyButton = event.target.closest?.('[data-template-deletion-apply]');
+  if (applyButton) {
+    void applyTemplateDeletionPlans(applyButton.dataset.templateDeletionApply);
+    return;
+  }
+
+  const cleanupButton = event.target.closest?.('[data-template-detached-cleanup]');
+  if (cleanupButton) {
+    cleanupDetachedTemplateRules(
+      cleanupButton.dataset.templateDetachedCleanup,
+      cleanupButton.dataset.cleanupMode || 'keep_objects');
+  }
 });
 
 document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
@@ -716,7 +1130,34 @@ document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
   panel.querySelector('[data-zabbix-apply-publish]')?.addEventListener('click', () => {
     void applyZabbixLayer(layerKey, { dryRun: false });
   });
+  panel.querySelector('[data-zabbix-apply-cancel]')?.addEventListener('click', () => {
+    void cancelZabbixApply(layerKey);
+  });
   panel.addEventListener('click', (event) => {
+    const staleRefreshButton = event.target.closest?.('[data-zabbix-stale-report-refresh]');
+    if (staleRefreshButton && panel.contains(staleRefreshButton)) {
+      void loadZabbixStaleReport(layerKey);
+      return;
+    }
+
+    const cleanupStateButton = event.target.closest?.('[data-zabbix-stale-state-cleanup]');
+    if (cleanupStateButton && panel.contains(cleanupStateButton)) {
+      void cleanupZabbixStaleState(layerKey);
+      return;
+    }
+
+    const deleteCmdbuildButton = event.target.closest?.('[data-zabbix-stale-cmdbuild-delete]');
+    if (deleteCmdbuildButton && panel.contains(deleteCmdbuildButton)) {
+      void deleteZabbixStaleCmdbuildObjects(layerKey);
+      return;
+    }
+
+    const deleteZabbixButton = event.target.closest?.('[data-zabbix-stale-zabbix-delete]');
+    if (deleteZabbixButton && panel.contains(deleteZabbixButton)) {
+      void deleteZabbixStaleServices(layerKey);
+      return;
+    }
+
     const button = event.target.closest?.('[data-zabbix-plan-page]');
     if (!button || !panel.contains(button)) {
       return;
@@ -742,6 +1183,22 @@ document.querySelector('#zabbixTriggerDependenciesDryRunButton')?.addEventListen
 
 document.querySelector('#zabbixTriggerDependenciesApplyButton')?.addEventListener('click', () => {
   void runZabbixTriggerDependencies({ dryRun: false });
+});
+
+document.querySelector('#zabbixSlaRefreshButton')?.addEventListener('click', () => {
+  void loadZabbixConfigSettings({ includeRuntimeStatus: true });
+});
+
+document.querySelector('#zabbixSlaApplyButton')?.addEventListener('click', () => {
+  void applyZabbixConfigSettings('sla');
+});
+
+document.querySelector('#zabbixSlaDryRunButton')?.addEventListener('click', () => {
+  void runZabbixSlaPublication({ dryRun: true });
+});
+
+document.querySelector('#zabbixSlaPublishButton')?.addEventListener('click', () => {
+  void runZabbixSlaPublication({ dryRun: false });
 });
 
 document.querySelector('#relationAddButton')?.addEventListener('click', () => {
@@ -873,6 +1330,14 @@ async function activateView(view, activeButton = null) {
     return;
   }
 
+  if (view === 'serviceObjects') {
+    state.activeLayer = 'Service';
+    document.querySelector('#serviceObjectsView')?.classList.remove('hidden');
+    renderServiceObjectsView();
+    void refreshServiceObjectsFromCmdb({ showMessage: serviceObjectTotalCount() === 0 });
+    return;
+  }
+
   const linkContext = linkRelationViewContext(view);
   if (linkContext) {
     state.linkRelationContext = linkContext;
@@ -895,8 +1360,21 @@ async function activateView(view, activeButton = null) {
     renderZabbixPreflightView();
   } else if (view === 'generalSettings') {
     renderGeneralSettingsView();
+  } else if (view === 'microserviceSettings') {
+    renderMicroserviceSettingsView();
+    if (!state.zabbixConfigSettings.settings && !state.zabbixConfigSettings.loading) {
+      void loadZabbixConfigSettings();
+    }
     if (!state.zabbixTriggerDependencies.status && !state.zabbixTriggerDependencies.loadingStatus) {
       void loadZabbixTriggerDependenciesStatus({ renderDependenciesView: false });
+    }
+  } else if (view === 'slaSettings') {
+    renderSlaSettingsView();
+    if (!state.zabbixConfigSettings.settings && !state.zabbixConfigSettings.loading) {
+      void loadZabbixConfigSettings({ includeRuntimeStatus: true });
+    }
+    if (!state.zabbixSla.status && !state.zabbixSla.loadingStatus) {
+      void loadZabbixSlaStatus();
     }
   } else if (view === 'serviceZabbixApply') {
     renderZabbixApplyView('service');
@@ -932,6 +1410,11 @@ async function loadInitialConfig() {
     state.webhooksConfig = config.webhooks ?? {};
     state.kafkaConfig = config.kafka ?? {};
     state.conversionConfigStorage = config.conversionConfig ?? {};
+    state.cmdbuildAuth.configUsername = config.cmdbuild?.username ?? '';
+    state.cmdbuildAuth.configBaseUrlConfigured = Boolean(config.cmdbuild?.baseUrlConfigured);
+    if (!state.cmdbuildAuth.username && state.cmdbuildAuth.configUsername) {
+      state.cmdbuildAuth.username = state.cmdbuildAuth.configUsername;
+    }
     state.zabbixHostIdAttribute = config.readiness?.zabbixHostIdAttribute ?? state.zabbixHostIdAttribute;
     state.kafkaEventLimit = clampNumber(Number(state.kafkaConfig.defaultEventLimit), 5, 1, 100);
     document.querySelector('#kafkaEventLimitInput').value = String(state.kafkaEventLimit);
@@ -940,10 +1423,154 @@ async function loadInitialConfig() {
     document.querySelector('#prefixInput').value = state.prefix;
     document.querySelector('#languageSelect').value = state.language;
     applyModelRootInputs();
+    renderCmdbuildAuthPanel();
   } catch (error) {
     state.error = error.message;
     render();
   }
+}
+
+function restoreCmdbuildAuthSession() {
+  const saved = readCmdbuildAuthSession();
+  if (!saved) {
+    return;
+  }
+
+  state.cmdbuildAuth.authMode = saved.authMode || 'Login';
+  state.cmdbuildAuth.username = saved.username || '';
+  state.cmdbuildAuth.password = saved.password || '';
+  state.cmdbuildAuth.apiToken = saved.apiToken || '';
+  state.cmdbuildAuth.message = saved.username || saved.apiToken
+    ? 'Учетные данные CMDBuild взяты из текущей вкладки.'
+    : '';
+}
+
+function readCmdbuildAuthSession() {
+  try {
+    if (typeof sessionStorage === 'undefined') {
+      return null;
+    }
+
+    const raw = sessionStorage.getItem('cmdb2monitoring.cmdbuildAuth');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCmdbuildAuthSession() {
+  try {
+    if (typeof sessionStorage === 'undefined') {
+      return;
+    }
+
+    sessionStorage.setItem('cmdb2monitoring.cmdbuildAuth', JSON.stringify({
+      authMode: state.cmdbuildAuth.authMode,
+      username: state.cmdbuildAuth.username,
+      password: state.cmdbuildAuth.password,
+      apiToken: state.cmdbuildAuth.apiToken
+    }));
+  } catch {
+    // Session credentials are optional; failing to persist must not block CMDBuild requests.
+  }
+}
+
+function clearCmdbuildAuthSession() {
+  state.cmdbuildAuth.authMode = 'Login';
+  state.cmdbuildAuth.username = state.cmdbuildAuth.configUsername || '';
+  state.cmdbuildAuth.password = '';
+  state.cmdbuildAuth.apiToken = '';
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('cmdb2monitoring.cmdbuildAuth');
+    }
+  } catch {
+    // Ignore browser storage errors.
+  }
+}
+
+function applyCmdbuildAuthInputs() {
+  const username = document.querySelector('#cmdbuildUsernameInput')?.value?.trim() ?? '';
+  const password = document.querySelector('#cmdbuildPasswordInput')?.value ?? '';
+  state.cmdbuildAuth.authMode = 'Login';
+  state.cmdbuildAuth.username = username;
+  state.cmdbuildAuth.password = password;
+  state.cmdbuildAuth.apiToken = '';
+  state.cmdbuildAuth.promptVisible = false;
+  state.cmdbuildAuth.error = '';
+  state.cmdbuildAuth.message = username
+    ? 'Учетные данные CMDBuild сохранены для текущей вкладки.'
+    : 'Пароль CMDBuild сохранен для текущей вкладки.';
+  writeCmdbuildAuthSession();
+  renderCmdbuildAuthPanel();
+}
+
+function cmdbuildUiAuthHeaders() {
+  const headers = {};
+  const username = state.cmdbuildAuth.username.trim();
+  const password = state.cmdbuildAuth.password;
+  const apiToken = state.cmdbuildAuth.apiToken.trim();
+  if (apiToken) {
+    headers['x-cmdb2monitoring-cmdbuild-auth-mode'] = 'Token';
+    headers['x-cmdb2monitoring-cmdbuild-api-token'] = apiToken;
+    return headers;
+  }
+
+  if (username || password) {
+    headers['x-cmdb2monitoring-cmdbuild-auth-mode'] = 'Login';
+    if (username) {
+      headers['x-cmdb2monitoring-cmdbuild-username'] = username;
+    }
+    if (password) {
+      headers['x-cmdb2monitoring-cmdbuild-password'] = password;
+    }
+  }
+  return headers;
+}
+
+function cmdbuildFetchHeaders(headers = {}) {
+  return {
+    ...cmdbuildUiAuthHeaders(),
+    ...headers
+  };
+}
+
+function isCmdbuildAuthFailureMessage(message) {
+  return /CMDBuild username\/password|CMDBuild API token|required for .* auth mode|BaseUrl|base url/i.test(String(message ?? ''));
+}
+
+function handleCmdbuildAuthFailure(message) {
+  if (!isCmdbuildAuthFailureMessage(message)) {
+    return;
+  }
+
+  state.cmdbuildAuth.promptVisible = true;
+  state.cmdbuildAuth.error = 'Нужны учетные данные CMDBuild для текущей вкладки.';
+  state.cmdbuildAuth.message = '';
+  renderCmdbuildAuthPanel();
+}
+
+function renderCmdbuildAuthPanel() {
+  const panel = document.querySelector('#cmdbuildAuthPanel');
+  const toggle = document.querySelector('#cmdbuildAuthToggleButton');
+  const username = document.querySelector('#cmdbuildUsernameInput');
+  const password = document.querySelector('#cmdbuildPasswordInput');
+  const status = document.querySelector('#cmdbuildAuthStatus');
+  if (!panel || !toggle || !username || !password || !status) {
+    return;
+  }
+
+  const hasSessionAuth = Boolean(state.cmdbuildAuth.password || state.cmdbuildAuth.apiToken);
+  panel.classList.toggle('hidden', !state.cmdbuildAuth.promptVisible);
+  toggle.textContent = hasSessionAuth ? 'CMDBuild доступ задан' : 'CMDBuild доступ';
+  username.value = state.cmdbuildAuth.username || state.cmdbuildAuth.configUsername || '';
+  password.value = state.cmdbuildAuth.password || '';
+  status.textContent = state.cmdbuildAuth.error
+    || state.cmdbuildAuth.message
+    || (state.cmdbuildAuth.configBaseUrlConfigured
+      ? 'По умолчанию UI передает backend-у настройки CMDBuild из monitoring-ui-api. Здесь можно задать логин/пароль только для текущей вкладки.'
+      : 'Укажите логин/пароль CMDBuild для текущей вкладки.');
+  status.classList.toggle('error', Boolean(state.cmdbuildAuth.error));
 }
 
 async function loadPreview(options = {}) {
@@ -1007,7 +1634,7 @@ function schemaOptionsBody() {
     suppressionModelRoot: state.suppressionModelRoot,
     existingModelClasses: existingModelClassOptions(),
     customEntities: state.customEntities,
-    sourceLinks: automaticSchemaSourceLinks()
+    sourceLinks: universalSchemaSourceLinks()
   };
 }
 
@@ -1030,10 +1657,10 @@ async function applySelectedSchema() {
   try {
     const response = await fetch('/api/schema/apply', {
       method: 'POST',
-      headers: {
+      headers: cmdbuildFetchHeaders({
         'content-type': 'application/json',
         accept: 'application/json'
-      },
+      }),
       body: JSON.stringify({
         options: schemaOptionsBody(),
         selection
@@ -1042,6 +1669,7 @@ async function applySelectedSchema() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = payload.detail || payload.error || `применение схемы не выполнено: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
       throw new Error(detail);
     }
 
@@ -1251,15 +1879,7 @@ async function syncDataSources() {
     if (catalogError) {
       throw new Error(catalogError);
     }
-    const cacheRecord = await writeDataCache(cmdbSourceCacheKey(), {
-      prefix: state.prefix,
-      classes: state.cmdbClasses,
-      classSchemas: state.cmdbClassSchemas,
-      domains: state.cmdbDomains,
-      sourceDomains: state.cmdbSourceDomains,
-      classInstances: state.cmdbClassInstances
-    });
-    state.cmdbCacheUpdatedAt = cacheRecord.updatedAt;
+    await persistCmdbSourceCache();
     await loadPreview({ renderLoading: false });
     state.syncMessage = `CMDBuild синхронизирован: классов ${state.cmdbClasses.length}, атрибутов ${cmdbAttributeCount()}, доменов ${state.cmdbSourceDomains.length}, экземпляров ${cmdbInstanceCount()}.`;
     state.syncError = '';
@@ -1270,6 +1890,19 @@ async function syncDataSources() {
     state.syncingSources = false;
     render();
   }
+}
+
+async function persistCmdbSourceCache() {
+  const cacheRecord = await writeDataCache(cmdbSourceCacheKey(), {
+    prefix: state.prefix,
+    classes: state.cmdbClasses,
+    classSchemas: state.cmdbClassSchemas,
+    domains: state.cmdbDomains,
+    sourceDomains: state.cmdbSourceDomains,
+    classInstances: state.cmdbClassInstances
+  });
+  state.cmdbCacheUpdatedAt = cacheRecord.updatedAt;
+  return cacheRecord;
 }
 
 async function loadCmdbSourceCache(options = {}) {
@@ -1728,21 +2361,56 @@ function conversionConfigFolderLabel() {
 function currentGeneralSettingsPayload() {
   return {
     version: 1,
-    maxTraversalDepth: state.maxTraversalDepth
+    maxTraversalDepth: state.maxTraversalDepth,
+    defaultTemplateDeleteMode: state.defaultTemplateDeleteMode
   };
 }
 
 function applyGeneralSettingsPayload(payload, options = {}) {
   state.maxTraversalDepth = clampNumber(Number(payload?.maxTraversalDepth), 2, 2, 5);
+  state.defaultTemplateDeleteMode = normalizeTemplateDeleteMode(payload?.defaultTemplateDeleteMode);
   const maxDepth = document.querySelector('#maxTraversalDepthSelect');
   if (maxDepth) {
     maxDepth.value = String(state.maxTraversalDepth);
   }
+  const templateDeleteMode = document.querySelector('#templateDeleteModeDefaultSelect');
+  if (templateDeleteMode) {
+    templateDeleteMode.value = state.defaultTemplateDeleteMode;
+  }
+  applyTemplateDeleteModeDefaultToEditors();
 
   if (options.render !== false) {
     renderRuleEditors();
+    renderTemplateEditors();
     renderConversionConfigSyncView();
     renderZabbixTriggerDependenciesView();
+  }
+}
+
+function normalizeTemplateDeleteMode(value) {
+  return Object.values(TEMPLATE_DELETE_MODES).includes(String(value ?? ''))
+    ? String(value)
+    : DEFAULT_TEMPLATE_DELETE_MODE;
+}
+
+function templateDeleteModeLabel(value) {
+  return normalizeTemplateDeleteMode(value) === TEMPLATE_DELETE_MODES.deleteRulesAndObjects
+    ? 'Удалить созданные правила и объекты'
+    : 'Отвязать правила и сохранить объекты';
+}
+
+function applyTemplateDeleteModeDefaultToEditors() {
+  for (const layerKey of LAYER_KEYS) {
+    const config = templateEditorConfig(layerKey);
+    if (config.deleteMode) {
+      config.deleteMode.value = state.defaultTemplateDeleteMode;
+    }
+  }
+}
+
+function renderTemplateEditors() {
+  for (const layerKey of LAYER_KEYS) {
+    renderTemplateEditor(layerKey);
   }
 }
 
@@ -1853,6 +2521,10 @@ function render() {
   document.querySelector('#addEntityButton').textContent = state.activeLayer === 'Service'
     ? 'Добавить сервисную сущность'
     : 'Добавить сущность подавления';
+  const schemaEntityBuilder = document.querySelector('#schemaEntityBuilder');
+  if (schemaEntityBuilder) {
+    schemaEntityBuilder.hidden = state.activeLayer === 'Service';
+  }
   document.querySelector('#serviceModelRootInput').placeholder = defaultModelRoot(state.language);
   document.querySelector('#suppressionModelRootInput').placeholder = defaultModelRoot(state.language);
   renderGeneralSettingsView();
@@ -1874,10 +2546,12 @@ function render() {
   status.classList.toggle('error', Boolean(state.applyError || state.error || rootError || catalogError));
 
   renderCmdbClassOptions();
+  renderCmdbuildAuthPanel();
   renderClassTree(document.querySelector('#readyClassList'), readyClasses, domainsBySource(readyDomains));
   renderClassTree(document.querySelector('#plannedClassList'), plannedClasses, domainsBySource(plannedDomains));
 
   renderCustomEntityList();
+  renderServiceObjectsView();
   renderRulesPreviews();
   renderRuleEditors();
   renderTopSourceStatus();
@@ -1891,15 +2565,36 @@ function render() {
   renderTemplateAuditView();
   renderLinkRelationEditor();
   renderRelationsGraphView();
+  renderMicroserviceSettingsView();
+  renderSlaSettingsView();
 }
 
 function renderGeneralSettingsView() {
   const maxDepth = document.querySelector('#maxTraversalDepthSelect');
-  const transitiveDepth = document.querySelector('#transitiveGroupDependencyDepthSelect');
+  const templateDeleteModeDefault = document.querySelector('#templateDeleteModeDefaultSelect');
   const zabbixAttribute = document.querySelector('#zabbixHostIdAttributeInput');
   const conversionFolder = document.querySelector('#conversionConfigFolderInput');
   const status = document.querySelector('#generalSettingsStatus');
+  if (!maxDepth || !templateDeleteModeDefault || !zabbixAttribute || !conversionFolder || !status) {
+    return;
+  }
+
+  maxDepth.value = String(state.maxTraversalDepth);
+  templateDeleteModeDefault.value = state.defaultTemplateDeleteMode;
+  zabbixAttribute.value = state.zabbixHostIdAttribute;
+  conversionFolder.value = conversionConfigFolderLabel();
+  status.textContent = state.generalSettingsError
+    || state.generalSettingsMessage
+    || 'Изменения применяются сразу в текущей вкладке. Для сохранения после перезагрузки нажмите "Сохранить настройки".';
+  status.classList.toggle('error', Boolean(state.generalSettingsError));
+}
+
+function renderMicroserviceSettingsView() {
+  const transitiveDepth = document.querySelector('#transitiveGroupDependencyDepthSelect');
+  const status = document.querySelector('#microserviceSettingsStatus');
   const transitiveStatus = document.querySelector('#transitiveGroupDependencyDepthStatus');
+  const refreshConfigButton = document.querySelector('#refreshZabbixGeneralSettingsButton');
+  const applyConfigButton = document.querySelector('#applyZabbixGeneralSettingsButton');
   const aggregateStateInputs = {
     includeTags: document.querySelector('#aggregateStateTriggerIncludeTagsInput'),
     excludeTags: document.querySelector('#aggregateStateTriggerExcludeTagsInput'),
@@ -1915,34 +2610,240 @@ function renderGeneralSettingsView() {
     maxDependenciesPerRun: document.querySelector('#maxDependenciesPerRunInput'),
     sampleLimit: document.querySelector('#triggerDependencySampleLimitInput')
   };
-  if (!maxDepth || !transitiveDepth || !zabbixAttribute || !conversionFolder || !status) {
+  if (!transitiveDepth || !status) {
     return;
   }
 
   const dependencyState = state.zabbixTriggerDependencies;
-  const payload = dependencyState.status ?? dependencyState.result;
-  maxDepth.value = String(state.maxTraversalDepth);
-  transitiveDepth.value = String(state.transitiveGroupDependencyDepth);
-  transitiveDepth.disabled = true;
-  zabbixAttribute.value = state.zabbixHostIdAttribute;
-  conversionFolder.value = conversionConfigFolderLabel();
+  const configState = state.zabbixConfigSettings;
+  const payload = zabbixConfigTriggerDependencyPayload() ?? dependencyState.status ?? dependencyState.result;
+  const busy = configState.loading || configState.applying;
+  const configTransitiveDepth = zabbixTransitiveGroupDependencyDepth(payload);
+  const uiTransitiveDepth = zabbixConfigUiOverrideTransitiveDepth();
+  const selectedTransitiveDepth = uiTransitiveDepth ?? configTransitiveDepth;
+  transitiveDepth.value = String(selectedTransitiveDepth || state.transitiveGroupDependencyDepth);
+  transitiveDepth.disabled = busy;
   renderAggregateStateTriggerSettings(aggregateStateInputs, payload);
   renderZabbixTriggerDependencyRuntimeSettings(zabbixDependencyRuntimeInputs, payload);
+  toggleInputsDisabled(aggregateStateInputs, busy);
+  toggleInputsDisabled(zabbixDependencyRuntimeInputs, busy);
+  if (refreshConfigButton) {
+    refreshConfigButton.disabled = busy;
+  }
+  if (applyConfigButton) {
+    applyConfigButton.disabled = busy;
+  }
   if (transitiveStatus) {
-    const hasServiceValue = Number.isInteger(Number(payload?.transitiveGroupDependencyDepth));
-    transitiveStatus.classList.toggle('error', Boolean(dependencyState.error) && !hasServiceValue);
-    if (dependencyState.loadingStatus) {
-      transitiveStatus.textContent = 'Загружаю эффективное значение N из zabbixconfig2api...';
-    } else if (hasServiceValue) {
-      transitiveStatus.textContent = `Эффективное значение N=${state.transitiveGroupDependencyDepth} берется из zabbixconfig2api. Ручной dry-run/apply и автоматический reconcile используют одно и то же значение.`;
-    } else if (dependencyState.error) {
-      transitiveStatus.textContent = `Не удалось получить N из zabbixconfig2api: ${dependencyState.error}`;
+    const hasConfigValue = Number.isInteger(Number(payload?.transitiveGroupDependencyDepth));
+    const runtimePayload = dependencyState.status ?? dependencyState.result;
+    const runtimeN = runtimePayload ? zabbixTransitiveGroupDependencyDepth(runtimePayload) : 0;
+    const hasUiOverride = uiTransitiveDepth !== null;
+    const isUiOverrideDirty = hasUiOverride && uiTransitiveDepth !== configTransitiveDepth;
+    transitiveStatus.classList.toggle('error', Boolean(configState.error || dependencyState.error) && !hasConfigValue && !hasUiOverride);
+    if (configState.loading) {
+      transitiveStatus.textContent = 'Загружаю настройки zabbixconfig2api из файла конфигурации...';
+    } else if (configState.applying) {
+      transitiveStatus.textContent = 'Применяю настройки UI и перечитываю конфигурацию zabbixconfig2api...';
+    } else if (isUiOverrideDirty) {
+      const baseText = hasConfigValue
+        ? ` В файле сейчас N=${payload.transitiveGroupDependencyDepth}.`
+        : runtimeN
+          ? ` Runtime сейчас сообщает N=${runtimeN}.`
+          : '';
+      transitiveStatus.textContent = `В UI выбран N=${uiTransitiveDepth}; ручной dry-run/apply зависимостей использует это значение как одноразовый override.${baseText} Для автоматического reconcile нажмите "Применить настройки UI".`;
+    } else if (hasConfigValue) {
+      const runtimeText = runtimeN ? ` Runtime сейчас сообщает N=${runtimeN}.` : '';
+      transitiveStatus.textContent = `В файле zabbixconfig2api задано N=${payload.transitiveGroupDependencyDepth}.${runtimeText}`;
+    } else if (runtimeN) {
+      transitiveStatus.textContent = `Эффективное значение N=${state.transitiveGroupDependencyDepth} берется из runtime-статуса zabbixconfig2api.`;
+    } else if (configState.error || dependencyState.error) {
+      transitiveStatus.textContent = `Не удалось получить настройки zabbixconfig2api: ${configState.error || dependencyState.error}`;
     } else {
-      transitiveStatus.textContent = 'Значение N будет загружено из zabbixconfig2api; локальная настройка UI не используется.';
+      transitiveStatus.textContent = 'Настройки будут загружены из файла zabbixconfig2api; после изменения нажмите "Применить настройки UI".';
     }
   }
-  status.textContent = state.generalSettingsError || state.generalSettingsMessage;
-  status.classList.toggle('error', Boolean(state.generalSettingsError));
+  status.textContent = configState.error
+    || (configState.loading ? 'Загрузка настроек zabbixconfig2api...' : '')
+    || (configState.applying ? 'Применение настроек zabbixconfig2api...' : '')
+    || configState.message
+    || 'Нажмите "Обновить из zabbixconfig2api", чтобы перечитать текущие настройки микросервиса. Нажмите "Применить настройки UI", чтобы записать allowlist параметров и выполнить reload.';
+  status.classList.toggle('error', Boolean(configState.error));
+}
+
+function renderSlaSettingsView() {
+  const summary = document.querySelector('#zabbixSlaSummary');
+  const status = document.querySelector('#zabbixSlaStatus');
+  const refreshButton = document.querySelector('#zabbixSlaRefreshButton');
+  const applyButton = document.querySelector('#zabbixSlaApplyButton');
+  const inputs = {
+    enabled: document.querySelector('#zabbixSlaEnabledInput'),
+    defaultPolicyKey: document.querySelector('#zabbixSlaDefaultPolicyKeyInput'),
+    downtimePublicationHorizonMonths: document.querySelector('#zabbixSlaHorizonMonthsInput'),
+    managedExcludedDowntimePrefix: document.querySelector('#zabbixSlaManagedPrefixInput'),
+    sampleLimit: document.querySelector('#zabbixSlaSampleLimitInput'),
+    zabbixRequestTimeoutMs: document.querySelector('#zabbixSlaTimeoutInput')
+  };
+  if (!summary || !status || !refreshButton) {
+    return;
+  }
+
+  const stateItem = state.zabbixSla;
+  const configState = state.zabbixConfigSettings;
+  const payload = zabbixConfigSlaPayload() ?? stateItem.status ?? {};
+  const hasPayload = Boolean(zabbixConfigSlaPayload() || stateItem.status);
+  const emptyText = hasPayload ? '-' : 'ожидание статуса zabbixconfig2api';
+  const values = {
+    enabled: hasPayload ? (payload.enabled ? 'true' : 'false') : 'true',
+    defaultPolicyKey: hasPayload ? emptyAsDash(payload.defaultPolicyKey) : emptyText,
+    downtimePublicationHorizonMonths: hasPayload ? emptyAsDash(payload.downtimePublicationHorizonMonths) : emptyText,
+    managedExcludedDowntimePrefix: hasPayload ? emptyAsDash(payload.managedExcludedDowntimePrefix) : emptyText,
+    sampleLimit: hasPayload ? emptyAsDash(payload.sampleLimit) : emptyText,
+    zabbixRequestTimeoutMs: hasPayload ? zabbixRequestTimeoutText(payload.zabbixRequestTimeoutMs) : emptyText
+  };
+  for (const [key, input] of Object.entries(inputs)) {
+    if (input) {
+      input.value = String(values[key] ?? '-');
+    }
+  }
+
+  const busy = stateItem.applying || stateItem.loadingStatus || configState.loading || configState.applying;
+  toggleInputsDisabled({
+    enabled: inputs.enabled,
+    defaultPolicyKey: inputs.defaultPolicyKey,
+    downtimePublicationHorizonMonths: inputs.downtimePublicationHorizonMonths,
+    managedExcludedDowntimePrefix: inputs.managedExcludedDowntimePrefix,
+    sampleLimit: inputs.sampleLimit
+  }, busy);
+  refreshButton.disabled = busy;
+  if (applyButton) {
+    applyButton.disabled = busy;
+  }
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Статус SLA</span>
+      <strong>${escapeHtml(hasPayload ? (payload.enabled ? 'включено' : 'выключено') : '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Default policy</span>
+      <strong>${escapeHtml(values.defaultPolicyKey)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Горизонт downtime</span>
+      <strong>${escapeHtml(hasPayload ? `${payload.downtimePublicationHorizonMonths ?? '-'} мес.` : '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Managed prefix</span>
+      <strong>${escapeHtml(values.managedExcludedDowntimePrefix)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Zabbix API</span>
+      <strong>${escapeHtml(payload.zabbixApiConfigured === false ? 'не настроен' : hasPayload ? 'настроен' : '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">CMDBuild API</span>
+      <strong>${escapeHtml(payload.cmdbuildApiConfigured === false ? 'не настроен' : hasPayload ? 'настроен' : '-')}</strong>
+    </div>
+  `;
+
+  status.textContent = configState.error
+    || stateItem.error
+    || (configState.loading ? 'Загрузка настроек zabbixconfig2api...' : '')
+    || (configState.applying ? 'Применение настроек SLA и reload zabbixconfig2api...' : '')
+    || (stateItem.applying ? stateItem.message : '')
+    || (stateItem.loadingStatus ? 'Загрузка настроек SLA...' : stateItem.message)
+    || configState.message
+    || 'Настройки SLA будут загружены из zabbixconfig2api. Публикация SLA находится в "Сервисный слой -> Применить в Zabbix".';
+  status.classList.toggle('error', Boolean(configState.error || stateItem.error));
+}
+
+function renderZabbixSlaPublicationPanel() {
+  const status = document.querySelector('#zabbixSlaPublicationStatus');
+  const list = document.querySelector('#zabbixSlaPublicationPlanList');
+  const dryRunButton = document.querySelector('#zabbixSlaDryRunButton');
+  const publishButton = document.querySelector('#zabbixSlaPublishButton');
+  if (!status || !list || !dryRunButton || !publishButton) {
+    return;
+  }
+
+  const stateItem = state.zabbixSla;
+  const configState = state.zabbixConfigSettings;
+  const serviceApplyState = zabbixApplyState('service');
+  const busy = stateItem.applying || stateItem.loadingStatus || configState.loading || configState.applying || serviceApplyState.applying;
+  dryRunButton.disabled = busy;
+  publishButton.disabled = busy;
+  status.textContent = stateItem.error
+    || (stateItem.applying ? stateItem.message : '')
+    || (stateItem.loadingStatus ? 'Загрузка настроек SLA...' : '')
+    || stateItem.message
+    || 'Сначала опубликуйте сервисную модель в Zabbix, затем выполните dry-run SLA.';
+  status.classList.toggle('error', Boolean(stateItem.error));
+  list.innerHTML = renderZabbixSlaPublicationDetails(stateItem.result);
+}
+
+function renderZabbixSlaPublicationDetails(payload) {
+  if (!payload) {
+    return `
+      <div class="rule-summary">
+        <span class="structure-mark">публикация SLA</span>
+        <span>Сначала опубликуйте сервисную модель в Zabbix, затем выполните dry-run SLA: он проверит, что сервисы уже существуют в дереве и не являются изолированными узлами.</span>
+      </div>
+    `;
+  }
+
+  const serviceActions = keyValueCountersText(payload.serviceActions);
+  const slaActions = keyValueCountersText(payload.slaActions);
+  const services = Array.isArray(payload.sampleServices) ? payload.sampleServices : [];
+  const slas = Array.isArray(payload.sampleSlas) ? payload.sampleSlas : [];
+  const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+  const errors = Array.isArray(payload.errors) ? payload.errors : [];
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">${escapeHtml(payload.dryRun ? 'dry-run SLA' : 'публикация SLA')}</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(payload.status || '-'))}</strong>
+      <span>классов ${escapeHtml(payload.cmdbuildServiceClasses ?? 0)} · карточек ${escapeHtml(payload.cmdbuildServicesScanned ?? 0)} · политик ${escapeHtml(payload.policyCount ?? 0)} · календарей ${escapeHtml(payload.calendarCount ?? 0)} · downtime ${escapeHtml(payload.downtimeCount ?? 0)}</span>
+      <span>сервисов с SLA ${escapeHtml(payload.serviceCandidates ?? 0)} · SLA к публикации ${escapeHtml(payload.slasPlanned ?? 0)} · применено сервисов ${escapeHtml(payload.servicesApplied ?? 0)} · применено SLA ${escapeHtml(payload.slasApplied ?? 0)}</span>
+      <span>топология: найдено ${escapeHtml(payload.topologyServicesFound ?? 0)} · не найдено ${escapeHtml(payload.topologyServicesMissing ?? 0)} · без parents/children ${escapeHtml(payload.topologyServicesWithoutLinks ?? 0)}</span>
+      <span>действия сервисов: ${escapeHtml(serviceActions || '-')} · действия SLA: ${escapeHtml(slaActions || '-')}</span>
+    </div>
+    ${slas.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">SLA</span>
+        <strong>${escapeHtml(slas.length)} примеров</strong>
+        <span>${escapeHtml(slas.map((item) => `${item.slaName || item.policyKey}: ${item.slo}% · services ${item.serviceCount ?? 0} · schedule ${item.schedulePeriodCount ?? 0} · downtime ${item.managedExcludedDowntimeCount ?? 0} · ${item.action || 'planned'}`).join('; '))}</span>
+      </div>
+    ` : ''}
+    ${services.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">сервисы</span>
+        <strong>${escapeHtml(services.length)} примеров</strong>
+        <span>${escapeHtml(services.map((item) => `${item.serviceName || '-'} (${item.classCode || '-'}#${item.cardId || '-'}) -> ${item.policyKey || '-'} · ${zabbixSlaServiceTopologyText(item)} · ${item.action || 'planned'}`).join('; '))}</span>
+      </div>
+    ` : ''}
+    ${warnings.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">предупреждения</span>
+        <strong>${escapeHtml(warnings.length)}</strong>
+        <span>${escapeHtml(warnings.join('; '))}</span>
+      </div>
+    ` : ''}
+    ${errors.length > 0 ? `
+      <div class="rule-summary">
+        <span class="structure-mark">ошибки</span>
+        <strong>${escapeHtml(errors.length)}</strong>
+        <span>${escapeHtml(errors.join('; '))}</span>
+      </div>
+    ` : ''}
+  `;
+}
+
+function keyValueCountersText(value) {
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  return Object.entries(value)
+    .map(([key, count]) => `${key}=${count}`)
+    .join(', ');
 }
 
 function renderZabbixTriggerDependencyRuntimeSettings(inputs, payload) {
@@ -1961,6 +2862,86 @@ function renderZabbixTriggerDependencyRuntimeSettings(inputs, payload) {
       input.value = values[key] === undefined || values[key] === null || values[key] === ''
         ? '-'
         : String(values[key]);
+    }
+  }
+}
+
+function zabbixConfigTriggerDependencyPayload() {
+  const settings = state.zabbixConfigSettings.settings;
+  if (!settings) {
+    return null;
+  }
+
+  const dependencies = settings.zabbixTriggerDependencies ?? {};
+  const zabbix = settings.zabbix ?? {};
+  return {
+    transitiveGroupDependencyDepth: dependencies.transitiveGroupDependencyDepth,
+    zabbixRequestTimeoutMs: zabbix.requestTimeoutMs,
+    triggerGetBatchSize: dependencies.triggerGetBatchSize,
+    maxSourceHostsPerAggregate: dependencies.maxSourceHostsPerAggregate,
+    maxAggregateFormulaLength: dependencies.maxAggregateFormulaLength,
+    maxDependenciesPerRun: dependencies.maxDependenciesPerRun,
+    sampleLimit: dependencies.sampleLimit,
+    aggregateStateTriggerSettings: {
+      includeTags: dependencies.aggregateStateTriggerIncludeTags ?? [],
+      excludeTags: dependencies.aggregateStateTriggerExcludeTags ?? [],
+      includeNameRegex: dependencies.aggregateStateTriggerIncludeNameRegex ?? '',
+      excludeNameRegex: dependencies.aggregateStateTriggerExcludeNameRegex ?? '',
+      minPriority: dependencies.aggregateStateTriggerMinPriority ?? ''
+    }
+  };
+}
+
+function zabbixConfigUiOverrideTransitiveDepth() {
+  const raw = state.zabbixConfigSettings.uiOverrides?.transitiveGroupDependencyDepth;
+  if (raw === null || raw === undefined || raw === '') {
+    return null;
+  }
+
+  const value = Number(raw);
+  if (!Number.isInteger(value)) {
+    return null;
+  }
+
+  return clampNumber(value, state.transitiveGroupDependencyDepth, 1, 3);
+}
+
+function setZabbixConfigUiOverrideTransitiveDepth(value) {
+  if (!state.zabbixConfigSettings.uiOverrides) {
+    state.zabbixConfigSettings.uiOverrides = {};
+  }
+
+  state.zabbixConfigSettings.uiOverrides.transitiveGroupDependencyDepth = clampNumber(
+    Number(value),
+    state.transitiveGroupDependencyDepth,
+    1,
+    3);
+}
+
+function clearZabbixConfigUiOverrides() {
+  if (!state.zabbixConfigSettings.uiOverrides) {
+    state.zabbixConfigSettings.uiOverrides = {};
+  }
+
+  state.zabbixConfigSettings.uiOverrides.transitiveGroupDependencyDepth = null;
+}
+
+function zabbixConfigSlaPayload() {
+  const settings = state.zabbixConfigSettings.settings;
+  if (!settings) {
+    return null;
+  }
+
+  return {
+    ...(settings.zabbixSla ?? {}),
+    zabbixRequestTimeoutMs: settings.zabbix?.requestTimeoutMs
+  };
+}
+
+function toggleInputsDisabled(inputs, disabled) {
+  for (const input of Object.values(inputs)) {
+    if (input) {
+      input.disabled = disabled;
     }
   }
 }
@@ -2107,12 +3088,6 @@ function selectedApplyObjects() {
   const selectedDomains = new Set(domains
     .filter((item) => isApplySelected('domain', item.code, item.schemaStatus !== 'ready_to_work'))
     .map((item) => item.code));
-  for (const domainCode of automaticSchemaSourceLinkDomainCodes()) {
-    if (!existingDomainCodes.has(domainCode)) {
-      selectedDomains.add(domainCode);
-    }
-  }
-
   return {
     classes: classes
       .filter((item) => isApplySelected('class', item.code, item.schemaStatus !== 'ready_to_work'))
@@ -2230,12 +3205,13 @@ async function loadModelRootClassesForLayer(layer, rootPath) {
     url.searchParams.set('layer', layer);
     url.searchParams.set('managedOnly', 'true');
     const response = await fetch(url, {
-      headers: {
+      headers: cmdbuildFetchHeaders({
         accept: 'application/json'
-      }
+      })
     });
     if (!response.ok) {
       const text = await response.text();
+      handleCmdbuildAuthFailure(text);
       throw new Error(text || `запрос корневых классов CMDBuild не выполнен: ${response.status}`);
     }
 
@@ -2272,6 +3248,17 @@ function existingModelClassOptions() {
 }
 
 function automaticSchemaSourceLinks() {
+  return universalSchemaSourceLinks();
+}
+
+function universalSchemaSourceLinks() {
+  // The base CMDBuild schema must stay customer-neutral. Runtime source
+  // classes from rules/templates are installation data and must not produce
+  // universal domains such as ServiceNetworkAccessZonePopulatedFromVPNHUB.
+  return [];
+}
+
+function installationSchemaSourceLinks() {
   const links = new Map();
   const addLink = (managedClassCode, customerClassCode, layerKey = '') => {
     const managed = String(managedClassCode ?? '').trim();
@@ -2371,7 +3358,12 @@ function normalizeRootPath(rootPath) {
 }
 
 function renderClassTree(container, classes, domainsByClass) {
-  if (classes.length === 0 && !state.loading) {
+  const classCodes = new Set(classes.map((item) => item.code));
+  const standaloneDomains = [...domainsByClass.entries()]
+    .filter(([sourceClassCode]) => !classCodes.has(sourceClassCode))
+    .flatMap(([, domains]) => domains)
+    .sort((left, right) => left.code.localeCompare(right.code, undefined, { sensitivity: 'base' }));
+  if (classes.length === 0 && standaloneDomains.length === 0 && !state.loading) {
     container.innerHTML = '<div class="empty-state">Нет элементов для показа.</div>';
     return;
   }
@@ -2388,12 +3380,22 @@ function renderClassTree(container, classes, domainsByClass) {
     childrenByParent.set(item.parentClassCode, children);
   }
 
-  const classCodes = new Set(classes.map((item) => item.code));
   const roots = classes.filter((item) =>
     !item.parentClassCode || !classCodes.has(item.parentClassCode))
     .sort((left, right) => compareSchemaClassesByHierarchy(left, right, classOrder));
-  container.innerHTML = roots.map((item) =>
+  const classTreeHtml = roots.map((item) =>
     renderClassRow(item, childrenByParent, domainsByClass, classOrder)).join('');
+  const standaloneDomainsHtml = standaloneDomains.length > 0
+    ? `
+      <div class="standalone-domain-list">
+        <h3>Домены без класса-источника в текущем списке (${standaloneDomains.length})</h3>
+        <div class="nested-domain-list">
+          ${standaloneDomains.map((domain) => renderDomainRow(domain, domain.suggested)).join('')}
+        </div>
+      </div>
+    `
+    : '';
+  container.innerHTML = `${classTreeHtml}${standaloneDomainsHtml}`;
 }
 
 function renderClassRow(item, childrenByParent = new Map(), domainsByClass = new Map(), classOrder = new Map()) {
@@ -2515,12 +3517,13 @@ async function loadCmdbClasses() {
     const url = new URL('/api/cmdbuild/classes', window.location.origin);
     url.searchParams.set('includePrototypes', 'true');
     const response = await fetch(url, {
-      headers: {
+      headers: cmdbuildFetchHeaders({
         accept: 'application/json'
-      }
+      })
     });
     if (!response.ok) {
       const text = await response.text();
+      handleCmdbuildAuthFailure(text);
       throw new Error(text || `запрос классов CMDBuild не выполнен: ${response.status}`);
     }
 
@@ -2536,12 +3539,13 @@ async function loadCmdbClasses() {
 async function loadCmdbClassSchemas() {
   try {
     const response = await fetch('/api/cmdbuild/classes/schema', {
-      headers: {
+      headers: cmdbuildFetchHeaders({
         accept: 'application/json'
-      }
+      })
     });
     if (!response.ok) {
       const text = await response.text();
+      handleCmdbuildAuthFailure(text);
       throw new Error(text || `запрос схемы классов CMDBuild не выполнен: ${response.status}`);
     }
 
@@ -2577,12 +3581,13 @@ async function loadCmdbClassInstances() {
     url.searchParams.set('serviceModelRoot', state.serviceModelRoot || defaultModelRoot(state.language));
     url.searchParams.set('suppressionModelRoot', state.suppressionModelRoot || defaultModelRoot(state.language));
     const response = await fetch(url, {
-      headers: {
+      headers: cmdbuildFetchHeaders({
         accept: 'application/json'
-      }
+      })
     });
     if (!response.ok) {
       const text = await response.text();
+      handleCmdbuildAuthFailure(text);
       throw new Error(text || `запрос экземпляров классов CMDBuild не выполнен: ${response.status}`);
     }
 
@@ -2599,12 +3604,13 @@ async function loadSourceClassCards(classCode) {
   const url = new URL(`/api/cmdbuild/classes/${encodeURIComponent(classCode)}/cards`, window.location.origin);
   url.searchParams.set('layer', 'Source');
   const response = await fetch(url, {
-    headers: {
+    headers: cmdbuildFetchHeaders({
       accept: 'application/json'
-    }
+    })
   });
   if (!response.ok) {
     const text = await response.text();
+    handleCmdbuildAuthFailure(text);
     throw new Error(`${classCode}: ${text || `запрос карточек источника CMDBuild не выполнен: ${response.status}`}`);
   }
 
@@ -2661,12 +3667,13 @@ async function fetchCmdbDomains(prefix) {
     url.searchParams.set('prefix', prefix);
   }
   const response = await fetch(url, {
-    headers: {
+    headers: cmdbuildFetchHeaders({
       accept: 'application/json'
-    }
+    })
   });
   if (!response.ok) {
     const text = await response.text();
+    handleCmdbuildAuthFailure(text);
     throw new Error(text || `запрос доменов CMDBuild не выполнен: ${response.status}`);
   }
 
@@ -3866,7 +4873,19 @@ function rememberCreatedTargetCard(layerKey, classCode, card) {
     state.cmdbClassInstances.push(classItem);
   }
 
-  if ((classItem.cards ?? []).some((item) => String(item.id) === String(card.id))) {
+  const existingCard = (classItem.cards ?? []).find((item) => String(item.id) === String(card.id));
+  if (existingCard) {
+    existingCard.description = card.description;
+    existingCard.attributes = targetClassAttributes(classCode).map((attribute) => ({
+      code: attributeCode(attribute),
+      name: attribute.name || attribute.displayName || attributeCode(attribute),
+      description: attribute.description || attribute.displayName || attributeCode(attribute),
+      type: attribute.type || '',
+      valueKind: typeof card.values?.[attributeCode(attribute)],
+      value: card.values?.[attributeCode(attribute)] == null
+        ? null
+        : String(card.values[attributeCode(attribute)])
+    }));
     return;
   }
 
@@ -4593,6 +5612,10 @@ function renderRuleEditors() {
   renderRuleEditor('suppression');
 }
 
+function ruleEditorTemplateFilterEnabled(layerKey) {
+  return state.ruleEditorFilterTemplateRules[layerKey] !== false;
+}
+
 function renderRuleEditor(layerKey) {
   const config = ruleEditorConfig(layerKey);
   if (!config.status) {
@@ -4603,7 +5626,7 @@ function renderRuleEditor(layerKey) {
   const rules = parsed.ok ? parsed.document.rules : [];
   const action = config.action.value || 'add';
   const selectedRule = config.select.value;
-  const filterTemplateRules = state.ruleEditorFilterTemplateRules[layerKey] !== false;
+  const filterTemplateRules = ruleEditorTemplateFilterEnabled(layerKey);
   if (config.filterTemplateRules) {
     config.filterTemplateRules.checked = filterTemplateRules;
   }
@@ -4642,6 +5665,7 @@ function renderRuleEditor(layerKey) {
   config.attributeList.querySelectorAll('input, select, textarea').forEach((element) => {
     element.disabled = editDisabled;
   });
+  renderDeriveCopyControl('rule', layerKey);
   renderRuleEditorStatus(layerKey, parsed);
 }
 
@@ -4675,7 +5699,8 @@ function handleRuleEditorChange(layerKey, target) {
   if (target.matches('[data-rule-filter-template-rules]')) {
     state.ruleEditorFilterTemplateRules[layerKey] = target.checked;
     renderRuleEditor(layerKey);
-    if ((config.action.value || 'add') !== 'add' && config.select.value) {
+    if ((config.action.value || 'add') !== 'add') {
+      selectFirstRuleIfNeeded(layerKey);
       loadSelectedRuleIntoEditor(layerKey);
     }
     return;
@@ -4746,6 +5771,7 @@ async function applyRuleEditorChange(layerKey) {
     } else {
       document.rules.push(rule);
       config.name.value = '';
+      state.ruleEditorDerivedFrom[layerKey] = null;
     }
 
     writeRuleDocument(layerKey, document);
@@ -4825,7 +5851,8 @@ function readRuleEditorValues(layerKey) {
     targetValues,
     selectedCard,
     priority,
-    name
+    name,
+    derivedFrom: state.ruleEditorDerivedFrom[layerKey] ? cloneJson(state.ruleEditorDerivedFrom[layerKey]) : null
   };
 }
 
@@ -4846,15 +5873,17 @@ async function ensureRuleTargetCard(layerKey, values, existingRule = null) {
   const payloadValues = ruleTargetCardPayload(values.targetValues, identity.ruleId);
   const response = await fetch(`/api/cmdbuild/classes/${encodeURIComponent(values.targetClass)}/cards`, {
     method: 'POST',
-    headers: {
+    headers: cmdbuildFetchHeaders({
       'content-type': 'application/json',
       accept: 'application/json'
-    },
+    }),
     body: JSON.stringify({ values: payloadValues })
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.detail || payload.error || `Не удалось создать целевой объект CMDBuild: ${response.status}`);
+    const detail = payload.detail || payload.error || `Не удалось создать целевой объект CMDBuild: ${response.status}`;
+    handleCmdbuildAuthFailure(detail);
+    throw new Error(detail);
   }
 
   const cardId = String(payload.id ?? payload.Id ?? '').trim();
@@ -4932,6 +5961,9 @@ function buildBindingRule(layerKey, values, existingRule = null) {
     managed_relations: Array.isArray(existingRule?.managed_relations)
       ? cloneJson(existingRule.managed_relations)
       : [],
+    ...(values.derivedFrom || existingRule?.derived_from
+      ? { derived_from: cloneJson(values.derivedFrom || existingRule.derived_from) }
+      : {}),
     source: {
       class_code: values.sourceClass,
       key_attribute: values.keyField
@@ -5100,6 +6132,7 @@ function loadSelectedRuleIntoEditor(layerKey) {
   const index = Number(config.select.value);
   const rule = Number.isInteger(index) ? parsed.document.rules[index] : null;
   if (!rule) {
+    clearSelectedRuleEditorFields(layerKey);
     return;
   }
 
@@ -5109,6 +6142,22 @@ function loadSelectedRuleIntoEditor(layerKey) {
   config.targetClass.value = targetSelectionValueFromRule(rule);
   state.ruleEditorSelectionFilters[layerKey] = selectionFiltersFromRule(rule);
   state.ruleEditorTargetValues[layerKey] = ruleTargetInitialValuesForEditor(layerKey, rule);
+  state.ruleEditorDerivedFrom[layerKey] = rule.derived_from ? cloneJson(rule.derived_from) : null;
+  renderRuleSourceFieldOptions(layerKey);
+  renderRuleSelectionFilterList(layerKey);
+  renderRuleTargetFieldOptions(layerKey);
+  renderRuleAttributeList(layerKey);
+}
+
+function clearSelectedRuleEditorFields(layerKey) {
+  const config = ruleEditorConfig(layerKey);
+  config.name.value = '';
+  config.sourceClass.value = '';
+  config.priority.value = '';
+  config.targetClass.value = '';
+  state.ruleEditorSelectionFilters[layerKey] = [];
+  state.ruleEditorTargetValues[layerKey] = {};
+  state.ruleEditorDerivedFrom[layerKey] = null;
   renderRuleSourceFieldOptions(layerKey);
   renderRuleSelectionFilterList(layerKey);
   renderRuleTargetFieldOptions(layerKey);
@@ -5152,6 +6201,7 @@ function resetRuleEditorForCreate(layerKey) {
   config.targetClass.value = '';
   state.ruleEditorSelectionFilters[layerKey] = selectionFiltersFromRule(suggestion);
   state.ruleEditorTargetValues[layerKey] = {};
+  state.ruleEditorDerivedFrom[layerKey] = null;
   applyRuleEditorSuggestions(layerKey, suggestion);
   renderRuleSelectionFilterList(layerKey);
   renderRuleAttributeList(layerKey);
@@ -5263,7 +6313,7 @@ function selectFirstRuleIfNeeded(layerKey) {
   }
 
   const options = ruleSelectOptions(parsed.document.rules, {
-    filterTemplateRules: state.ruleEditorFilterTemplateRules[layerKey] !== false
+    filterTemplateRules: ruleEditorTemplateFilterEnabled(layerKey)
   });
   const firstRule = options.find((option) => !option.disabled && option.value !== '');
   if (firstRule) {
@@ -6241,6 +7291,7 @@ function ruleTargetObjectAttributeRows(layerKey, classCode, options = {}) {
     return {
       attribute,
       code,
+      layerKey,
       value: Object.hasOwn(values, code) ? values[code] : defaultRuleTargetObjectValue(layerKey, code)
     };
   });
@@ -6306,6 +7357,7 @@ function defaultRuleTargetObjectValue(layerKey, code) {
 
 function ruleAttributeRowTemplate(row) {
   const label = row.attribute.displayName || row.attribute.description || row.code;
+  const help = targetAttributeHelpText(row.attribute, row.code, row.layerKey);
   return `
     <div class="rule-attribute-row" data-rule-attribute-row>
       <div class="rule-attribute-name">
@@ -6314,10 +7366,22 @@ function ruleAttributeRowTemplate(row) {
       </div>
       ${ruleTargetValueControlTemplate(row.attribute, row.value)}
       <div class="rule-attribute-help" data-rule-attribute-help>
-        ${escapeHtml(row.attribute.help || row.attribute.description || '')}
+        ${escapeHtml(help)}
       </div>
     </div>
   `;
+}
+
+function targetAttributeHelpText(attribute, code, layerKey) {
+  const baseHelp = String(attribute?.help || attribute?.description || '').trim();
+  const additions = [];
+  if (canonicalToken(code) === 'name' && ['service', 'suppression'].includes(String(layerKey ?? '').toLowerCase())) {
+    additions.push('Значение поля name используется как отображаемое имя объекта при публикации в Zabbix.');
+  }
+
+  return [baseHelp, ...additions]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function ruleTargetValueControlTemplate(attribute, value, options = {}) {
@@ -6907,6 +7971,7 @@ function renderTemplateEditor(layerKey) {
   renderTemplatePopulationDimensionOptions(layerKey);
   renderTemplateSelectionFilterList(layerKey);
   renderTemplateTargetAttributeList(layerKey);
+  renderDeriveCopyControl('template', layerKey);
   renderTemplateEditorStatus(layerKey);
 }
 
@@ -6935,6 +8000,7 @@ function loadSelectedTemplateIntoEditor(layerKey) {
   config.name.value = template.name || '';
   config.sourceRegex.value = template.source_class_regex || '';
   state.templateEditorSelectionFilters[layerKey] = selectionFiltersFromTemplate(template);
+  state.templateEditorDerivedFrom[layerKey] = template.derived_from ? cloneJson(template.derived_from) : null;
   config.priority.value = String(template.priority ?? 100);
   setSelectOptions(config.targetClass, templateTargetClassOptions(layerKey), template.target?.class_code || '');
   config.targetName.value = template.target?.name_template || '';
@@ -6946,7 +8012,7 @@ function loadSelectedTemplateIntoEditor(layerKey) {
     : templatePopulationSourceKeyTemplate(template);
   setTemplatePopulationDimensionEditorValues(layerKey, populationDimension);
   if (config.deleteMode) {
-    config.deleteMode.value = TEMPLATE_DELETE_MODES.detachRulesKeepObjects;
+    config.deleteMode.value = state.defaultTemplateDeleteMode;
   }
   renderTemplateVariableList(layerKey, template.variables ?? []);
   renderTemplateSourceFieldOptions(layerKey);
@@ -6966,6 +8032,7 @@ function resetTemplateEditorForCreate(layerKey) {
   config.name.value = '';
   config.sourceRegex.value = '';
   state.templateEditorSelectionFilters[layerKey] = [];
+  state.templateEditorDerivedFrom[layerKey] = null;
   config.priority.value = '';
   setSelectOptions(config.targetClass, templateTargetClassOptions(layerKey), '');
   config.targetName.value = '${dimension.name}';
@@ -6975,7 +8042,7 @@ function resetTemplateEditorForCreate(layerKey) {
   config.sourceKey.value = defaultDimension.key_template;
   setTemplatePopulationDimensionEditorValues(layerKey, defaultDimension);
   if (config.deleteMode) {
-    config.deleteMode.value = TEMPLATE_DELETE_MODES.detachRulesKeepObjects;
+    config.deleteMode.value = state.defaultTemplateDeleteMode;
   }
   renderTemplateSourceFieldOptions(layerKey);
   renderTemplateSourceFieldHelper(layerKey);
@@ -6983,6 +8050,636 @@ function resetTemplateEditorForCreate(layerKey) {
   renderTemplateSelectionFilterList(layerKey);
   renderTemplateTargetAttributeList(layerKey);
   renderTemplateVariableList(layerKey, []);
+}
+
+function renderDeriveCopyControl(kind, layerKey) {
+  const config = deriveCopyConfig(kind, layerKey);
+  const sourceSelect = config.deriveSource;
+  const preview = config.derivePreview;
+  const button = config.deriveButton;
+  if (!sourceSelect || !preview || !button) {
+    return;
+  }
+
+  const context = state.linkRelationContext ?? { layer: layerKey, kind: 'template_template' };
+  const currentValue = sourceSelect.value;
+  const options = deriveCopySourceOptions(kind, layerKey, context.kind);
+  setSelectOptions(sourceSelect, options, currentValue);
+  const result = deriveCopyResult(kind, layerKey, sourceSelect.value, context.kind);
+  preview.innerHTML = renderDeriveCopyPreview(result);
+  button.disabled = !sourceSelect.value || result.errors.length > 0;
+}
+
+function deriveCopyConfig(kind, layerKey) {
+  if (kind === 'template') {
+    return templateEditorConfig(layerKey);
+  }
+
+  if (kind === 'relation') {
+    return linkRelationEditorConfig();
+  }
+
+  return ruleEditorConfig(layerKey);
+}
+
+function deriveCopySourceOptions(kind, layerKey, relationKind = '') {
+  if (kind === 'template') {
+    const items = LAYER_KEYS.flatMap((sourceLayer) => {
+      const document = normalizeTemplateDocument(state.templateDocuments[sourceLayer], sourceLayer);
+      return document.templates.map((template) => ({
+        value: deriveSourceValue({ kind, layer: sourceLayer, id: template.template_id }),
+        label: `${layerHumanLabel(sourceLayer)}: ${template.name || template.template_id} [${template.template_id}]`
+      }));
+    }).sort(compareLinkRelationEntityLabels);
+    return deriveCopyOptionsWithPlaceholder(items, 'Выберите шаблон-источник', 'Нет шаблонов для копирования');
+  }
+
+  if (kind === 'relation') {
+    const effectiveKind = relationKind || state.linkRelationContext?.kind || 'template_template';
+    const items = LAYER_KEYS.flatMap((sourceLayer) => {
+      const kindConfig = linkRelationKindConfig(effectiveKind, sourceLayer);
+      return linkRelationRows(sourceLayer, effectiveKind, kindConfig).map((row) => ({
+        value: deriveSourceValue({
+          kind,
+          layer: sourceLayer,
+          relationKind: effectiveKind,
+          sourceType: row.sourceType || kindConfig.sourceType,
+          sourceId: row.sourceId,
+          targetType: row.targetType || kindConfig.targetType,
+          managedKey: row.relation?.managed_key || ''
+        }),
+        label: `${layerHumanLabel(sourceLayer)}: ${row.sourceLabel} -> ${row.targetLabel} (${linkRelationRoleLabel(row.relation?.relation_role)})`
+      }));
+    }).sort(compareLinkRelationEntityLabels);
+    return deriveCopyOptionsWithPlaceholder(items, 'Выберите связь-источник', 'Нет связей этого типа для копирования');
+  }
+
+  const filterTemplateRules = ruleEditorTemplateFilterEnabled(layerKey);
+  const items = LAYER_KEYS.flatMap((sourceLayer) => {
+    const parsed = parseRuleDocument(sourceLayer);
+    const rules = parsed.ok ? parsed.document.rules : [];
+    return rules
+      .filter((rule) => rule?.rule_id)
+      .filter((rule) => !filterTemplateRules || !isTemplateOwnedRule(rule))
+      .map((rule) => ({
+        value: deriveSourceValue({ kind, layer: sourceLayer, id: rule.rule_id }),
+        label: `${layerHumanLabel(sourceLayer)}: ${rule.name || rule.rule_id} [${rule.rule_id}]`
+      }));
+  }).sort(compareLinkRelationEntityLabels);
+  return deriveCopyOptionsWithPlaceholder(
+    items,
+    'Выберите правило-источник',
+    filterTemplateRules ? 'Нет ручных правил для копирования' : 'Нет правил для копирования');
+}
+
+function deriveCopyOptionsWithPlaceholder(items, placeholder, emptyLabel) {
+  return items.length > 0
+    ? [{ value: '', label: placeholder }, ...items]
+    : [{ value: '', label: emptyLabel, disabled: true }];
+}
+
+function deriveCopyResult(kind, targetLayer, sourceValue, relationKind = '') {
+  const ref = parseDeriveSourceValue(sourceValue);
+  if (!ref) {
+    return {
+      ok: false,
+      title: '',
+      copied: [],
+      changed: [],
+      dropped: [],
+      manual: [],
+      warnings: [],
+      errors: []
+    };
+  }
+
+  if (kind === 'template') {
+    return buildTemplateDeriveResult(targetLayer, ref);
+  }
+
+  if (kind === 'relation') {
+    return buildRelationDeriveResult(targetLayer, { ...ref, relationKind: ref.relationKind || relationKind });
+  }
+
+  return buildRuleDeriveResult(targetLayer, ref);
+}
+
+function applyDeriveCopyDraft(kind, layerKey) {
+  const config = deriveCopyConfig(kind, layerKey);
+  const context = state.linkRelationContext ?? { layer: layerKey, kind: 'template_template' };
+  const result = deriveCopyResult(kind, layerKey, config.deriveSource?.value, context.kind);
+  if (result.errors.length > 0) {
+    if (kind === 'relation') {
+      setLinkRelationStatus(result.errors.join('; '), 'error');
+    } else if (kind === 'template') {
+      setTemplateEditorStatus(layerKey, result.errors.join('; '), 'error');
+    } else {
+      setRuleEditorStatus(layerKey, result.errors.join('; '), 'error');
+    }
+    renderDeriveCopyControl(kind, layerKey);
+    return;
+  }
+
+  if (kind === 'template') {
+    loadTemplateDraftIntoEditor(layerKey, result);
+    return;
+  }
+
+  if (kind === 'relation') {
+    loadRelationDraftIntoEditor(layerKey, result);
+    return;
+  }
+
+  loadRuleDraftIntoEditor(layerKey, result);
+}
+
+function buildTemplateDeriveResult(targetLayer, ref) {
+  const sourceTemplate = findLayerTemplate(ref.layer, ref.id);
+  const result = deriveResultShell(`Шаблон ${deriveSourceTitle(ref.layer, sourceTemplate?.name || ref.id)}`);
+  if (!sourceTemplate) {
+    result.errors.push('Шаблон-источник не найден.');
+    return result;
+  }
+
+  const sourceClass = sourceTemplate.target?.class_code || '';
+  const targetClass = mapTargetClassForLayer(sourceClass, ref.layer, targetLayer);
+  if (sourceClass && targetClass && sourceClass !== targetClass) {
+    result.changed.push(`Целевой класс: ${sourceClass} -> ${targetClass}.`);
+  } else if (sourceClass && targetClass) {
+    result.copied.push(`Целевой класс сохранен: ${targetClass}.`);
+  } else if (sourceClass) {
+    result.manual.push(`Целевой класс ${sourceClass} не сопоставлен со слоем ${layerHumanLabel(targetLayer)}; выберите его вручную.`);
+  }
+
+  const filteredValues = filterTargetInitialValuesForClass(
+    targetLayer,
+    targetClass,
+    sourceTemplate.target?.initial_user_values,
+    { mode: 'template' });
+  result.dropped.push(...filteredValues.dropped.map((code) => `Атрибут ${code} отсутствует/не разрешен в целевом классе.`));
+  result.copied.push('Source class regexp, условия выборки, измерение population и переменные будут скопированы.');
+  result.dropped.push('Связи шаблона не копируются автоматически; используйте "Создать на основе..." в управлении связями.');
+
+  const draft = cloneJson(sourceTemplate);
+  draft.template_id = uniqueTemplateIdForLayer(targetLayer, templateCopyBaseId(sourceTemplate.template_id, ref.layer, targetLayer));
+  draft.name = copyDisplayName(sourceTemplate.name || sourceTemplate.template_id, targetLayer);
+  draft.layer = targetLayer;
+  draft.version = 1;
+  draft.lifecycle = {};
+  draft.managed_relations = [];
+  draft.target = {
+    ...(draft.target ?? {}),
+    class_code: targetClass,
+    initial_user_values: filteredValues.values
+  };
+  draft.derived_from = deriveMetadata(ref.layer, 'template', sourceTemplate.template_id, sourceTemplate);
+  result.draft = draft;
+  result.ok = true;
+  return result;
+}
+
+function buildRuleDeriveResult(targetLayer, ref) {
+  const sourceRule = findLayerRule(ref.layer, ref.id);
+  const result = deriveResultShell(`Правило ${deriveSourceTitle(ref.layer, sourceRule?.name || ref.id)}`);
+  if (!sourceRule) {
+    result.errors.push('Правило-источник не найдено.');
+    return result;
+  }
+
+  const sourceTargetClass = ruleTargetClassCode(sourceRule);
+  const targetClass = mapTargetClassForLayer(sourceTargetClass, ref.layer, targetLayer);
+  if (sourceTargetClass && targetClass && sourceTargetClass !== targetClass) {
+    result.changed.push(`Целевой класс: ${sourceTargetClass} -> ${targetClass}.`);
+  } else if (sourceTargetClass && targetClass) {
+    result.copied.push(`Целевой класс сохранен: ${targetClass}.`);
+  } else if (sourceTargetClass) {
+    result.manual.push(`Целевой класс ${sourceTargetClass} не сопоставлен со слоем ${layerHumanLabel(targetLayer)}; выберите его вручную.`);
+  }
+
+  const sourceSelection = parseTargetSelection(targetSelectionValueFromRule(sourceRule));
+  const preserveInstance = ref.layer === targetLayer && sourceSelection.kind === 'instance';
+  if (sourceSelection.kind === 'instance' && !preserveInstance) {
+    result.manual.push('Конкретный экземпляр целевого объекта не переносится между слоями; черновик будет создан на целевой класс.');
+  }
+
+  const filteredValues = filterTargetInitialValuesForClass(
+    targetLayer,
+    targetClass,
+    sourceRule.target?.initial_user_values,
+    { mode: 'rule', includeIdentity: !preserveInstance });
+  result.dropped.push(...filteredValues.dropped.map((code) => `Атрибут ${code} отсутствует/не разрешен в целевом классе.`));
+  result.copied.push('Класс-источник, условия выборки, приоритет и пользовательские атрибуты будут скопированы.');
+  result.dropped.push('Связи правила не копируются автоматически; используйте "Создать на основе..." в управлении связями.');
+
+  result.draft = {
+    name: copyDisplayName(sourceRule.name || sourceRule.rule_id || 'rule', targetLayer),
+    sourceClass: ruleSourceClassCode(sourceRule),
+    priority: Number(sourceRule.priority || 100),
+    targetClass,
+    targetSelectionValue: preserveInstance ? targetSelectionValueFromRule(sourceRule) : targetClass,
+    selectionFilters: selectionFiltersFromRule(sourceRule),
+    targetValues: filteredValues.values,
+    derivedFrom: deriveMetadata(ref.layer, 'rule', sourceRule.rule_id, sourceRule)
+  };
+  result.ok = true;
+  return result;
+}
+
+function buildRelationDeriveResult(targetLayer, ref) {
+  const sourceRow = findLinkRelationRowByRef(ref);
+  const result = deriveResultShell(`Связь ${deriveSourceTitle(ref.layer, sourceRow ? `${sourceRow.sourceLabel} -> ${sourceRow.targetLabel}` : ref.managedKey)}`);
+  if (!sourceRow) {
+    result.errors.push('Связь-источник не найдена.');
+    return result;
+  }
+
+  const sourceKindConfig = linkRelationKindConfig(ref.relationKind, ref.layer);
+  const targetKindConfig = linkRelationKindConfig(ref.relationKind, targetLayer);
+  const mappedSource = mapLinkRelationEntityForLayer(
+    ref.layer,
+    targetLayer,
+    sourceRow.sourceType || sourceKindConfig.sourceType,
+    sourceRow.sourceId);
+  const mappedTarget = mapLinkRelationEntityForLayer(
+    ref.layer,
+    targetLayer,
+    sourceRow.targetType || sourceKindConfig.targetType,
+    linkRelationTargetId(sourceRow.relation, sourceRow.targetType || sourceKindConfig.targetType));
+
+  if (mappedSource.id) {
+    result.changed.push(`Источник связи: ${sourceRow.sourceLabel} -> ${linkRelationEntityLabel(targetLayer, mappedSource.type, mappedSource.id)}.`);
+  } else {
+    result.manual.push(`Источник связи "${sourceRow.sourceLabel}" не найден в слое ${layerHumanLabel(targetLayer)}; выберите вручную.`);
+  }
+
+  if (mappedTarget.id) {
+    result.changed.push(`Назначение связи: ${sourceRow.targetLabel} -> ${linkRelationEntityLabel(targetLayer, mappedTarget.type, mappedTarget.id)}.`);
+  } else {
+    result.manual.push(`Назначение связи "${sourceRow.targetLabel}" не найдено в слое ${layerHumanLabel(targetLayer)}; выберите вручную.`);
+  }
+
+  result.copied.push('Тип связи, описание, regexp-сопоставления и фильтры будут скопированы.');
+  result.draft = {
+    sourceValue: linkRelationSelectValueForDraft(targetKindConfig, 'source', mappedSource),
+    targetValue: linkRelationSelectValueForDraft(targetKindConfig, 'target', mappedTarget),
+    role: sourceRow.relation.relation_role || 'uses',
+    description: String(sourceRow.relation.attributes?.description ?? '').trim(),
+    match: cloneJson(sourceRow.relation.attributes?.match ?? null),
+    derivedFrom: deriveMetadata(ref.layer, 'relation', sourceRow.relation.managed_key, sourceRow.relation, {
+      relation_kind: ref.relationKind,
+      source_type: sourceRow.sourceType || sourceKindConfig.sourceType,
+      source_id: sourceRow.sourceId
+    })
+  };
+  result.ok = true;
+  return result;
+}
+
+function deriveResultShell(title) {
+  return {
+    ok: false,
+    title,
+    copied: [],
+    changed: [],
+    dropped: [],
+    manual: [],
+    warnings: [],
+    errors: [],
+    draft: null
+  };
+}
+
+function renderDeriveCopyPreview(result) {
+  if (!result?.title && result?.errors?.length === 0) {
+    return 'Выберите источник, чтобы увидеть предварительное сравнение.';
+  }
+
+  const sections = [
+    deriveCopyPreviewList('Будет скопировано', result.copied),
+    deriveCopyPreviewList('Будет изменено', result.changed),
+    deriveCopyPreviewList('Потребует ручной проверки', result.manual, 'warn'),
+    deriveCopyPreviewList('Не переносится', result.dropped),
+    deriveCopyPreviewList('Ошибки', result.errors, 'error')
+  ].filter(Boolean).join('');
+  return `
+    ${result.title ? `<strong>${escapeHtml(result.title)}</strong>` : ''}
+    ${sections || '<span>Источник можно использовать без дополнительных изменений.</span>'}
+  `;
+}
+
+function deriveCopyPreviewList(title, items, className = '') {
+  const rows = (items ?? []).filter(Boolean);
+  if (rows.length === 0) {
+    return '';
+  }
+
+  const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
+  return `
+    <div${classAttr}>
+      <span>${escapeHtml(title)}:</span>
+      <ul>${rows.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </div>
+  `;
+}
+
+function loadTemplateDraftIntoEditor(layerKey, result) {
+  const draft = normalizeTemplate(result.draft, layerKey);
+  const config = templateEditorConfig(layerKey);
+  state.templateEditorSelected[layerKey] = '';
+  config.select.value = '';
+  config.id.value = draft.template_id || '';
+  config.id.readOnly = false;
+  config.id.title = 'ID нового шаблона можно изменить до сохранения.';
+  config.name.value = draft.name || '';
+  config.sourceRegex.value = draft.source_class_regex || '';
+  state.templateEditorSelectionFilters[layerKey] = selectionFiltersFromTemplate(draft);
+  state.templateEditorDerivedFrom[layerKey] = draft.derived_from ? cloneJson(draft.derived_from) : null;
+  config.priority.value = String(draft.priority ?? 100);
+  setSelectOptions(config.targetClass, templateTargetClassOptions(layerKey), draft.target?.class_code || '');
+  config.targetName.value = draft.target?.name_template || '';
+  config.targetDescription.value = draft.target?.description_template || '';
+  state.templateEditorTargetValues[layerKey] = templateTargetValuesForEditor(layerKey, draft.target?.initial_user_values ?? {});
+  const populationDimension = templatePopulationDimension(draft);
+  config.sourceKey.value = isTemplateDimensionMaterialized(populationDimension)
+    ? populationDimension.key_template
+    : templatePopulationSourceKeyTemplate(draft);
+  setTemplatePopulationDimensionEditorValues(layerKey, populationDimension);
+  renderTemplateVariableList(layerKey, draft.variables ?? []);
+  renderTemplateSourceFieldOptions(layerKey);
+  renderTemplateSourceFieldHelper(layerKey);
+  renderTemplatePopulationDimensionOptions(layerKey);
+  renderTemplateSelectionFilterList(layerKey);
+  renderTemplateTargetAttributeList(layerKey);
+  setTemplateEditorStatus(layerKey, 'Черновик шаблона создан на основе выбранного источника. Проверьте diff и нажмите "Сохранить шаблон".');
+  renderDeriveCopyControl('template', layerKey);
+}
+
+function loadRuleDraftIntoEditor(layerKey, result) {
+  const draft = result.draft ?? {};
+  const config = ruleEditorConfig(layerKey);
+  config.action.value = 'add';
+  config.select.value = '';
+  config.name.value = draft.name || '';
+  config.sourceClass.value = draft.sourceClass || '';
+  config.priority.value = String(draft.priority || '');
+  state.ruleEditorSelectionFilters[layerKey] = cloneJson(draft.selectionFilters ?? []);
+  state.ruleEditorTargetValues[layerKey] = cloneJson(draft.targetValues ?? {});
+  state.ruleEditorDerivedFrom[layerKey] = draft.derivedFrom ? cloneJson(draft.derivedFrom) : null;
+  setSelectOptions(config.targetClass, targetClassOptions(layerKey, draft.targetClass || '', {
+    filterTemplateTargets: ruleEditorTemplateFilterEnabled(layerKey)
+  }), draft.targetSelectionValue || draft.targetClass || '');
+  renderRuleSourceFieldOptions(layerKey);
+  renderRuleSelectionFilterList(layerKey);
+  renderRuleTargetFieldOptions(layerKey);
+  renderRuleAttributeList(layerKey);
+  setRuleEditorStatus(layerKey, 'Черновик правила создан на основе выбранного источника. Проверьте diff и нажмите "Применить".');
+  renderDeriveCopyControl('rule', layerKey);
+}
+
+function loadRelationDraftIntoEditor(layerKey, result) {
+  const draft = result.draft ?? {};
+  const context = state.linkRelationContext ?? { layer: layerKey, kind: 'template_template' };
+  const kindConfig = linkRelationKindConfig(context.kind, context.layer);
+  const config = linkRelationEditorConfig();
+  setSelectOptions(config.source, linkRelationEntityOptions(layerKey, kindConfig.sourceType, kindConfig), draft.sourceValue || '');
+  setSelectOptions(config.target, linkRelationEntityOptions(layerKey, kindConfig.targetType, kindConfig), draft.targetValue || '');
+  setSelectOptions(config.role, linkRelationRoleOptions(layerKey), draft.role || 'uses');
+  if (config.description) {
+    config.description.value = draft.description || '';
+  }
+  state.linkRelationDerivedFrom = draft.derivedFrom ? cloneJson(draft.derivedFrom) : null;
+  renderLinkRelationVariableControls(context, kindConfig);
+  setLinkRelationMatchControls(draft.match);
+  setLinkRelationStatus('Черновик связи создан на основе выбранного источника. Проверьте направление и нажмите "Добавить связь".');
+  renderDeriveCopyControl('relation', layerKey);
+}
+
+function setLinkRelationMatchControls(match) {
+  const config = linkRelationEditorConfig();
+  const normalized = match && typeof match === 'object' && !Array.isArray(match) ? match : {};
+  if (config.sourceVariable) {
+    config.sourceVariable.value = normalized.source_variable || '';
+  }
+  if (config.targetVariable) {
+    config.targetVariable.value = normalized.target_variable || '';
+  }
+  if (config.sourceMatchRegex) {
+    config.sourceMatchRegex.value = normalized.source_pattern || normalized.pattern || '';
+  }
+  if (config.targetMatchRegex) {
+    config.targetMatchRegex.value = normalized.target_pattern || '';
+  }
+
+  setLinkRelationFilterRows('source', linkRelationSourceFiltersFromMatch(normalized));
+  setLinkRelationFilterRows('target', linkRelationTargetFiltersFromMatch(normalized));
+}
+
+function setLinkRelationFilterRows(side, filters) {
+  const context = state.linkRelationContext ?? { layer: 'service', kind: 'template_template' };
+  const config = linkRelationEditorConfig();
+  const list = linkRelationFilterListElement(config, side);
+  if (!list) {
+    return;
+  }
+
+  const rows = (filters ?? []).length > 0
+    ? filters
+    : [{ mode: 'include', variable: '', regex: '' }];
+  const templateId = linkRelationSelectedTemplateId(config, linkRelationKindConfig(context.kind, context.layer), side);
+  list.innerHTML = linkRelationFilterListTemplate(
+    rows,
+    linkRelationFilterVariableOptions(context.layer, templateId),
+    side);
+}
+
+function filterTargetInitialValuesForClass(layerKey, classCode, values, options = {}) {
+  const mode = options.mode === 'template' ? 'template' : 'rule';
+  const attributes = mode === 'template'
+    ? templateTargetObjectEditableAttributes(layerKey, classCode)
+    : targetObjectEditableAttributes(layerKey, classCode, { includeIdentity: options.includeIdentity !== false });
+  const byToken = new Map(attributes.map((attribute) => [canonicalToken(attributeCode(attribute)), attributeCode(attribute)]));
+  const result = {};
+  const dropped = [];
+  for (const [code, value] of Object.entries(values ?? {})) {
+    const targetCode = byToken.get(canonicalToken(code));
+    if (!targetCode) {
+      dropped.push(code);
+      continue;
+    }
+    result[targetCode] = String(value ?? '');
+  }
+
+  return { values: result, dropped };
+}
+
+function deriveMetadata(layer, type, id, sourceObject, extra = {}) {
+  return {
+    layer,
+    type,
+    id: String(id ?? '').trim(),
+    version: String(sourceObject?.version ?? sourceObject?.lifecycle?.version ?? '').trim(),
+    copied_at: new Date().toISOString(),
+    ...extra
+  };
+}
+
+function deriveSourceValue(payload) {
+  return encodeURIComponent(JSON.stringify(payload ?? {}));
+}
+
+function parseDeriveSourceValue(value) {
+  try {
+    const text = String(value ?? '').trim();
+    return text ? JSON.parse(decodeURIComponent(text)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function deriveSourceTitle(layerKey, label) {
+  return `${layerHumanLabel(layerKey)} / ${label || '-'}`;
+}
+
+function copyDisplayName(name, targetLayer) {
+  const label = String(name ?? '').trim() || 'Копия';
+  return `${label} (${layerHumanLabel(targetLayer)}, копия)`;
+}
+
+function templateCopyBaseId(templateId, sourceLayer, targetLayer) {
+  const sourcePrefix = `${sourceLayer}-`;
+  const targetPrefix = `${targetLayer}-`;
+  const base = normalizeRuleId(templateId || 'template');
+  return base.startsWith(sourcePrefix)
+    ? `${targetPrefix}${base.slice(sourcePrefix.length)}`
+    : `${base}-${targetLayer}-copy`;
+}
+
+function uniqueTemplateIdForLayer(layerKey, desiredId) {
+  const document = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey);
+  const existing = new Set(document.templates.map((template) => template.template_id));
+  const base = normalizeRuleId(desiredId || 'template-copy');
+  if (!existing.has(base)) {
+    return base;
+  }
+
+  for (let index = 2; index < 10000; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existing.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Не удалось сформировать уникальный ID шаблона для ${base}.`);
+}
+
+function mapTargetClassForLayer(classCode, sourceLayer, targetLayer) {
+  const sourceCode = String(classCode ?? '').trim();
+  if (!sourceCode || sourceLayer === targetLayer) {
+    return sourceCode;
+  }
+
+  const candidates = targetLayerTargetClassCodes(targetLayer);
+  const exactCandidate = [...candidates].find((candidate) => canonicalToken(candidate) === canonicalToken(sourceCode));
+  if (exactCandidate) {
+    return exactCandidate;
+  }
+
+  for (const [serviceSuffix, suppressionSuffix] of SERVICE_SUPPRESSION_CLASS_SUFFIX_PAIRS) {
+    const sourceSuffix = sourceLayer === 'service' ? serviceSuffix : suppressionSuffix;
+    const targetSuffix = targetLayer === 'service' ? serviceSuffix : suppressionSuffix;
+    const sourceFullCode = `${state.prefix}${sourceSuffix}`;
+    const targetFullCode = `${state.prefix}${targetSuffix}`;
+    if (canonicalToken(sourceCode) === canonicalToken(sourceFullCode) && targetLayerTargetClassCodes(targetLayer).has(targetFullCode)) {
+      return targetFullCode;
+    }
+  }
+
+  const generic = sourceLayer === 'service'
+    ? sourceCode.replace(`${state.prefix}Service`, `${state.prefix}Suppression`)
+    : sourceCode.replace(`${state.prefix}Suppression`, `${state.prefix}Service`);
+  if (generic !== sourceCode && targetLayerTargetClassCodes(targetLayer).has(generic)) {
+    return generic;
+  }
+
+  return '';
+}
+
+function targetLayerTargetClassCodes(layerKey) {
+  return new Set(templateTargetClassOptions(layerKey)
+    .map((option) => option.value)
+    .filter((value) => value && !String(value).startsWith('instance:')));
+}
+
+function findLinkRelationRowByRef(ref) {
+  const kind = ref.relationKind || 'template_template';
+  const kindConfig = linkRelationKindConfig(kind, ref.layer);
+  return linkRelationRows(ref.layer, kind, kindConfig).find((row) =>
+    String(row.sourceId ?? '') === String(ref.sourceId ?? '')
+    && String(row.sourceType || kindConfig.sourceType) === String(ref.sourceType ?? '')
+    && String(row.relation?.managed_key ?? '') === String(ref.managedKey ?? '')) ?? null;
+}
+
+function mapLinkRelationEntityForLayer(sourceLayer, targetLayer, type, id) {
+  const normalizedType = type === 'template' ? 'template' : 'rule';
+  const sourceId = String(id ?? '').trim();
+  if (!sourceId) {
+    return { type: normalizedType, id: '' };
+  }
+
+  if (sourceLayer === targetLayer && linkRelationEntities(targetLayer, normalizedType).some((item) => item.id === sourceId)) {
+    return { type: normalizedType, id: sourceId };
+  }
+
+  if (normalizedType === 'template') {
+    const template = findCorrespondingTemplate(targetLayer, sourceLayer, sourceId);
+    return { type: normalizedType, id: template?.template_id || '' };
+  }
+
+  const rule = findCorrespondingRule(targetLayer, sourceLayer, sourceId);
+  return { type: normalizedType, id: rule?.rule_id || '' };
+}
+
+function findCorrespondingTemplate(targetLayer, sourceLayer, sourceTemplateId) {
+  const sourceTemplate = findLayerTemplate(sourceLayer, sourceTemplateId);
+  const document = normalizeTemplateDocument(state.templateDocuments[targetLayer], targetLayer);
+  return document.templates.find((template) =>
+    template.derived_from?.type === 'template'
+    && template.derived_from?.layer === sourceLayer
+    && template.derived_from?.id === sourceTemplateId)
+    ?? document.templates.find((template) => template.template_id === sourceTemplateId)
+    ?? document.templates.find((template) =>
+      sourceTemplate
+      && canonicalToken(template.name) === canonicalToken(sourceTemplate.name)
+      && canonicalToken(template.target?.class_code) === canonicalToken(mapTargetClassForLayer(sourceTemplate.target?.class_code, sourceLayer, targetLayer)))
+    ?? null;
+}
+
+function findCorrespondingRule(targetLayer, sourceLayer, sourceRuleId) {
+  const sourceRule = findLayerRule(sourceLayer, sourceRuleId);
+  const parsed = parseRuleDocument(targetLayer);
+  const rules = parsed.ok ? parsed.document.rules : [];
+  return rules.find((rule) =>
+    rule.derived_from?.type === 'rule'
+    && rule.derived_from?.layer === sourceLayer
+    && rule.derived_from?.id === sourceRuleId)
+    ?? rules.find((rule) => rule.rule_id === sourceRuleId)
+    ?? rules.find((rule) =>
+      sourceRule
+      && canonicalToken(rule.name) === canonicalToken(sourceRule.name)
+      && canonicalToken(ruleSourceClassCode(rule)) === canonicalToken(ruleSourceClassCode(sourceRule))
+      && canonicalToken(ruleTargetClassCode(rule)) === canonicalToken(mapTargetClassForLayer(ruleTargetClassCode(sourceRule), sourceLayer, targetLayer)))
+    ?? null;
+}
+
+function linkRelationSelectValueForDraft(kindConfig, side, entity) {
+  if (!entity?.id) {
+    return '';
+  }
+
+  const configuredType = side === 'target' ? kindConfig.targetType : kindConfig.sourceType;
+  return configuredType === 'mixed'
+    ? linkRelationEntityValue(entity.type, entity.id)
+    : entity.id;
 }
 
 function renderTemplateVariableList(layerKey, variables) {
@@ -7091,7 +8788,10 @@ function readTemplateEditorValues(layerKey) {
       population_source_key_template: isTemplateDimensionMaterialized(populationDimension) ? populationDimension.key_template : DEFAULT_TEMPLATE_POPULATION_SOURCE_KEY,
       initial_user_values: targetInitialValues
     },
-    variables
+    variables,
+    ...(state.templateEditorDerivedFrom[layerKey]
+      ? { derived_from: cloneJson(state.templateEditorDerivedFrom[layerKey]) }
+      : {})
   };
 }
 
@@ -7185,6 +8885,7 @@ function preserveTemplateExternalMetadata(template, previousTemplate) {
   template.managed_relations = Array.isArray(previousTemplate.managed_relations)
     ? cloneJson(previousTemplate.managed_relations)
     : template.managed_relations;
+  template.derived_from = template.derived_from || previousTemplate.derived_from;
 }
 
 function deleteTemplateEditorSelection(layerKey) {
@@ -7196,7 +8897,7 @@ function deleteTemplateEditorSelection(layerKey) {
     }
 
     const config = templateEditorConfig(layerKey);
-    const deleteMode = config.deleteMode?.value || TEMPLATE_DELETE_MODES.detachRulesKeepObjects;
+    const deleteMode = normalizeTemplateDeleteMode(config.deleteMode?.value || state.defaultTemplateDeleteMode);
     const document = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey);
     const template = document.templates.find((item) => item.template_id === selectedId) ?? { template_id: selectedId };
     let lifecycleResult = { detachedRules: 0, removedRules: 0, targets: 0 };
@@ -7388,6 +9089,7 @@ function removeGeneratedRulesForTemplate(layerKey, templateId, template, reason)
 
   appendTemplateDeletionPlan(document, layerKey, template, rulesToRemove, reason);
   document.rules = (document.rules ?? []).filter((rule) => managedRuleTemplateId(rule) !== templateId);
+  removeRuleReferencesToRemovedRules(document, rulesToRemove, { preserveRuntimeRelations: false });
   writeRuleDocument(layerKey, document);
   return {
     detachedRules: 0,
@@ -7420,7 +9122,13 @@ function appendTemplateDeletionPlan(document, layerKey, template, rules, reason)
       source_class_code: ruleSourceClassCode(rule),
       target_class_code: ruleTargetClassCode(rule),
       card_id: String(rule.target?.card_id ?? ''),
+      managed_key: zabbixManagedKeyFromRule(rule),
       idempotency_key: rule.target?.idempotency_key || '',
+      population_source_key: rule.target?.attribute_mappings?.[POPULATION_SOURCE_KEY_ATTRIBUTE] || '',
+      card_name: rule.target?.initial_user_values?.name
+        || rule.target?.attribute_mappings?.name
+        || rule.name
+        || '',
       card_description: rule.target?.card_description
         || rule.target?.initial_user_values?.description
         || rule.target?.attribute_mappings?.name
@@ -7439,6 +9147,10 @@ function ruleTemplateId(rule) {
 function isGeneratedTemplateRule(rule) {
   return Boolean(String(rule?.generated_from_template || '').trim())
     && String(rule?.template_generation?.status || '').trim().toLowerCase() !== 'detached';
+}
+
+function isTemplateOwnedRule(rule) {
+  return isGeneratedTemplateRule(rule) || isDetachedTemplateRule(rule) || Boolean(ruleTemplateId(rule));
 }
 
 function managedRuleTemplateId(rule) {
@@ -7475,12 +9187,394 @@ async function loadZabbixApplyStatus(layerKey) {
 
     stateItem.status = zabbixApplyLayerStatusFromPayload(result, layerKey);
     stateItem.message = 'Статус применения Zabbix обновлен.';
+    await loadZabbixStaleReport(layerKey, { render: false });
   } catch (error) {
     stateItem.error = error.message;
   } finally {
     stateItem.loadingStatus = false;
     renderZabbixApplyView(layerKey);
   }
+}
+
+async function loadZabbixStaleReport(layerKey, options = {}) {
+  const stateItem = zabbixApplyState(layerKey);
+  const desired = zabbixCurrentDesiredManagedKeyMap(layerKey);
+  const cmdbuildStale = zabbixCmdbuildStaleManagedObjects(layerKey, desired);
+  try {
+    stateItem.loadingStaleReport = true;
+    stateItem.staleReportError = '';
+    if (options.render !== false) {
+      renderZabbixApplyView(layerKey);
+    }
+
+    const response = await fetch('/api/zabbix/apply-state/stale-report', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        layer: layerKey,
+        desiredManagedKeys: [...desired.keys()],
+        includeZabbixServices: true,
+        zabbixServiceLimit: 5000,
+        sampleLimit: 100
+      })
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `stale-отчет Zabbix state не получен: ${response.status}`);
+    }
+
+    stateItem.staleReport = {
+      ...result,
+      desiredManagedKeys: [...desired.values()],
+      cmdbuild: {
+        staleCount: cmdbuildStale.length,
+        staleObjects: cmdbuildStale
+      }
+    };
+  } catch (error) {
+    stateItem.staleReportError = error.message;
+    stateItem.staleReport = {
+      layer: layerKey,
+      desiredManagedKeyCount: desired.size,
+      desiredManagedKeys: [...desired.values()],
+      cmdbuild: {
+        staleCount: cmdbuildStale.length,
+        staleObjects: cmdbuildStale
+      }
+    };
+  } finally {
+    stateItem.loadingStaleReport = false;
+    if (options.render !== false) {
+      renderZabbixApplyView(layerKey);
+    }
+  }
+}
+
+async function cleanupZabbixStaleState(layerKey) {
+  const stateItem = zabbixApplyState(layerKey);
+  const keys = zabbixStaleStateManagedKeys(stateItem.staleReport);
+  if (keys.length === 0) {
+    stateItem.staleReportError = 'В Zabbix state нет stale membership targets для очистки.';
+    renderZabbixApplyView(layerKey);
+    return;
+  }
+
+  if (typeof window.confirm === 'function') {
+    const confirmed = window.confirm(`${layerHumanLabel(layerKey)}: удалить ${keys.length} stale membership targets только из state zabbixconfig2api? CMDBuild и Zabbix не изменяются.`);
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  try {
+    stateItem.cleanupStateApplying = true;
+    stateItem.staleReportError = '';
+    renderZabbixApplyView(layerKey);
+
+    const result = await cleanupZabbixStateManagedKeys(layerKey, keys, { dryRun: false });
+    stateItem.message = `${layerHumanLabel(layerKey)}: из state zabbixconfig2api удалено ${result.removed ?? 0} stale targets из ${result.requested ?? keys.length}.`;
+    await loadZabbixApplyStatus(layerKey);
+  } catch (error) {
+    stateItem.staleReportError = error.message;
+  } finally {
+    stateItem.cleanupStateApplying = false;
+    renderZabbixApplyView(layerKey);
+  }
+}
+
+async function deleteZabbixStaleCmdbuildObjects(layerKey) {
+  const stateItem = zabbixApplyState(layerKey);
+  const items = Array.isArray(stateItem.staleReport?.cmdbuild?.staleObjects)
+    ? stateItem.staleReport.cmdbuild.staleObjects
+    : [];
+  const targets = items
+    .filter((item) => String(item?.classCode || '').trim() && String(item?.cardId || '').trim());
+  if (targets.length === 0) {
+    stateItem.staleReportError = 'В CMDBuild нет stale-карточек с class/card id для удаления.';
+    renderZabbixApplyView(layerKey);
+    return;
+  }
+
+  if (typeof window.confirm === 'function') {
+    const confirmed = window.confirm(`${layerHumanLabel(layerKey)}: удалить ${targets.length} stale managed-карточек из CMDBuild? Это удаляет сами объекты в CMDBuild.`);
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  let deleted = 0;
+  let skipped = 0;
+  const errors = [];
+  try {
+    stateItem.deletingStaleCmdbuild = true;
+    stateItem.staleReportError = '';
+    renderZabbixApplyView(layerKey);
+
+    for (const item of targets) {
+      try {
+        const result = await deleteCmdbClassCard(item.classCode, item.cardId);
+        if (result.action === 'deleted') {
+          deleted += 1;
+        } else {
+          skipped += 1;
+        }
+      } catch (error) {
+        errors.push(`${item.classCode}:${item.cardId} ${item.name || item.managedKey || ''}: ${error.message}`);
+      }
+    }
+
+    try {
+      await loadCmdbClassInstances();
+      await persistCmdbSourceCache();
+    } catch (error) {
+      errors.push(`обновление кэша CMDBuild: ${error.message}`);
+    }
+
+    stateItem.message = `${layerHumanLabel(layerKey)}: stale CMDBuild удаление завершено. Удалено ${deleted}, пропущено ${skipped}, ошибок ${errors.length}.`;
+    stateItem.staleReportError = errors.length > 0
+      ? `Часть CMDBuild-объектов не удалена: ${errors.slice(0, 6).join('; ')}${errors.length > 6 ? `; еще ${errors.length - 6}` : ''}`
+      : '';
+    await loadZabbixStaleReport(layerKey, { render: false });
+  } finally {
+    stateItem.deletingStaleCmdbuild = false;
+    renderZabbixApplyView(layerKey);
+  }
+}
+
+async function deleteZabbixStaleServices(layerKey) {
+  const stateItem = zabbixApplyState(layerKey);
+  const keys = zabbixStaleServicesManagedKeys(stateItem.staleReport);
+  if (keys.length === 0) {
+    stateItem.staleReportError = 'В Zabbix нет stale managed services для удаления.';
+    renderZabbixApplyView(layerKey);
+    return;
+  }
+
+  if (typeof window.confirm === 'function') {
+    const confirmed = window.confirm(`${layerHumanLabel(layerKey)}: удалить ${keys.length} stale managed services из Zabbix? Это удаляет сами объекты Zabbix Services.`);
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  try {
+    stateItem.deletingStaleZabbix = true;
+    stateItem.staleReportError = '';
+    renderZabbixApplyView(layerKey);
+
+    const response = await fetch('/api/zabbix/apply-state/delete-zabbix-services', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        layer: layerKey,
+        managedKeys: keys
+      })
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `stale services не удалены из Zabbix: ${response.status}`);
+    }
+
+    stateItem.message = `${layerHumanLabel(layerKey)}: stale Zabbix services удалены ${result.deleted ?? 0}, пропущены ${result.skipped ?? 0}, ошибок ${result.failed ?? 0}.`;
+    const errors = Array.isArray(result.errors) ? result.errors.filter(Boolean) : [];
+    stateItem.staleReportError = errors.length > 0
+      ? `Часть Zabbix services не удалена: ${errors.slice(0, 6).join('; ')}${errors.length > 6 ? `; еще ${errors.length - 6}` : ''}`
+      : '';
+    await loadZabbixStaleReport(layerKey, { render: false });
+  } catch (error) {
+    stateItem.staleReportError = error.message;
+  } finally {
+    stateItem.deletingStaleZabbix = false;
+    renderZabbixApplyView(layerKey);
+  }
+}
+
+async function cleanupZabbixStateManagedKeys(layerKey, managedKeys, options = {}) {
+  const response = await fetch('/api/zabbix/apply-state/cleanup', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      layer: layerKey,
+      managedKeys,
+      dryRun: options.dryRun === true
+    })
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.detail || result.error || `state не очищен: ${response.status}`);
+  }
+
+  return result;
+}
+
+function zabbixCurrentDesiredManagedKeyMap(layerKey) {
+  const desired = new Map();
+  const add = (managedKey, item) => {
+    const key = String(managedKey || '').trim();
+    if (!key || desired.has(key)) {
+      return;
+    }
+
+    desired.set(key, { ...item, managedKey: key });
+  };
+
+  const parsed = parseRuleDocument(layerKey);
+  if (parsed.ok) {
+    for (const rule of parsed.document.rules ?? []) {
+      const managedKey = zabbixManagedKeyFromRule(rule);
+      add(managedKey, {
+        kind: 'rule',
+        ruleId: rule.rule_id || '',
+        ruleName: rule.name || rule.rule_id || '',
+        classCode: ruleTargetClassCode(rule),
+        cardId: String(rule?.target?.card_id ?? '')
+      });
+    }
+  }
+
+  const layerStatus = zabbixApplyState(layerKey).status ?? {};
+  for (const target of layerStatus.membershipTargets ?? []) {
+    add(target?.targetManagedKey, {
+      kind: 'state-target',
+      ruleId: '',
+      ruleName: target?.targetName || target?.targetManagedKey || '',
+      classCode: target?.targetClass || '',
+      cardId: target?.targetCardId || ''
+    });
+    for (const sourceLeafKey of target?.sourceLeafManagedKeys ?? []) {
+      add(sourceLeafKey, {
+        kind: 'source-leaf',
+        ruleId: '',
+        ruleName: target?.targetName || target?.targetManagedKey || '',
+        classCode: '',
+        cardId: ''
+      });
+    }
+  }
+
+  if (layerKey === 'service') {
+    for (const definition of SERVICE_OBJECT_TYPE_DEFINITIONS) {
+      const classCode = serviceObjectClassCode(definition.key);
+      for (const card of serviceObjectCards(definition.key)) {
+        add(zabbixManagedKeyForCard(classCode, card), {
+          kind: 'service-object',
+          ruleId: '',
+          ruleName: targetCardDisplayLabel(card, classCode),
+          classCode,
+          cardId: String(card.id ?? card._id ?? '')
+        });
+      }
+    }
+  }
+
+  return desired;
+}
+
+function zabbixManagedKeyFromRule(rule) {
+  const target = rule?.target ?? {};
+  const idempotency = String(target.idempotency_key || '').trim();
+  if (idempotency) {
+    return idempotency;
+  }
+
+  const mappedPopulationKey = String(target.attribute_mappings?.[POPULATION_SOURCE_KEY_ATTRIBUTE] || '').trim();
+  if (mappedPopulationKey) {
+    return mappedPopulationKey;
+  }
+
+  const classCode = ruleTargetClassCode(rule);
+  const cardId = String(target.card_id ?? '').trim();
+  if (classCode && cardId) {
+    return `cmdbuild:${classCode}:${cardId}`;
+  }
+
+  const code = String(target.initial_user_values?.Code || target.attribute_mappings?.Code || '').trim();
+  return code;
+}
+
+function zabbixManagedKeyForCard(classCode, card) {
+  const cardId = String(card?.id ?? card?._id ?? '').trim();
+  return classCode && cardId ? `cmdbuild:${classCode}:${cardId}` : '';
+}
+
+function zabbixManagedKeyCandidatesForCard(classCode, card) {
+  return [
+    zabbixManagedKeyForCard(classCode, card),
+    String(cardAttributeValue(card, POPULATION_SOURCE_KEY_ATTRIBUTE) || '').trim(),
+    String(cardAttributeValue(card, 'Code') || card?.Code || card?.code || '').trim()
+  ].filter(Boolean);
+}
+
+function zabbixCmdbuildStaleManagedObjects(layerKey, desired) {
+  const desiredKeys = new Set(desired.keys());
+  const parsed = parseRuleDocument(layerKey);
+  const currentRuleIds = new Set(parsed.ok
+    ? (parsed.document.rules ?? []).map((rule) => String(rule.rule_id || '').trim()).filter(Boolean)
+    : []);
+  const layer = schemaLayerForRuleLayer(layerKey).toLowerCase();
+  const result = [];
+  for (const classItem of state.cmdbClassInstances ?? []) {
+    if (String(classItem.layer).toLowerCase() !== layer) {
+      continue;
+    }
+
+    const classCode = String(classItem.classCode || '').trim();
+    for (const card of classItem.cards ?? []) {
+      const populationSourceKey = String(cardAttributeValue(card, POPULATION_SOURCE_KEY_ATTRIBUTE) || '').trim();
+      const populationRuleId = String(cardAttributeValue(card, 'population_rule_id') || '').trim();
+      const candidates = zabbixManagedKeyCandidatesForCard(classCode, card);
+      const managed = Boolean(populationSourceKey || populationRuleId);
+      if (!managed) {
+        continue;
+      }
+
+      const stillDesired = candidates.some((key) => desiredKeys.has(key))
+        || (populationRuleId && currentRuleIds.has(populationRuleId));
+      if (stillDesired) {
+        continue;
+      }
+
+      result.push({
+        classCode,
+        cardId: String(card.id ?? card._id ?? ''),
+        name: targetCardDisplayLabel(card, classCode),
+        populationSourceKey,
+        populationRuleId,
+        managedKey: candidates[0] || populationSourceKey || '',
+        code: String(cardAttributeValue(card, 'Code') || card?.Code || card?.code || '').trim()
+      });
+    }
+  }
+
+  return result;
+}
+
+function zabbixStaleStateManagedKeys(report) {
+  const keys = Array.isArray(report?.state?.staleTargetKeys) ? report.state.staleTargetKeys : [];
+  if (keys.length > 0) {
+    return keys
+      .map((key) => String(key || '').trim())
+      .filter(Boolean);
+  }
+
+  return (report?.state?.staleTargets ?? [])
+    .map((target) => String(target?.targetManagedKey || '').trim())
+    .filter(Boolean);
+}
+
+function zabbixStaleServicesManagedKeys(report) {
+  return (report?.zabbix?.staleServices ?? [])
+    .map((service) => String(service?.managedKey || '').trim())
+    .filter(Boolean);
 }
 
 async function loadZabbixTriggerDependenciesStatus(options = {}) {
@@ -7492,7 +9586,7 @@ async function loadZabbixTriggerDependenciesStatus(options = {}) {
     if (renderDependenciesView) {
       renderZabbixTriggerDependenciesView();
     }
-    renderGeneralSettingsView();
+    renderMicroserviceSettingsView();
 
     const response = await fetch('/api/zabbix/trigger-dependencies/status', {
       headers: { accept: 'application/json' }
@@ -7512,7 +9606,234 @@ async function loadZabbixTriggerDependenciesStatus(options = {}) {
     if (renderDependenciesView) {
       renderZabbixTriggerDependenciesView();
     }
-    renderGeneralSettingsView();
+    renderMicroserviceSettingsView();
+  }
+}
+
+async function loadZabbixConfigSettings(options = {}) {
+  const configState = state.zabbixConfigSettings;
+  try {
+    configState.loading = true;
+    configState.error = '';
+    configState.message = 'Загрузка настроек zabbixconfig2api из файла конфигурации...';
+    renderMicroserviceSettingsView();
+    renderSlaSettingsView();
+
+    const response = await fetch('/api/admin/zabbixconfig2api/settings', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok || result.success === false) {
+      throw new Error(result.detail || result.error || `настройки zabbixconfig2api не получены: ${response.status}`);
+    }
+
+    applyZabbixConfigSettingsPayload(result);
+    configState.message = `Настройки zabbixconfig2api загружены из ${result.configFile || 'appsettings.json'}.`;
+    if (options.includeRuntimeStatus) {
+      await loadZabbixSlaStatus();
+    }
+  } catch (error) {
+    configState.error = error.message;
+  } finally {
+    configState.loading = false;
+    renderMicroserviceSettingsView();
+    renderSlaSettingsView();
+  }
+}
+
+function applyZabbixConfigSettingsPayload(result) {
+  const configState = state.zabbixConfigSettings;
+  configState.settings = result.settings ?? null;
+  configState.configFile = result.configFile ?? '';
+  configState.resolvedConfigFile = result.resolvedConfigFile ?? '';
+  configState.reload = result.reload ?? null;
+  const transitiveDepth = Number(configState.settings?.zabbixTriggerDependencies?.transitiveGroupDependencyDepth);
+  if (Number.isInteger(transitiveDepth)) {
+    state.transitiveGroupDependencyDepth = clampNumber(transitiveDepth, 2, 1, 3);
+  }
+}
+
+async function applyZabbixConfigSettings(section) {
+  const configState = state.zabbixConfigSettings;
+  const isSla = section === 'sla';
+  try {
+    configState.applying = true;
+    configState.error = '';
+    configState.message = 'Применение настроек UI в zabbixconfig2api...';
+    if (isSla) {
+      state.zabbixSla.error = '';
+      state.zabbixSla.message = 'Применение настроек SLA...';
+    }
+    renderMicroserviceSettingsView();
+    renderSlaSettingsView();
+
+    const payload = isSla
+      ? collectZabbixSlaSettingsPayload()
+      : collectZabbixGeneralSettingsPayload();
+    const response = await fetch('/api/admin/zabbixconfig2api/settings', {
+      method: 'PUT',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    if (!response.ok || result.success === false) {
+      throw new Error(result.detail || result.error || `настройки zabbixconfig2api не применены: ${response.status}`);
+    }
+
+    applyZabbixConfigSettingsPayload(result);
+    if (!isSla) {
+      clearZabbixConfigUiOverrides();
+    }
+    const reloadText = result.reload?.configurationVersion
+      ? ` reload v${result.reload.configurationVersion}`
+      : ' reload выполнен';
+    configState.message = `Настройки zabbixconfig2api сохранены и применены:${reloadText}.`;
+    if (isSla) {
+      await loadZabbixSlaStatus();
+      state.zabbixSla.message = configState.message;
+    } else {
+      await loadZabbixTriggerDependenciesStatus({ renderDependenciesView: false });
+    }
+  } catch (error) {
+    configState.error = error.message;
+    if (isSla) {
+      state.zabbixSla.error = error.message;
+      state.zabbixSla.message = '';
+    }
+  } finally {
+    configState.applying = false;
+    renderMicroserviceSettingsView();
+    renderSlaSettingsView();
+  }
+}
+
+function collectZabbixGeneralSettingsPayload() {
+  return {
+    zabbixTriggerDependencies: {
+      transitiveGroupDependencyDepth: numericInputValue('#transitiveGroupDependencyDepthSelect'),
+      triggerGetBatchSize: numericInputValue('#triggerGetBatchSizeInput'),
+      maxSourceHostsPerAggregate: numericInputValue('#maxSourceHostsPerAggregateInput'),
+      maxAggregateFormulaLength: numericInputValue('#maxAggregateFormulaLengthInput'),
+      maxDependenciesPerRun: numericInputValue('#maxDependenciesPerRunInput'),
+      sampleLimit: numericInputValue('#triggerDependencySampleLimitInput'),
+      aggregateStateTriggerIncludeTags: zabbixTriggerTagSelectorsFromText(document.querySelector('#aggregateStateTriggerIncludeTagsInput')?.value ?? ''),
+      aggregateStateTriggerExcludeTags: zabbixTriggerTagSelectorsFromText(document.querySelector('#aggregateStateTriggerExcludeTagsInput')?.value ?? ''),
+      aggregateStateTriggerIncludeNameRegex: document.querySelector('#aggregateStateTriggerIncludeNameRegexInput')?.value ?? '',
+      aggregateStateTriggerExcludeNameRegex: document.querySelector('#aggregateStateTriggerExcludeNameRegexInput')?.value ?? '',
+      aggregateStateTriggerMinPriority: numericInputValue('#aggregateStateTriggerMinPriorityInput')
+    },
+    zabbix: {
+      requestTimeoutMs: numericInputValue('#zabbixRequestTimeoutMsInput')
+    }
+  };
+}
+
+function collectZabbixSlaSettingsPayload() {
+  return {
+    zabbixSla: {
+      enabled: (document.querySelector('#zabbixSlaEnabledInput')?.value ?? 'true') === 'true',
+      defaultPolicyKey: document.querySelector('#zabbixSlaDefaultPolicyKeyInput')?.value ?? '',
+      downtimePublicationHorizonMonths: numericInputValue('#zabbixSlaHorizonMonthsInput'),
+      managedExcludedDowntimePrefix: document.querySelector('#zabbixSlaManagedPrefixInput')?.value ?? '',
+      sampleLimit: numericInputValue('#zabbixSlaSampleLimitInput')
+    }
+  };
+}
+
+function numericInputValue(selector) {
+  const value = String(document.querySelector(selector)?.value ?? '').trim();
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Поле ${selector} должно быть целым числом.`);
+  }
+
+  return parsed;
+}
+
+async function loadZabbixSlaStatus() {
+  const stateItem = state.zabbixSla;
+  try {
+    stateItem.loadingStatus = true;
+    stateItem.error = '';
+    stateItem.message = 'Загрузка настроек SLA из zabbixconfig2api...';
+    renderSlaSettingsView();
+    renderZabbixSlaPublicationPanel();
+
+    const response = await fetch('/api/zabbix/sla/status', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `статус SLA не получен: ${response.status}`);
+    }
+
+    stateItem.status = result;
+    stateItem.message = 'Настройки SLA обновлены.';
+  } catch (error) {
+    stateItem.error = error.message;
+  } finally {
+    stateItem.loadingStatus = false;
+    renderSlaSettingsView();
+    renderZabbixSlaPublicationPanel();
+  }
+}
+
+function zabbixSlaServiceTopologyText(item) {
+  if (!item?.zabbixServiceFound) {
+    return 'Zabbix service не найден';
+  }
+
+  if (!item.zabbixServiceHasTopology) {
+    return `serviceid ${item.serviceId || '-'} без parents/children`;
+  }
+
+  return `serviceid ${item.serviceId || '-'} в дереве`;
+}
+
+async function runZabbixSlaPublication(options = {}) {
+  const dryRun = Boolean(options.dryRun);
+  const stateItem = state.zabbixSla;
+  try {
+    stateItem.applying = true;
+    stateItem.error = '';
+    stateItem.message = dryRun
+      ? 'Dry-run публикации SLA в Zabbix...'
+      : 'Публикация SLA в Zabbix...';
+    renderSlaSettingsView();
+    renderZabbixSlaPublicationPanel();
+
+    const response = await fetch(
+      dryRun ? '/api/zabbix/sla/service/dry-run' : '/api/zabbix/sla/service/apply',
+      {
+        method: 'POST',
+        headers: cmdbuildFetchHeaders({
+          accept: 'application/json',
+          'content-type': 'application/json'
+        }),
+        body: '{}'
+    });
+    const result = await response.json();
+    stateItem.result = result;
+    if (!response.ok || result.status === 'error') {
+      const detail = result.message || result.detail || result.error || `публикация SLA не выполнена: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
+      throw new Error(detail);
+    }
+
+    stateItem.message = result.message || (dryRun ? 'Dry-run SLA завершен.' : 'SLA опубликованы в Zabbix.');
+    await loadZabbixSlaStatus();
+    stateItem.message = result.message || stateItem.message;
+    renderZabbixSlaPublicationPanel();
+  } catch (error) {
+    handleCmdbuildAuthFailure(error.message);
+    stateItem.error = error.message;
+  } finally {
+    stateItem.applying = false;
+    renderSlaSettingsView();
+    renderZabbixSlaPublicationPanel();
   }
 }
 
@@ -7535,7 +9856,7 @@ async function runZabbixTriggerDependencies(options = {}) {
           accept: 'application/json',
           'content-type': 'application/json'
         },
-        body: JSON.stringify({})
+        body: JSON.stringify(collectZabbixTriggerDependencyRunPayload())
       });
     const result = await response.json();
     if (!response.ok) {
@@ -7556,15 +9877,32 @@ async function runZabbixTriggerDependencies(options = {}) {
   }
 }
 
+function collectZabbixTriggerDependencyRunPayload() {
+  const overrideDepth = zabbixConfigUiOverrideTransitiveDepth();
+  return overrideDepth === null
+    ? {}
+    : { transitiveGroupDependencyDepth: overrideDepth };
+}
+
 async function applyZabbixLayer(layerKey, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const stateItem = zabbixApplyState(layerKey);
+  if (!dryRun && !stateItem.lastGraphCheckOk) {
+    stateItem.error = 'Сначала выполните успешную проверку графа без ошибок.';
+    renderZabbixApplyView(layerKey);
+    return;
+  }
+
   const operationId = createClientOperationId('zbx');
   let progressTimer = null;
   try {
     stateItem.applying = true;
     stateItem.error = '';
     stateItem.planPage = 1;
+    if (dryRun) {
+      stateItem.lastGraphCheckOk = false;
+      stateItem.lastGraphCheckAt = '';
+    }
     stateItem.progress = {
       operationId,
       status: 'starting',
@@ -7573,8 +9911,8 @@ async function applyZabbixLayer(layerKey, options = {}) {
       dryRun
     };
     stateItem.message = dryRun
-      ? `Dry-run ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`
-      : `Публикация ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`;
+      ? `Проверка графа ${zabbixLayerTitle(layerKey, 'genitive')} перед публикацией в Zabbix...`
+      : `Публикация проверенного графа ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`;
     renderZabbixApplyView(layerKey);
 
     progressTimer = window.setInterval(() => {
@@ -7583,42 +9921,60 @@ async function applyZabbixLayer(layerKey, options = {}) {
 
     const response = await fetch('/api/zabbix/apply-current', {
       method: 'POST',
-      headers: {
+      headers: cmdbuildFetchHeaders({
         'content-type': 'application/json',
         accept: 'application/json'
-      },
+      }),
       body: JSON.stringify({
         operationId,
         layer: layerKey,
-        dryRun
+        cmdbuildPrefix: state.prefix,
+        serviceModelRoot: state.serviceModelRoot || defaultModelRoot(state.language),
+        suppressionModelRoot: state.suppressionModelRoot || defaultModelRoot(state.language),
+        dryRun,
+        detached: true
       })
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || result.error || `применение в Zabbix не выполнено: ${response.status}`);
+      const detail = result.detail || result.error || `применение в Zabbix не выполнено: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
+      throw new Error(detail);
     }
 
-    stateItem.result = result;
-    if (result.operationId && result.operationId !== operationId) {
-      await loadZabbixApplyProgress(layerKey, result.operationId);
-    } else {
-      await loadZabbixApplyProgress(layerKey, operationId);
+    if (result.detached === true) {
+      if (progressTimer) {
+        window.clearInterval(progressTimer);
+        progressTimer = null;
+      }
+      stateItem.message = 'Операция принята сервером. Ожидаю завершения по progress...';
+      renderZabbixApplyView(layerKey);
+      const recovered = await waitForZabbixApplyCompletion(layerKey, result.operationId || operationId);
+      if (!recovered) {
+        throw new Error('Операция принята сервером, но итоговый progress не получен.');
+      }
+      await finishZabbixApplyResult(layerKey, recovered, dryRun, result.operationId || operationId);
+      return;
     }
-    const resultErrors = Array.isArray(result.errors)
-      ? result.errors.filter((item) => item)
-      : [];
-    const finalMessage = dryRun
-      ? `Dry-run завершен: карточек ${result.cardsScanned ?? 0}, команд ${result.commandsBuilt ?? 0}.`
-      : (layerKey === 'suppression'
-        ? `Отправлено в Zabbix-топик для обновления suppression membership: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`
-        : `Опубликовано в Zabbix-топик: команд ${result.commandsPublished ?? 0}, карточек ${result.cardsScanned ?? 0}, дублей ${result.commandsSkippedAsDuplicates ?? 0}.`);
-    await loadZabbixApplyStatus(layerKey);
-    stateItem.message = finalMessage;
-    stateItem.error = resultErrors.length
-      ? `${finalMessage} Ошибки: ${resultErrors.slice(0, 3).join('; ')}${resultErrors.length > 3 ? '...' : ''}`
-      : '';
+
+    await finishZabbixApplyResult(layerKey, result, dryRun, operationId);
   } catch (error) {
-    stateItem.error = error.message;
+    handleCmdbuildAuthFailure(error.message);
+    if (isFetchNetworkFailure(error)) {
+      stateItem.message = 'Основной HTTP-запрос оборвался. Проверяю состояние операции на сервере...';
+      stateItem.error = '';
+      renderZabbixApplyView(layerKey);
+      const recovered = await waitForZabbixApplyCompletion(layerKey, operationId);
+      if (recovered) {
+        await finishZabbixApplyResult(layerKey, recovered, dryRun, operationId, {
+          fallbackError: error.message
+        });
+      } else {
+        stateItem.error = `Основной HTTP-запрос оборвался, а состояние операции получить не удалось: ${error.message}`;
+      }
+    } else {
+      stateItem.error = error.message;
+    }
   } finally {
     if (progressTimer) {
       window.clearInterval(progressTimer);
@@ -7626,6 +9982,124 @@ async function applyZabbixLayer(layerKey, options = {}) {
     stateItem.applying = false;
     renderZabbixApplyView(layerKey);
   }
+}
+
+async function cancelZabbixApply(layerKey) {
+  const stateItem = zabbixApplyState(layerKey);
+  const operationId = stateItem.progress?.operationId;
+  if (!operationId) {
+    stateItem.error = 'Нет активной операции для отмены.';
+    renderZabbixApplyView(layerKey);
+    return;
+  }
+
+  try {
+    stateItem.message = 'Запрашиваю отмену операции...';
+    stateItem.error = '';
+    renderZabbixApplyView(layerKey);
+    const response = await fetch(`/api/zabbix/apply-current/cancel/${encodeURIComponent(operationId)}`, {
+      method: 'POST',
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `отмена не выполнена: ${response.status}`);
+    }
+
+    stateItem.message = 'Отмена запрошена. Ожидаю остановки backend.';
+    await loadZabbixApplyProgress(layerKey, operationId);
+  } catch (error) {
+    stateItem.error = error.message;
+  } finally {
+    renderZabbixApplyView(layerKey);
+  }
+}
+
+async function finishZabbixApplyResult(layerKey, result, dryRun, operationId, options = {}) {
+  const stateItem = zabbixApplyState(layerKey);
+  stateItem.result = result;
+  if (result.operationId && result.operationId !== operationId) {
+    await loadZabbixApplyProgress(layerKey, result.operationId);
+  } else {
+    await loadZabbixApplyProgress(layerKey, operationId);
+  }
+  const resultErrors = Array.isArray(result.errors)
+    ? result.errors.filter((item) => item)
+    : [];
+  const authFailureText = resultErrors.find(isCmdbuildAuthFailureMessage);
+  if (authFailureText) {
+    handleCmdbuildAuthFailure(authFailureText);
+  }
+  const finalMessage = zabbixApplyFinalMessage(layerKey, result, dryRun);
+  await loadZabbixApplyStatus(layerKey);
+  stateItem.message = finalMessage;
+  const status = String(result.status || '').toLowerCase();
+  if (dryRun) {
+    stateItem.lastGraphCheckOk = resultErrors.length === 0
+      && !['error', 'failed', 'canceled', 'cancelled'].includes(status);
+    stateItem.lastGraphCheckAt = stateItem.lastGraphCheckOk ? new Date().toISOString() : '';
+  }
+
+  const fallbackError = options.fallbackError
+    && status !== 'completed'
+    && status !== 'complete'
+    ? ` ${options.fallbackError}`
+    : '';
+  stateItem.error = resultErrors.length
+    ? `${finalMessage} Ошибки: ${resultErrors.slice(0, 3).join('; ')}${resultErrors.length > 3 ? '...' : ''}`
+    : fallbackError.trim();
+}
+
+function zabbixApplyFinalMessage(layerKey, result, dryRun) {
+  const topics = Array.isArray(result?.topics)
+    ? result.topics.map((item) => String(item).toLowerCase())
+    : [];
+  const deliveryMode = String(result?.zabbixDeliveryMode || (topics.includes('zabbix-direct') ? 'direct' : '')).toLowerCase();
+  const serviceObjectsText = result?.serviceObjectsScanned
+    ? `, сервисных объектов ${result.serviceObjectsScanned}`
+    : '';
+  if (dryRun) {
+    return `Проверка графа завершена: карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, команд ${result?.commandsBuilt ?? 0}.`;
+  }
+
+  if (deliveryMode === 'direct') {
+    return `Применено в Zabbix: команд ${result?.commandsAppliedDirect ?? result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`;
+  }
+
+  return layerKey === 'suppression'
+    ? `Отправлено в Zabbix-топик для обновления suppression membership: команд ${result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`
+    : `Опубликовано в Zabbix-топик: команд ${result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`;
+}
+
+async function waitForZabbixApplyCompletion(layerKey, operationId) {
+  const startedAt = Date.now();
+  const timeoutMs = 20 * 60 * 1000;
+  let lastProgress = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    await delay(2500);
+    await loadZabbixApplyProgress(layerKey, operationId);
+    const progress = zabbixApplyState(layerKey).progress;
+    if (progress?.operationId === operationId) {
+      lastProgress = progress;
+      const status = String(progress.status || '').toLowerCase();
+      if (status === 'completed' || status === 'complete' || status === 'failed' || status === 'canceled' || status === 'cancelled') {
+        return progress;
+      }
+    }
+  }
+
+  return lastProgress;
+}
+
+function isFetchNetworkFailure(error) {
+  return /failed to fetch|networkerror|load failed|fetch failed|network request failed|empty reply/i
+    .test(String(error?.message || ''));
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
 }
 
 async function loadZabbixApplyProgress(layerKey, operationId) {
@@ -7672,14 +10146,20 @@ function renderZabbixApplyView(layerKey) {
   const refreshButton = panel.querySelector('[data-zabbix-apply-refresh]');
   const dryRunButton = panel.querySelector('[data-zabbix-apply-dry-run]');
   const publishButton = panel.querySelector('[data-zabbix-apply-publish]');
-  if (!summary || !status || !list || !refreshButton || !dryRunButton || !publishButton) {
+  const cancelButton = panel.querySelector('[data-zabbix-apply-cancel]');
+  if (!summary || !status || !list || !refreshButton || !dryRunButton || !publishButton || !cancelButton) {
     return;
   }
 
   const busy = stateItem.applying || stateItem.loadingStatus;
   refreshButton.disabled = busy;
   dryRunButton.disabled = busy;
-  publishButton.disabled = busy;
+  publishButton.disabled = busy || !stateItem.lastGraphCheckOk;
+  publishButton.title = stateItem.lastGraphCheckOk
+    ? ''
+    : 'Сначала выполните успешную проверку графа без ошибок.';
+  cancelButton.disabled = !stateItem.applying && !['running', 'starting', 'configured', 'canceling']
+    .includes(String(stateItem.progress?.status || '').toLowerCase());
 
   const layerStatus = stateItem.status ?? {};
   const reconcile = layerStatus.reconcile ?? {};
@@ -7721,8 +10201,16 @@ function renderZabbixApplyView(layerKey) {
       <strong>${escapeHtml(layerStatus.errorCommands ?? 0)}</strong>
     </div>
     <div>
+      <span class="metric-label">Проверка графа</span>
+      <strong>${escapeHtml(stateItem.lastGraphCheckOk ? 'успешна' : 'требуется')}</strong>
+    </div>
+    <div>
       <span class="metric-label">Reconcile</span>
       <strong>${escapeHtml(zabbixReconcileText(reconcile, layerKey))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Профиль</span>
+      <strong>${escapeHtml(zabbixApplyPerformanceText(layerStatus))}</strong>
     </div>
     ${layerKey === 'suppression' ? `
       <div>
@@ -7744,6 +10232,9 @@ function renderZabbixApplyView(layerKey) {
   status.classList.toggle('error', Boolean(stateItem.error));
 
   list.innerHTML = renderZabbixApplyDetails(layerKey, stateItem);
+  if (layerKey === 'service') {
+    renderZabbixSlaPublicationPanel();
+  }
 }
 
 function renderZabbixApplyDetails(layerKey, stateItem) {
@@ -7757,10 +10248,14 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
   const errors = Array.isArray(layerStatus.errors) ? layerStatus.errors : [];
   const warnings = Array.isArray(layerStatus.warnings) ? layerStatus.warnings : [];
   const membershipTargets = Array.isArray(layerStatus.membershipTargets) ? layerStatus.membershipTargets : [];
+  const operationPerformance = progress?.performance ?? result?.performance;
   return `
     ${progress ? renderZabbixApplyProgress(progress) : ''}
+    ${renderApplyCurrentPerformance(operationPerformance)}
+    ${renderZabbixApplyPerformance(layerStatus)}
     ${zabbixPlan ? renderZabbixObjectPlan(zabbixPlan, layerKey) : ''}
     ${membershipTargets.length > 0 ? renderZabbixMembershipTargets(membershipTargets, layerKey) : ''}
+    ${renderZabbixStaleManagedReport(layerKey, stateItem)}
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
       <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : zabbixApplyLastRunLabel(layerKey)) : 'ожидание запуска')}</strong>
@@ -7804,6 +10299,171 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
         <span>${escapeHtml(warnings.join('; '))}</span>
       </div>
     ` : ''}
+  `;
+}
+
+function renderZabbixApplyPerformance(layerStatus) {
+  const performance = layerStatus.performance ?? {};
+  const last = layerStatus.lastPerformance ?? {};
+  const methodEntries = Object.entries(performance.zabbixApiByMethod ?? {})
+    .sort((a, b) => (b[1]?.elapsedMs ?? 0) - (a[1]?.elapsedMs ?? 0))
+    .slice(0, 8);
+  if ((performance.commands ?? 0) === 0 && (last.totalMs ?? 0) === 0 && methodEntries.length === 0) {
+    return '';
+  }
+
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">профиль применения</span>
+      <strong>${escapeHtml(zabbixApplyPerformanceText(layerStatus))}</strong>
+      <span>последняя команда: всего ${escapeHtml(formatZabbixMs(last.totalMs))}, state ${escapeHtml(formatZabbixMs(last.stateUpdateMs))}, source leaf ${escapeHtml(formatZabbixMs(last.sourceLeafApplyMs))}, target ${escapeHtml(formatZabbixMs(last.targetApplyMs))}</span>
+      <span>Zabbix API последней команды: ${escapeHtml(last.zabbixApiCallCount ?? 0)} вызовов, ${escapeHtml(formatZabbixMs(last.zabbixApiElapsedMs))}</span>
+      ${methodEntries.length > 0 ? `<span>топ методов за время работы сервиса: ${escapeHtml(methodEntries.map(([method, stats]) => `${method}: ${stats?.count ?? 0}/${formatZabbixMs(stats?.elapsedMs)}`).join('; '))}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderApplyCurrentPerformance(performance) {
+  if (!performance || Object.values(performance).every((value) => Number(value ?? 0) === 0)) {
+    return '';
+  }
+
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">профиль подготовки и публикации</span>
+      <strong>всего ${escapeHtml(formatZabbixMs(performance.totalMs))}</strong>
+      <span>правила ${escapeHtml(formatZabbixMs(performance.loadRulesMs))}, проверка ${escapeHtml(formatZabbixMs(performance.validateRulesMs))}, карточки CMDBuild ${escapeHtml(formatZabbixMs(performance.loadCardsMs))}</span>
+      <span>enrich ${escapeHtml(formatZabbixMs(performance.enrichMs))}, сборка команд ${escapeHtml(formatZabbixMs(performance.buildCommandsMs))}, публикация ${escapeHtml(formatZabbixMs(performance.publishMs))}</span>
+      <span>Zabbix direct ${escapeHtml(formatZabbixMs(performance.directZabbixApplyMs))} / ${escapeHtml(performance.directZabbixApplyCalls ?? 0)} выз., Kafka ${escapeHtml(formatZabbixMs(performance.kafkaPublishMs))} / ${escapeHtml(performance.kafkaPublishCalls ?? 0)} выз.</span>
+      <span>объекты сервиса: сборка ${escapeHtml(formatZabbixMs(performance.serviceTopologyBuildMs))}, публикация ${escapeHtml(formatZabbixMs(performance.serviceTopologyPublishMs))}</span>
+    </div>
+  `;
+}
+
+function renderZabbixStaleManagedReport(layerKey, stateItem) {
+  const report = stateItem.staleReport ?? {};
+  const cmdbuildStale = Array.isArray(report?.cmdbuild?.staleObjects) ? report.cmdbuild.staleObjects : [];
+  const stateStale = Array.isArray(report?.state?.staleTargets) ? report.state.staleTargets : [];
+  const stateStaleCount = report?.state?.staleTargetCount ?? stateStale.length;
+  const zabbixStale = Array.isArray(report?.zabbix?.staleServices) ? report.zabbix.staleServices : [];
+  const orphanSourceLeaf = Array.isArray(report?.zabbix?.orphanSourceLeafServices)
+    ? report.zabbix.orphanSourceLeafServices
+    : [];
+  const orphanSourceLeafCount = report?.zabbix?.orphanSourceLeafCount ?? orphanSourceLeaf.length;
+  const rootNonRoot = Array.isArray(report?.zabbix?.rootNonRootManagedServices)
+    ? report.zabbix.rootNonRootManagedServices
+    : [];
+  const rootNonRootCount = report?.zabbix?.rootNonRootManagedServiceCount ?? rootNonRoot.length;
+  const zabbixError = String(report?.zabbix?.error || '').trim();
+  const desiredCount = report?.desiredManagedKeyCount ?? report?.desiredManagedKeys?.length ?? 0;
+  const loading = stateItem.loadingStaleReport
+    || stateItem.cleanupStateApplying
+    || stateItem.deletingStaleCmdbuild
+    || stateItem.deletingStaleZabbix;
+  const cleanupDisabled = loading || zabbixStaleStateManagedKeys(report).length === 0;
+  const cmdbuildDeleteDisabled = loading || cmdbuildStale.length === 0;
+  const zabbixDeleteDisabled = loading || zabbixStale.length === 0;
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">stale managed objects</span>
+      <strong>${escapeHtml(cmdbuildStale.length)} CMDBuild · ${escapeHtml(stateStaleCount)} state · ${escapeHtml(zabbixStale.length)} Zabbix · ${escapeHtml(orphanSourceLeafCount)} source leaf в корне · ${escapeHtml(rootNonRootCount)} не-root в корне</strong>
+      <span>Сравнение строится по текущим правилам/объектам сервиса и managed key. Удаление выполняется только по явной кнопке и отдельно для каждой системы.</span>
+      ${orphanSourceLeafCount > 0 ? '<span class="error-text">Технические source leaf без parents видны в корне Zabbix. Повторная публикация сервиса должна перепривязать их к агрегатам; если они остаются, проверьте warnings по children.</span>' : ''}
+      ${rootNonRootCount > 0 ? '<span class="error-text">В корне Zabbix Services есть managed services, которые не имеют роли root_service. Это расчетные/групповые узлы без parent в дереве сервиса.</span>' : ''}
+      <span>Текущих managed key: ${escapeHtml(desiredCount)}${zabbixError ? ` · Zabbix live недоступен: ${escapeHtml(zabbixError)}` : ''}</span>
+      ${stateItem.staleReportError ? `<span class="error-text">${escapeHtml(stateItem.staleReportError)}</span>` : ''}
+      <div class="rule-summary-actions">
+        <button class="secondary-button" type="button" data-zabbix-stale-report-refresh ${loading ? 'disabled' : ''}>Обновить stale-отчет</button>
+        <button class="danger-button compact-button" type="button" data-zabbix-stale-cmdbuild-delete ${cmdbuildDeleteDisabled ? 'disabled' : ''}>Удалить stale из CMDBuild</button>
+        <button class="danger-button compact-button" type="button" data-zabbix-stale-zabbix-delete ${zabbixDeleteDisabled ? 'disabled' : ''}>Удалить stale из Zabbix</button>
+        <button class="secondary-button" type="button" data-zabbix-stale-state-cleanup ${cleanupDisabled ? 'disabled' : ''}>Очистить stale state</button>
+      </div>
+    </div>
+    ${renderZabbixStaleCmdbuildObjects(cmdbuildStale)}
+    ${renderZabbixStaleStateTargets(stateStale)}
+    ${renderZabbixStaleServices(zabbixStale)}
+    ${renderZabbixOrphanSourceLeafServices(orphanSourceLeaf, orphanSourceLeafCount)}
+    ${renderZabbixRootNonRootManagedServices(rootNonRoot, rootNonRootCount)}
+  `;
+}
+
+function renderZabbixStaleCmdbuildObjects(items) {
+  if (!items.length) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object">
+      <summary>CMDBuild managed-карточки вне текущих правил: ${escapeHtml(items.length)}</summary>
+      ${items.slice(0, 100).map((item) => `
+        <span>${escapeHtml(item.name || item.managedKey || '-')} · ${escapeHtml(item.classCode || '-')}:${escapeHtml(item.cardId || '-')}</span>
+        <span>managed key: ${escapeHtml(item.managedKey || '-')} · Code: ${escapeHtml(item.code || '-')} · population_rule_id: ${escapeHtml(item.populationRuleId || '-')} · population_source_key: ${escapeHtml(item.populationSourceKey || '-')}</span>
+      `).join('')}
+    </details>
+  `;
+}
+
+function renderZabbixStaleStateTargets(items) {
+  if (!items.length) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object">
+      <summary>Stale membership state zabbixconfig2api: ${escapeHtml(items.length)}</summary>
+      ${items.slice(0, 100).map((item) => `
+        <span>${escapeHtml(item.targetName || item.targetManagedKey || '-')} · ${escapeHtml(item.targetClass || '-')}:${escapeHtml(item.targetCardId || '-')}</span>
+        <span>managed key: ${escapeHtml(item.targetManagedKey || '-')} · source ${escapeHtml(item.sourceCount ?? 0)} · pending ${escapeHtml(item.pendingSourceCount ?? 0)}</span>
+      `).join('')}
+    </details>
+  `;
+}
+
+function renderZabbixStaleServices(items) {
+  if (!items.length) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object">
+      <summary>Zabbix managed services вне текущих правил: ${escapeHtml(items.length)}</summary>
+      ${items.slice(0, 100).map((item) => `
+        <span>${escapeHtml(item.name || item.managedKey || '-')} · serviceid ${escapeHtml(item.serviceId || '-')}</span>
+        <span>managed key: ${escapeHtml(item.managedKey || '-')} · ${escapeHtml(item.classCode || '-')}:${escapeHtml(item.cardId || '-')} · rule: ${escapeHtml(item.ruleName || item.ruleId || '-')}</span>
+      `).join('')}
+    </details>
+  `;
+}
+
+function renderZabbixOrphanSourceLeafServices(items, totalCount) {
+  if (!items.length) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object" open>
+      <summary>Технические source leaf в корне Zabbix: ${escapeHtml(totalCount ?? items.length)}</summary>
+      ${items.slice(0, 100).map((item) => `
+        <span>${escapeHtml(item.name || item.managedKey || '-')} · serviceid ${escapeHtml(item.serviceId || '-')}</span>
+        <span>managed key: ${escapeHtml(item.managedKey || '-')} · ${escapeHtml(item.classCode || '-')}:${escapeHtml(item.cardId || '-')} · rule: ${escapeHtml(item.ruleName || item.ruleId || '-')}</span>
+      `).join('')}
+    </details>
+  `;
+}
+
+function renderZabbixRootNonRootManagedServices(items, totalCount) {
+  if (!items.length) {
+    return '';
+  }
+
+  return `
+    <details class="rule-summary zabbix-plan-object" open>
+      <summary>Managed services с ролью не root_service в корне Zabbix: ${escapeHtml(totalCount ?? items.length)}</summary>
+      ${items.slice(0, 100).map((item) => `
+        <span>${escapeHtml(item.name || item.managedKey || '-')} · serviceid ${escapeHtml(item.serviceId || '-')}</span>
+        <span>managed key: ${escapeHtml(item.managedKey || '-')} · role ${escapeHtml(item.effectiveRole || item.role || '-')} · visibility ${escapeHtml(item.effectiveVisibility || item.visibility || '-')} · parents ${escapeHtml(item.parentCount ?? 0)} · children ${escapeHtml(item.childCount ?? 0)}</span>
+      `).join('')}
+    </details>
   `;
 }
 
@@ -8314,11 +10974,15 @@ function renderZabbixObjectPlan(plan, layerKey) {
   const shownFrom = objects.length === 0 ? 0 : start + 1;
   const shownTo = start + visibleObjects.length;
   const hasMore = Boolean(plan.hasMoreObjects);
+  const rootServices = Array.isArray(plan.rootServices) ? plan.rootServices : [];
+  const orphanVisibleNodes = Array.isArray(plan.orphanVisibleNodes) ? plan.orphanVisibleNodes : [];
   return `
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(suppressionMode ? 'план suppression membership' : 'план объектов Zabbix')}</span>
       <strong>${escapeHtml(plan.objectCount ?? objects.length)} ${escapeHtml(suppressionMode ? 'membership-объектов' : 'объектов')} · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
       <span>${escapeHtml(`страница ${page} из ${pageCount}; показаны ${shownFrom}-${shownTo} из ${objects.length}`)}${hasMore ? escapeHtml(`; полный список ограничен первыми ${plan.objectSamplesLimit ?? objects.length}`) : ''}</span>
+      ${!suppressionMode ? `<span>root services: ${escapeHtml(plan.rootServiceCount ?? rootServices.length)} · orphan visible nodes: ${escapeHtml(plan.orphanVisibleNodeCount ?? orphanVisibleNodes.length)}</span>` : ''}
+      ${orphanVisibleNodes.length > 0 ? `<span class="error-text">${escapeHtml(orphanVisibleNodes.slice(0, 6).map((item) => `${item.name || item.managedKey || '-'} (${item.role || '-'})`).join('; '))}</span>` : ''}
       ${pageCount > 1 ? `
         <div class="rule-summary-actions">
           <button class="secondary-button" type="button" data-zabbix-plan-page="${escapeHtml(page - 1)}" ${page <= 1 ? 'disabled' : ''}>Назад</button>
@@ -8368,6 +11032,7 @@ function renderZabbixObjectPlanItem(item, layerKey = 'service') {
         <span>цель: ${escapeHtml(target)} · команд ${escapeHtml(item?.commandCount ?? 0)} · связей ${escapeHtml(item?.relationCount ?? 0)} · ${escapeHtml(bindingSummary)}</span>
       </summary>
       <span>действие: ${escapeHtml(item?.actionLabel || zabbixObjectActionLabel(item?.action))}</span>
+      <span>managed key: ${escapeHtml(item?.managedKey || '-')} · role ${escapeHtml(item?.role || '-')} · visibility ${escapeHtml(item?.visibility || '-')}</span>
       <span>правила: ${escapeHtml(ruleNames.length > 0 ? ruleNames.join(', ') : ruleIds.join(', ') || '-')}</span>
       <span>источники: ${escapeHtml(sources.join(', ') || '-')}</span>
       ${sourceBindingText.length > 0 ? `<span>${escapeHtml(suppressionMode ? 'готовность к trigger dependencies' : 'привязка к проблемам Zabbix')}: ${escapeHtml(sourceBindingText.join('; '))}</span>` : ''}
@@ -8458,6 +11123,21 @@ function applyCommandCountersText(context, item = context) {
   const built = item?.commandsBuilt ?? 0;
   const published = item?.commandsPublished ?? 0;
   const duplicates = item?.commandsSkippedAsDuplicates ?? 0;
+  const topics = Array.isArray(context?.topics)
+    ? context.topics.map((topic) => String(topic).toLowerCase())
+    : [];
+  const directGraphRunning = topics.includes('zabbix-direct')
+    && !dryRun
+    && String(context?.stage || '').toLowerCase() === 'zabbix_graph_publish'
+    && ['running', 'starting', ''].includes(String(context?.status || '').toLowerCase())
+    && built > 0
+    && published === 0;
+  if (directGraphRunning) {
+    return `собрано ${built} · batch выполняется в Zabbix · подтверждено ${published} · дубли ${duplicates}`;
+  }
+  if (topics.includes('zabbix-direct') && !dryRun) {
+    return `собрано ${built} · применено в Zabbix ${published} · дубли ${duplicates}`;
+  }
   return dryRun
     ? `собрано ${built} · к публикации ${built} · дубли ${duplicates}`
     : `собрано ${built} · опубликовано ${published} · дубли ${duplicates}`;
@@ -8535,6 +11215,9 @@ function zabbixApplyStatusLabel(status) {
   if (value === 'pending_manual') {
     return 'ожидает вручную';
   }
+  if (value === 'blocked') {
+    return 'заблокировано';
+  }
   if (value === 'error') {
     return 'ошибка';
   }
@@ -8565,6 +11248,37 @@ function zabbixReconcileText(reconcile, layerKey = 'service') {
     `объекты -${reconcile.removeObjects ?? 0}`,
     `связи -${reconcile.removeRelations ?? 0}`
   ].join(', ');
+}
+
+function zabbixApplyPerformanceText(layerStatus) {
+  const performance = layerStatus.performance ?? {};
+  const last = layerStatus.lastPerformance ?? {};
+  const chunks = [];
+  if ((last.totalMs ?? 0) > 0) {
+    chunks.push(`последняя ${formatZabbixMs(last.totalMs)}`);
+  }
+  if ((last.zabbixApiCallCount ?? 0) > 0 || (last.zabbixApiElapsedMs ?? 0) > 0) {
+    chunks.push(`Zabbix API ${formatZabbixMs(last.zabbixApiElapsedMs)} / ${last.zabbixApiCallCount ?? 0}`);
+  }
+  if ((performance.commands ?? 0) > 0) {
+    chunks.push(`суммарно ${formatZabbixMs(performance.totalMs)} / ${performance.commands}`);
+  }
+
+  return chunks.join('; ') || '-';
+}
+
+function formatZabbixMs(value) {
+  const ms = Number(value ?? 0);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return '0 мс';
+  }
+  if (ms >= 60000) {
+    return `${(ms / 60000).toFixed(1)} мин`;
+  }
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(1)} с`;
+  }
+  return `${Math.round(ms)} мс`;
 }
 
 function renderZabbixPreflightView() {
@@ -9463,8 +12177,11 @@ function reconcileGeneratedRulesForLayer(document, layerKey, plan) {
     && !desiredByKey.has(generatedRuleManagedKeyFromRule(rule, layerKey)));
   if (removedRules.length > 0) {
     appendTemplateDeletionPlansForRemovedRules(document, layerKey, removedRules, 'template_reconcile_removed', templatesById);
+    const referenceCleanup = removeRuleReferencesToRemovedRules(document, removedRules, { preserveRuntimeRelations: false });
     mergeRelationReconcileSummary(summary.relations, {
       removed: removedRules.reduce((sum, rule) => sum + runtimeRelationsFromRule(rule).length, 0)
+        + referenceCleanup.runtimeRelations
+        + referenceCleanup.managedRelations
     });
   }
 
@@ -9626,6 +12343,76 @@ function appendTemplateDeletionPlansForRemovedRules(document, layerKey, rules, r
       source_class_regex: currentTemplate?.source_class_regex || firstRule.template_generation?.template_source_regex || ''
     }, templateRules, reason);
   }
+}
+
+function removeRuleReferencesToRemovedRules(document, removedRules, options = {}) {
+  const preserveRuntimeRelations = options.preserveRuntimeRelations !== false;
+  const removedRuleById = new Map((removedRules ?? [])
+    .filter((rule) => String(rule?.rule_id || '').trim())
+    .map((rule) => [String(rule.rule_id).trim(), rule]));
+  if (removedRuleById.size === 0) {
+    return { managedRelations: 0, runtimeRelations: 0, detachedRuntimeRelations: 0 };
+  }
+
+  let managedRelations = 0;
+  let runtimeRelations = 0;
+  let detachedRuntimeRelations = 0;
+  for (const rule of document.rules ?? []) {
+    const relationTargetKeys = new Set();
+    const nextManagedRelations = [];
+    for (const relation of rule.managed_relations ?? []) {
+      const targetRuleId = String(relation?.target_rule_id || '').trim();
+      if (relation?.kind === 'rule' && removedRuleById.has(targetRuleId)) {
+        managedRelations += 1;
+        const targetRule = removedRuleById.get(targetRuleId);
+        const targetKey = runtimeRelationTargetKey({
+          target_class_code: ruleTargetClassCode(targetRule),
+          target_lookup: relation?.attributes?.target_lookup || targetRule?.target?.idempotency_key || ''
+        });
+        if (targetKey) {
+          relationTargetKeys.add(targetKey);
+        }
+        continue;
+      }
+
+      nextManagedRelations.push(relation);
+    }
+
+    rule.managed_relations = nextManagedRelations;
+    if (relationTargetKeys.size === 0 || !Array.isArray(rule.relations)) {
+      continue;
+    }
+
+    if (preserveRuntimeRelations) {
+      for (const relation of rule.relations) {
+        if (!relationTargetKeys.has(runtimeRelationTargetKey(relation))) {
+          continue;
+        }
+
+        if (String(relation?.managed_relation_key || '').trim()) {
+          delete relation.managed_relation_key;
+          detachedRuntimeRelations += 1;
+        }
+      }
+    } else {
+      const before = rule.relations.length;
+      rule.relations = rule.relations.filter((relation) =>
+        !relationTargetKeys.has(runtimeRelationTargetKey(relation)));
+      runtimeRelations += before - rule.relations.length;
+    }
+  }
+
+  return { managedRelations, runtimeRelations, detachedRuntimeRelations };
+}
+
+function runtimeRelationTargetKey(relation) {
+  const classCode = String(relation?.target_class_code || '').trim();
+  const lookup = String(relation?.target_lookup || relation?.target_card_id || '').trim();
+  if (!classCode || !lookup) {
+    return '';
+  }
+
+  return `${canonicalToken(classCode)}::${lookup}`;
 }
 
 function appendTemplateApplicationSnapshot(document, layerKey, plan, reconcile) {
@@ -9831,6 +12618,9 @@ function linkRelationEditorConfig() {
     targetFilterList: document.querySelector('#relationTargetFilterList'),
     ruleRuleFilterBar: document.querySelector('#relationRuleRuleFilterBar'),
     hideTemplateLinks: document.querySelector('#relationHideTemplateLinks'),
+    deriveSource: document.querySelector('#relationDeriveSource'),
+    derivePreview: document.querySelector('#relationDerivePreview'),
+    deriveButton: document.querySelector('#relationDeriveButton'),
     description: document.querySelector('#relationDescriptionInput'),
     status: document.querySelector('#relationManagementStatus'),
     list: document.querySelector('#relationManagementList')
@@ -9921,6 +12711,7 @@ function renderLinkRelationEditor() {
   setSelectOptions(config.target, linkRelationEntityOptions(context.layer, kindConfig.targetType, kindConfig), currentTarget);
   ensureLinkRelationMixedPairSelection(config, kindConfig);
   renderLinkRelationVariableControls(context, kindConfig);
+  renderDeriveCopyControl('relation', context.layer);
   renderLinkRelationStatus();
   renderLinkRelationList(context.layer, context.kind, kindConfig);
 }
@@ -9932,6 +12723,10 @@ function ensureLinkRelationMixedPairSelection(config, kindConfig) {
 
   const source = selectedLinkRelationEntity(config.source.value, kindConfig.sourceType);
   const target = selectedLinkRelationEntity(config.target.value, kindConfig.targetType);
+  if (!source.id || !target.id) {
+    return;
+  }
+
   if (kindConfig.allowedPairs.includes(`${source.type}:${target.type}`)) {
     return;
   }
@@ -10217,7 +13012,10 @@ function linkRelationEntityOptions(layerKey, type, kindConfig = null) {
       }));
     const items = templates.concat(rules).sort(compareLinkRelationEntityLabels);
     return items.length > 0
-      ? items
+      ? [
+          { value: '', label: 'Выберите шаблон или правило' },
+          ...items
+        ]
       : [{ value: '', label: 'Нет шаблонов или правил', disabled: true }];
   }
 
@@ -10232,10 +13030,14 @@ function linkRelationEntityOptions(layerKey, type, kindConfig = null) {
     return [{ value: '', label, disabled: true }];
   }
 
-  return items.map((item) => ({
-    value: item.id,
-    label: item.label
-  }));
+  const label = type === 'template' ? 'Выберите шаблон' : 'Выберите правило';
+  return [
+    { value: '', label },
+    ...items.map((item) => ({
+      value: item.id,
+      label: item.label
+    }))
+  ];
 }
 
 function shouldHideGeneratedTemplateRulesInRelationEditor(kindConfig, type) {
@@ -10485,15 +13287,17 @@ async function refreshRelationGraphOnlineLayer() {
     relationsUrl.searchParams.set('prefix', state.prefix);
 
     const [instancesResponse, relationsResponse] = await Promise.all([
-      fetch(instancesUrl, { headers: { accept: 'application/json' } }),
-      fetch(relationsUrl, { headers: { accept: 'application/json' } })
+      fetch(instancesUrl, { headers: cmdbuildFetchHeaders({ accept: 'application/json' }) }),
+      fetch(relationsUrl, { headers: cmdbuildFetchHeaders({ accept: 'application/json' }) })
     ]);
     if (!instancesResponse.ok) {
       const text = await instancesResponse.text();
+      handleCmdbuildAuthFailure(text);
       throw new Error(text || `запрос экземпляров CMDBuild не выполнен: ${instancesResponse.status}`);
     }
     if (!relationsResponse.ok) {
       const text = await relationsResponse.text();
+      handleCmdbuildAuthFailure(text);
       throw new Error(text || `запрос связей CMDBuild не выполнен: ${relationsResponse.status}`);
     }
 
@@ -10575,7 +13379,7 @@ function relationGraphData(layerKey) {
     .filter((rule) => rule?.rule_id)
     .map((rule) => [rule.rule_id, rule]));
   const manualRules = rules
-    .filter((rule) => rule?.rule_id && !isGeneratedTemplateRule(rule));
+    .filter((rule) => rule?.rule_id && !isTemplateOwnedRule(rule));
   const manualRuleById = new Map(manualRules.map((rule) => [rule.rule_id, rule]));
   const templateDocument = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey);
   const plan = templateMaterializationPlan(layerKey, { safe: true });
@@ -10583,7 +13387,8 @@ function relationGraphData(layerKey) {
   const nodes = [
     ...templateDocument.templates.map((template) =>
       relationGraphNodeFromTemplate(layerKey, template, planByTemplateId.get(template.template_id))),
-    ...manualRules.map((rule) => relationGraphNodeFromManualRule(rule))
+    ...manualRules.map((rule) => relationGraphNodeFromManualRule(rule)),
+    ...(layerKey === 'service' ? relationGraphServiceObjectNodes() : [])
   ];
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const edges = [];
@@ -10594,6 +13399,17 @@ function relationGraphData(layerKey) {
     manualRuleById,
     rulesById));
   edges.push(...relationGraphManualRuleEdges(layerKey, manualRules, manualRuleById, rulesById, templateDocument, planByTemplateId));
+  if (layerKey === 'service') {
+    const serviceObjectGraph = relationGraphServiceObjectRelationEdges(nodeById);
+    for (const node of serviceObjectGraph.nodes) {
+      if (!nodeById.has(node.id)) {
+        nodeById.set(node.id, node);
+        nodes.push(node);
+      }
+    }
+    edges.push(...serviceObjectGraph.edges);
+    relationGraphAccumulateServiceObjectRelationCounts(nodeById, serviceObjectGraph.edges);
+  }
 
   return {
     layer: layerKey,
@@ -10614,6 +13430,14 @@ function relationGraphTemplateNodeId(templateId) {
 
 function relationGraphRuleNodeId(ruleId) {
   return `rule:${String(ruleId ?? '').trim()}`;
+}
+
+function relationGraphServiceObjectNodeId(classCode, cardId) {
+  return `service-object:${canonicalToken(classCode)}:${String(cardId ?? '').trim()}`;
+}
+
+function relationGraphServiceCardNodeId(classCode, cardId) {
+  return `service-card:${canonicalToken(classCode)}:${String(cardId ?? '').trim()}`;
 }
 
 function relationGraphNodeFromTemplate(layerKey, template, planItem = null) {
@@ -10682,6 +13506,291 @@ function relationGraphNodeFromManualRule(rule) {
     ]),
     rule
   };
+}
+
+function relationGraphServiceObjectNodes() {
+  return SERVICE_OBJECT_TYPE_DEFINITIONS.flatMap((definition) => {
+    const classCode = serviceObjectClassCode(definition.key);
+    return serviceObjectCards(definition.key).map((card) =>
+      relationGraphNodeFromServiceEndpoint(definition.key, classCode, card, {
+        nodeType: 'service_object'
+      }));
+  });
+}
+
+function relationGraphNodeFromServiceEndpoint(type, classCode, card, options = {}) {
+  const endpointDefinition = serviceRelationEndpointDefinition(type);
+  const cardId = String(card?.id ?? '').trim();
+  const nodeType = options.nodeType || 'service_card';
+  const expectedObject = relationGraphExpectedObjectFromServiceCard(classCode, card);
+  const label = serviceRelationEndpointCardDisplayLabel(type, card, classCode);
+  return {
+    id: nodeType === 'service_object'
+      ? relationGraphServiceObjectNodeId(classCode, cardId)
+      : relationGraphServiceCardNodeId(classCode, cardId),
+    nodeType,
+    label,
+    priority: 0,
+    ruleId: '',
+    templateId: '',
+    templateName: '',
+    sourceClass: '',
+    sourceKeyAttribute: '',
+    targetClass: classCode,
+    objectCount: expectedObject ? 1 : 0,
+    objectKey: expectedObject?.key ?? '',
+    objectLookup: expectedObject?.lookup ?? '',
+    objectLabel: expectedObject?.label ?? 'карточка не задана',
+    generatedRuleCount: 0,
+    runtimeRelationCount: 0,
+    expectedObjects: expectedObject ? [expectedObject] : [],
+    regexItems: [],
+    searchText: relationGraphSearchText([
+      endpointDefinition?.label,
+      label,
+      classCode,
+      cardId,
+      card?.description,
+      cardAttributeValue(card, 'Code'),
+      cardAttributeValue(card, 'name')
+    ]),
+    serviceObjectType: type,
+    serviceObjectTypeLabel: endpointDefinition?.label || type,
+    serviceCard: { ...card, classCode }
+  };
+}
+
+function relationGraphExpectedObjectFromServiceCard(classCode, card) {
+  const cardId = String(card?.id ?? '').trim();
+  if (!classCode || !cardId) {
+    return null;
+  }
+
+  const label = targetCardDisplayLabel(card, classCode);
+  return {
+    key: relationGraphObjectMatchKey(classCode, cardId),
+    rawKey: `${classCode}:${cardId}`,
+    classCode,
+    lookup: cardId,
+    label,
+    ruleId: '',
+    ruleName: ''
+  };
+}
+
+function relationGraphServiceObjectRelationEdges(nodeById) {
+  const edges = [];
+  const nodes = [];
+  for (const row of serviceObjectRelationRows()) {
+    const source = relationGraphServiceRelationEndpoint(row, 'source', nodeById);
+    if (row.targetType === 'service_template') {
+      if (!source.object) {
+        continue;
+      }
+
+      if (source.node && !nodeById.has(source.node.id)) {
+        nodeById.set(source.node.id, source.node);
+        nodes.push(source.node);
+      }
+
+      const targetTemplate = serviceObjectTemplateRelationTargetTemplate({
+        target_template_id: row.targetTemplateId,
+        target_class_code: row.targetClassCode
+      });
+      const targetNodeId = relationGraphTemplateNodeId(row.targetTemplateId);
+      if (targetTemplate && !nodeById.has(targetNodeId)) {
+        const templateNode = relationGraphNodeFromTemplate('service', targetTemplate);
+        nodeById.set(templateNode.id, templateNode);
+        nodes.push(templateNode);
+      }
+
+      const bundle = relationGraphExpectedRelationsForServiceTemplate(row, source.object);
+      const role = serviceObjectRelationGraphRole(row.definition);
+      edges.push(relationGraphEdge({
+        sourceId: source.nodeId,
+        targetId: targetNodeId,
+        sourceKind: source.kind,
+        targetKind: 'template',
+        sourceLabel: row.sourceLabel,
+        targetLabel: row.targetLabel,
+        targetTemplate,
+        role,
+        relation: {
+          managed_key: `service-object-template-${row.relationId || `${row.sourceClassCode}-${row.sourceCardId}-${row.targetTemplateId}`}`,
+          relation_role: role,
+          attributes: {
+            source: 'service_object_template_relation',
+            target_template_id: row.targetTemplateId,
+            target_class_code: row.targetClassCode
+          }
+        },
+        expectedRelations: bundle.relations,
+        relationErrors: bundle.errors
+      }));
+      continue;
+    }
+
+    const target = relationGraphServiceRelationEndpoint(row, 'target', nodeById);
+    if (!source.object || !target.object) {
+      continue;
+    }
+
+    if (source.node && !nodeById.has(source.node.id)) {
+      nodeById.set(source.node.id, source.node);
+      nodes.push(source.node);
+    }
+    if (target.node && !nodeById.has(target.node.id)) {
+      nodeById.set(target.node.id, target.node);
+      nodes.push(target.node);
+    }
+
+    const role = serviceObjectRelationGraphRole(row.definition);
+    edges.push(relationGraphEdge({
+      sourceId: source.nodeId,
+      targetId: target.nodeId,
+      sourceKind: source.kind,
+      targetKind: target.kind,
+      sourceLabel: row.sourceLabel,
+      targetLabel: row.targetLabel,
+      role,
+      relation: {
+        managed_key: `cmdb-service-relation-${row.domainCode}-${row.relationId || `${row.sourceClassCode}-${row.sourceCardId}-${row.targetClassCode}-${row.targetCardId}`}`,
+        relation_role: role,
+        attributes: {
+          domain_code: row.domainCode
+        }
+      },
+      expectedRelations: [{
+        domainCode: row.domainCode,
+        targetClass: row.targetClassCode,
+        targetLookup: row.targetCardId,
+        sourceObject: source.object,
+        targetObject: target.object,
+        sourceRuleId: '',
+        targetRuleId: ''
+      }]
+    }));
+  }
+
+  return { nodes, edges };
+}
+
+function relationGraphExpectedRelationsForServiceTemplate(row, sourceObject) {
+  const relations = [];
+  const errors = [];
+  for (const item of serviceTemplateGeneratedTargets(row.targetTemplateId)) {
+    const domain = serviceObjectRelationDomain(row.definition, row.sourceClassCode, item.classCode);
+    const targetObject = relationGraphExpectedObjectFromServiceCard(item.classCode, item.card);
+    if (!domain?.code) {
+      errors.push(`Нет domain CMDBuild для ${row.sourceClassCode} -> ${item.classCode}.`);
+      continue;
+    }
+    if (!targetObject) {
+      errors.push(`Не удалось определить карточку агрегата шаблона ${row.targetTemplateId}.`);
+      continue;
+    }
+
+    relations.push({
+      domainCode: domain.code,
+      targetClass: item.classCode,
+      targetLookup: String(item.card?.id ?? ''),
+      sourceObject,
+      targetObject,
+      sourceRuleId: '',
+      targetRuleId: String(item.rule?.rule_id ?? '').trim()
+    });
+  }
+
+  return { relations, errors };
+}
+
+function relationGraphServiceRelationEndpoint(row, side, nodeById) {
+  const type = side === 'source' ? row.sourceType : row.targetType;
+  const classCode = side === 'source' ? row.sourceClassCode : row.targetClassCode;
+  const cardId = side === 'source' ? row.sourceCardId : row.targetCardId;
+  const card = serviceRelationEndpointCard(type, cardId)
+    ?? {
+      id: cardId,
+      classCode,
+      description: side === 'source' ? row.sourceLabel : row.targetLabel,
+      attributes: []
+    };
+  const object = relationGraphExpectedObjectFromServiceCard(classCode, card);
+  const serviceObjectType = serviceObjectTypeDefinitionOrNull(type);
+  if (serviceObjectType) {
+    const nodeId = relationGraphServiceObjectNodeId(classCode, cardId);
+    return {
+      nodeId,
+      kind: 'service_object',
+      object,
+      node: nodeById.has(nodeId)
+        ? null
+        : relationGraphNodeFromServiceEndpoint(type, classCode, card, { nodeType: 'service_object' })
+    };
+  }
+
+  const generatedRule = generatedRuleForTargetCard('service', classCode, card);
+  const templateId = ruleTemplateId(generatedRule);
+  if (templateId) {
+    const templateNodeId = relationGraphTemplateNodeId(templateId);
+    if (nodeById.has(templateNodeId)) {
+      return {
+        nodeId: templateNodeId,
+        kind: 'template',
+        object,
+        node: null
+      };
+    }
+  }
+
+  const ruleId = String(generatedRule?.rule_id ?? '').trim();
+  if (ruleId) {
+    const ruleNodeId = relationGraphRuleNodeId(ruleId);
+    if (nodeById.has(ruleNodeId)) {
+      return {
+        nodeId: ruleNodeId,
+        kind: 'manual_rule',
+        object,
+        node: null
+      };
+    }
+  }
+
+  const nodeId = relationGraphServiceCardNodeId(classCode, cardId);
+  return {
+    nodeId,
+    kind: 'service_card',
+    object,
+    node: nodeById.has(nodeId)
+      ? null
+      : relationGraphNodeFromServiceEndpoint(type, classCode, card, { nodeType: 'service_card' })
+  };
+}
+
+function serviceObjectRelationGraphRole(definition) {
+  const relationType = String(definition?.relationType ?? '').trim();
+  if (relationType === 'aggregates_to') {
+    return 'contains';
+  }
+
+  if (relationType === 'service_depends_on') {
+    return 'depends_on';
+  }
+
+  return 'uses';
+}
+
+function relationGraphAccumulateServiceObjectRelationCounts(nodeById, edges) {
+  for (const edge of edges) {
+    const source = nodeById.get(edge.sourceId);
+    const target = nodeById.get(edge.targetId);
+    if (source) {
+      source.runtimeRelationCount = Number(source.runtimeRelationCount ?? 0) + edge.count;
+    }
+    if (target && target !== source) {
+      target.runtimeRelationCount = Number(target.runtimeRelationCount ?? 0) + edge.count;
+    }
+  }
 }
 
 function relationGraphRuleObjectIdentity(rule) {
@@ -10928,6 +14037,8 @@ function relationGraphEdge({
   targetId,
   sourceKind,
   targetKind,
+  sourceLabel = '',
+  targetLabel = '',
   sourceRule = null,
   targetRule = null,
   sourceTemplate = null,
@@ -10950,6 +14061,8 @@ function relationGraphEdge({
     targetId,
     sourceKind,
     targetKind,
+    sourceLabel,
+    targetLabel,
     role,
     roleLabel: linkRelationRoleLabel(role),
     sourceRule,
@@ -10969,6 +14082,8 @@ function relationGraphEdge({
       targetTemplate?.name,
       sourceRule?.name,
       targetRule?.name,
+      sourceLabel,
+      targetLabel,
       role,
       linkRelationRoleLabel(role),
       relationGraphRegexItemsFromRelation(relation).join(' ')
@@ -11414,6 +14529,8 @@ function relationGraphRoleEffectDirection(role) {
 function renderRelationGraphSummary(graph, filteredGraph, online = null) {
   const templates = graph.nodes.filter((node) => node.nodeType === 'template').length;
   const manual = graph.nodes.filter((node) => node.nodeType === 'manual_rule').length;
+  const serviceObjects = graph.nodes.filter((node) =>
+    node.nodeType === 'service_object' || node.nodeType === 'service_card').length;
   const generatedRules = graph.nodes.reduce((sum, node) => sum + (node.generatedRuleCount ?? 0), 0);
   const expectedObjects = new Set(graph.nodes
     .flatMap((node) => node.expectedObjects ?? [])
@@ -11428,8 +14545,8 @@ function renderRelationGraphSummary(graph, filteredGraph, online = null) {
       <strong>${escapeHtml(graph.nodes.length)}</strong>
     </div>
     <div>
-      <span class="metric-label">Шаблоны/ручные</span>
-      <strong>${escapeHtml(templates)} / ${escapeHtml(manual)}</strong>
+      <span class="metric-label">Шаблоны/ручные/сервисные</span>
+      <strong>${escapeHtml(templates)} / ${escapeHtml(manual)} / ${escapeHtml(serviceObjects)}</strong>
     </div>
     <div>
       <span class="metric-label">Порождено правил</span>
@@ -11467,6 +14584,9 @@ function renderRelationGraphSummary(graph, filteredGraph, online = null) {
 
 function relationGraphStatusText(graph, filteredGraph, graphState) {
   const layerLabel = graphState.layer === 'service' ? 'сервис' : 'подавление';
+  const nodeScope = graphState.layer === 'service'
+    ? 'узлы графа это шаблоны правил, ручные правила и сервисные CMDBuild-объекты'
+    : 'узлы графа это шаблоны правил и ручные правила';
   const directionLabel = graphState.direction === 'effect'
     ? 'стрелки показывают направление влияния/подавления'
     : 'стрелки показывают направление, записанное в правилах';
@@ -11482,7 +14602,7 @@ function relationGraphStatusText(graph, filteredGraph, graphState) {
           ? ` Онлайн-сверка: ${graphState.onlineMessage || formatCacheTimestamp(graphState.onlineCheckedAt)}.`
           : ' Онлайн-сверка включена; нажмите "Обновить онлайн".'
     : '';
-  return `${layerLabel}: узлы графа это шаблоны правил и ручные правила; сгенерированные правила свернуты в счетчики шаблонов. ${directionLabel}.${filterLabel}${onlineLabel}`;
+  return `${layerLabel}: ${nodeScope}; сгенерированные правила свернуты в счетчики шаблонов. ${directionLabel}.${filterLabel}${onlineLabel}`;
 }
 
 function renderRelationGraphCanvas(layout, graphState) {
@@ -11647,14 +14767,16 @@ function relationGraphPolylinePath(points) {
 
 function renderRelationGraphNode(node, graphState) {
   const onlineState = relationGraphNodeOnlineState(node);
-  const typeLabel = node.nodeType === 'template' ? 'шаблон' : 'ручное';
+  const typeLabel = relationGraphNodeTypeLabel(node);
   const sourceTargetLabel = node.nodeType === 'template'
     ? `${node.sourceClass || 'regex источника не задан'} -> ${node.targetClass || '-'}`
-    : `${node.sourceClass || '-'} -> ${node.targetClass || '-'}`;
+    : node.nodeType === 'service_object' || node.nodeType === 'service_card'
+      ? `${node.serviceObjectTypeLabel || 'объект'} · ${node.targetClass || '-'}`
+      : `${node.sourceClass || '-'} -> ${node.targetClass || '-'}`;
   const title = relationGraphNodeTitle(node);
   return `
     <article
-      class="relation-graph-node ${node.nodeType === 'template' ? 'template' : 'manual'} ${escapeHtml(onlineState.className)}"
+      class="relation-graph-node ${escapeHtml(relationGraphNodeCssClass(node))} ${escapeHtml(onlineState.className)}"
       style="left:${node.x}px;top:${node.y}px;width:${node.width}px;height:${node.height}px"
       title="${escapeHtml(title)}"
     >
@@ -11673,13 +14795,45 @@ function renderRelationGraphNode(node, graphState) {
   `;
 }
 
+function relationGraphNodeTypeLabel(node) {
+  if (node.nodeType === 'template') {
+    return 'шаблон';
+  }
+
+  if (node.nodeType === 'service_object') {
+    return 'объект сервиса';
+  }
+
+  if (node.nodeType === 'service_card') {
+    return 'агрегат';
+  }
+
+  return 'ручное';
+}
+
+function relationGraphNodeCssClass(node) {
+  if (node.nodeType === 'template') {
+    return 'template';
+  }
+
+  if (node.nodeType === 'service_object' || node.nodeType === 'service_card') {
+    return 'service-object';
+  }
+
+  return 'manual';
+}
+
 function relationGraphNodeTitle(node) {
   const lines = [
     node.label || node.id,
     node.nodeType === 'template'
       ? `Шаблон: ${node.templateId || '-'}`
-      : `Правило: ${node.ruleId || '-'}`,
-    `Источник: ${node.sourceClass || '-'}`,
+      : node.nodeType === 'service_object' || node.nodeType === 'service_card'
+        ? `Сервисный объект: ${node.serviceObjectTypeLabel || '-'}`
+        : `Правило: ${node.ruleId || '-'}`,
+    node.nodeType === 'service_object' || node.nodeType === 'service_card'
+      ? ''
+      : `Источник: ${node.sourceClass || '-'}`,
     node.sourceKeyAttribute ? `Ключ источника: ${node.sourceKeyAttribute}` : '',
     `Цель модели: ${node.targetClass || '-'}:${node.objectLookup || '-'}`,
     node.nodeType === 'manual_rule' && node.objectLookup
@@ -11798,7 +14952,7 @@ function relationGraphFindings(graph, online = null) {
     findings.push({
       severity: 'warn',
       title: `Серые зоны без связей графа: ${orphans.length}`,
-      detail: orphans.slice(0, 10).map((node) => `${node.label || node.id} (${node.objectLabel})`).join('; ')
+      detail: orphans.slice(0, 10).map(relationGraphNodeDiagnosticLabel).join('; ')
     });
   }
 
@@ -11829,6 +14983,32 @@ function relationGraphFindings(graph, online = null) {
   }
 
   return findings;
+}
+
+function relationGraphNodeDiagnosticLabel(node) {
+  const label = String(node?.label || node?.id || '').trim();
+  const objectLabel = String(node?.objectLabel || '').trim();
+  if (!label) {
+    return objectLabel || '-';
+  }
+  if (!objectLabel) {
+    return label;
+  }
+
+  const normalizedLabel = relationGraphDiagnosticTextToken(label);
+  const normalizedObjectLabel = relationGraphDiagnosticTextToken(objectLabel);
+  if (normalizedLabel === normalizedObjectLabel || normalizedLabel.includes(normalizedObjectLabel)) {
+    return label;
+  }
+  if (normalizedObjectLabel.includes(normalizedLabel)) {
+    return objectLabel;
+  }
+
+  return `${label} (${objectLabel})`;
+}
+
+function relationGraphDiagnosticTextToken(value) {
+  return String(value ?? '').trim().toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
 }
 
 function relationGraphPriorityFindings(graph) {
@@ -11977,6 +15157,11 @@ function relationGraphEndpointDisplayLabel(edge, side) {
     return rule
       ? relationGraphRuleDisplayLabel(rule, { manualPrefix: true })
       : `правило "${relationGraphRawNodeIdLabel(nodeId)}"`;
+  }
+
+  if (kind === 'service_object' || kind === 'service_card') {
+    const label = isTarget ? edge.targetLabel : edge.sourceLabel;
+    return label || relationGraphRawNodeIdLabel(nodeId);
   }
 
   return relationGraphRawNodeIdLabel(nodeId);
@@ -12330,7 +15515,8 @@ function applyLinkRelationEditorChange() {
       relation_role: relationRole,
       target_template_id: effectiveTargetType === 'template' ? targetId : '',
       target_rule_id: effectiveTargetType === 'rule' ? targetId : '',
-      attributes
+      attributes,
+      ...(state.linkRelationDerivedFrom ? { derived_from: cloneJson(state.linkRelationDerivedFrom) } : {})
     };
 
     if (effectiveSourceType === 'template') {
@@ -12342,6 +15528,7 @@ function applyLinkRelationEditorChange() {
     if (config.description) {
       config.description.value = '';
     }
+    state.linkRelationDerivedFrom = null;
     setLinkRelationStatus('Связь добавлена.');
   } catch (error) {
     setLinkRelationStatus(error.message, 'error');
@@ -12714,6 +15901,10 @@ function renderTemplateApplyView() {
   const auditResult = state.templateAudit.result;
   list.innerHTML = [
     renderTemplateAuditGateCard(),
+    renderTemplateDeletionPlansCard('service'),
+    renderDetachedTemplateRulesCard('service'),
+    renderTemplateDeletionPlansCard('suppression'),
+    renderDetachedTemplateRulesCard('suppression'),
     auditResult ? renderTemplateAuditLayer('service', auditResult.service) : '',
     auditResult ? renderTemplateAuditLayer('suppression', auditResult.suppression) : '',
     renderTemplateApplyLastResultCard(),
@@ -12721,8 +15912,6 @@ function renderTemplateApplyView() {
     renderTemplateApplicationCard('suppression'),
     renderTemplatePlanErrorsCard('service', plan),
     renderTemplatePlanErrorsCard('suppression', suppressionPlan),
-    renderTemplateDeletionPlansCard('service'),
-    renderTemplateDeletionPlansCard('suppression'),
     ...(auditResult ? [] : renderTemplatePlanCards('service', plan)),
     ...(auditResult ? [] : renderTemplatePlanCards('suppression', suppressionPlan)),
     renderCurrentGeneratedRulesCard('service'),
@@ -12753,19 +15942,432 @@ function renderTemplateDeletionPlansCard(layerKey) {
 
   const plans = (parsed.document.templateDeletionPlans ?? [])
     .filter((plan) => plan.status !== 'done');
-  if (plans.length === 0) {
+  const targets = plans.flatMap((plan) => plan.targets ?? []);
+  const applying = Boolean(state.templateDeletionApplying[layerKey]);
+  const hasPlans = plans.length > 0;
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">${escapeHtml(layerKey === 'service' ? 'сервис' : 'подавление')} удаление объектов CMDBuild</span>
+      <strong>${escapeHtml(plans.length)} планов · ${escapeHtml(targets.length)} целей</strong>
+      <span>${escapeHtml(hasPlans
+        ? plans.map((plan) => `${plan.template_id || '-'}: ${plan.reason || '-'} · ${plan.status || '-'}`).join('; ')
+        : 'Планов удаления пока нет.')}</span>
+      <span>${escapeHtml(hasPlans
+        ? targets.map((target) => `${target.source_class_code || '-'} -> ${target.target_class_code || '-'} · ${target.idempotency_key || target.card_id || '-'}${target.status ? ` · ${target.status}` : ''}`).join(', ')
+        : 'Чтобы удалить сами объекты, сначала удалите шаблон в режиме "Удалить созданные правила и объекты" или уберите detached-правила с постановкой объектов в план удаления.')}</span>
+      <span>Фактическое удаление карточек выполняется здесь. Удаление шаблона только формирует план; сохранение конфигурации в папку и reload микросервисов карточки CMDBuild не удаляют.</span>
+      <span class="rule-summary-actions">
+        <button type="button" class="secondary-button compact-button" data-template-deletion-apply="${escapeHtml(layerKey)}" ${applying || !hasPlans ? 'disabled' : ''}>${escapeHtml(applying ? 'Удаляю...' : 'Применить планы удаления в CMDBuild')}</button>
+      </span>
+    </div>
+  `;
+}
+
+function isDetachedTemplateRule(rule) {
+  return !String(rule?.generated_from_template || '').trim()
+    && Boolean(String(rule?.detached_from_template || '').trim()
+      || String(rule?.template_generation?.status || '').trim().toLowerCase() === 'detached');
+}
+
+function detachedTemplateRules(layerKey) {
+  const parsed = parseRuleDocument(layerKey);
+  if (!parsed.ok) {
+    return [];
+  }
+
+  return (parsed.document.rules ?? []).filter(isDetachedTemplateRule);
+}
+
+function isDetachedTemplateCleanupRule(rule) {
+  if (!isDetachedTemplateRule(rule)) {
+    return false;
+  }
+
+  return String(rule?.detach_reason ?? '').trim() === 'template_deleted_keep_objects'
+    || String(rule?.template_generation?.detach_reason ?? '').trim() === 'template_deleted_keep_objects'
+    || rule?.target?.preserve_on_template_delete === true;
+}
+
+function detachedTemplateCleanupRules(layerKey) {
+  const parsed = parseRuleDocument(layerKey);
+  if (!parsed.ok) {
+    return [];
+  }
+
+  return (parsed.document.rules ?? []).filter(isDetachedTemplateCleanupRule);
+}
+
+function renderDetachedTemplateRulesCard(layerKey) {
+  const rules = detachedTemplateCleanupRules(layerKey);
+  if (rules.length === 0) {
     return '';
   }
 
-  const targets = plans.flatMap((plan) => plan.targets ?? []);
+  const byTemplate = new Map();
+  for (const rule of rules) {
+    const templateId = ruleTemplateId(rule) || String(rule.detached_from_template || '').trim() || 'без template_id';
+    byTemplate.set(templateId, (byTemplate.get(templateId) ?? 0) + 1);
+  }
+
+  const applying = Boolean(state.templateDeletionApplying[layerKey]);
+  const examples = rules
+    .slice(0, 12)
+    .map((rule) => `${rule.name || rule.rule_id || '-'} (${ruleTargetClassCode(rule) || '-'})`);
+  const templateSummary = [...byTemplate.entries()]
+    .map(([templateId, count]) => `${templateId}: ${count}`)
+    .join('; ');
   return `
     <div class="rule-summary">
-      <span class="structure-mark">${escapeHtml(layerKey === 'service' ? 'сервис' : 'подавление')} ожидающие планы удаления</span>
-      <strong>${escapeHtml(plans.length)} планов · ${escapeHtml(targets.length)} целей</strong>
-      <span>${escapeHtml(plans.map((plan) => `${plan.template_id || '-'}: ${plan.reason || '-'} · ${plan.status || '-'}`).join('; '))}</span>
-      <span>${escapeHtml(targets.map((target) => `${target.source_class_code || '-'} -> ${target.target_class_code || '-'} · ${target.idempotency_key || target.card_id || '-'}`).join(', ') || '-')}</span>
+      <span class="structure-mark">${escapeHtml(layerKey === 'service' ? 'сервис' : 'подавление')} отвязанные правила шаблонов</span>
+      <strong>${escapeHtml(rules.length)} правил</strong>
+      <span>Здесь показаны только правила, которые были созданы шаблоном и затем отвязаны при удалении шаблона в режиме "Отвязать правила и сохранить объекты". Обычные статические правила и активные правила шаблонов сюда не попадают.</span>
+      <span>По шаблонам: ${escapeHtml(templateSummary || '-')}</span>
+      <span>${escapeHtml(examples.join(', ') || '-')}</span>
+      <span class="rule-summary-actions">
+        <button type="button" class="secondary-button compact-button" data-template-detached-cleanup="${escapeHtml(layerKey)}" data-cleanup-mode="keep_objects" ${applying ? 'disabled' : ''}>Убрать отвязанные правила, объекты сохранить</button>
+        <button type="button" class="danger-button compact-button" data-template-detached-cleanup="${escapeHtml(layerKey)}" data-cleanup-mode="delete_objects" ${applying ? 'disabled' : ''}>Убрать правила и поставить объекты в план удаления</button>
+      </span>
     </div>
   `;
+}
+
+function cleanupDetachedTemplateRules(layerKey, mode = 'keep_objects') {
+  try {
+    const parsed = parseRuleDocument(layerKey);
+    if (!parsed.ok) {
+      throw new Error(parsed.error);
+    }
+
+    const document = parsed.document;
+    const rules = (document.rules ?? []).filter(isDetachedTemplateCleanupRule);
+    if (rules.length === 0) {
+      state.templateApplyMessage = `${layerHumanLabel(layerKey)}: отвязанных правил шаблонов нет.`;
+      state.templateApplyError = '';
+      renderTemplateApplyView();
+      return;
+    }
+
+    const deleteObjects = mode === 'delete_objects';
+    if (deleteObjects && typeof window.confirm === 'function') {
+      const confirmed = window.confirm(`${layerHumanLabel(layerKey)}: убрать ${rules.length} отвязанных правил и создать планы удаления связанных CMDBuild-объектов?`);
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    const ruleIds = new Set(rules.map((rule) => String(rule.rule_id || '').trim()).filter(Boolean));
+    if (deleteObjects) {
+      const beforePlans = Array.isArray(document.templateDeletionPlans) ? document.templateDeletionPlans.length : 0;
+      appendTemplateDeletionPlansForRemovedRules(
+        document,
+        layerKey,
+        rules,
+        'detached_rules_cleanup_delete_objects');
+      const afterPlans = Array.isArray(document.templateDeletionPlans) ? document.templateDeletionPlans.length : 0;
+      const targets = (document.templateDeletionPlans ?? [])
+        .slice(beforePlans)
+        .reduce((sum, plan) => sum + (plan.targets?.length ?? 0), 0);
+      document.rules = (document.rules ?? []).filter((rule) =>
+        !ruleIds.has(String(rule.rule_id || '').trim()));
+      const relationCleanup = removeRuleReferencesToRemovedRules(document, rules, { preserveRuntimeRelations: false });
+      writeRuleDocument(layerKey, document);
+      state.templateApplyMessage = `${layerHumanLabel(layerKey)}: убрано ${rules.length} отвязанных правил, создано ${afterPlans - beforePlans} планов удаления на ${targets} объектов, удалено ссылок на правила ${relationCleanup.managedRelations}. Нажмите "Применить планы удаления в CMDBuild" для фактического удаления карточек.`;
+      state.templateApplyError = '';
+    } else {
+      document.rules = (document.rules ?? []).filter((rule) =>
+        !ruleIds.has(String(rule.rule_id || '').trim()));
+      const relationCleanup = removeRuleReferencesToRemovedRules(document, rules, { preserveRuntimeRelations: true });
+      writeRuleDocument(layerKey, document);
+      state.templateApplyMessage = `${layerHumanLabel(layerKey)}: убрано ${rules.length} отвязанных правил, CMDBuild-объекты сохранены. Ссылок на удаленные правила снято ${relationCleanup.managedRelations}, runtime-связей оставлено как статические ${relationCleanup.detachedRuntimeRelations}.`;
+      state.templateApplyError = '';
+    }
+
+    renderTemplateApplyView();
+    renderTemplateAuditView();
+  } catch (error) {
+    state.templateApplyMessage = '';
+    state.templateApplyError = error.message;
+    renderTemplateApplyView();
+  }
+}
+
+async function applyTemplateDeletionPlans(layerKey) {
+  if (state.templateDeletionApplying[layerKey]) {
+    return;
+  }
+
+  const parsed = parseRuleDocument(layerKey);
+  if (!parsed.ok) {
+    state.templateApplyMessage = '';
+    state.templateApplyError = parsed.error;
+    renderTemplateApplyView();
+    return;
+  }
+
+  const document = parsed.document;
+  const plans = (document.templateDeletionPlans ?? [])
+    .filter((plan) => plan.status !== 'done');
+  if (plans.length === 0) {
+    state.templateApplyMessage = `${layerHumanLabel(layerKey)}: ожидающих планов удаления нет.`;
+    state.templateApplyError = '';
+    renderTemplateApplyView();
+    return;
+  }
+
+  const targetCount = plans.reduce((sum, plan) => sum + (plan.targets?.length ?? 0), 0);
+  if (typeof window.confirm === 'function') {
+    const confirmed = window.confirm(`${layerHumanLabel(layerKey)}: удалить ${targetCount} CMDBuild-карточек по ${plans.length} планам?`);
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  state.templateDeletionApplying[layerKey] = true;
+  state.templateApplyMessage = `${layerHumanLabel(layerKey)}: выполняю планы удаления (${targetCount} целей)...`;
+  state.templateApplyError = '';
+  renderTemplateApplyView();
+
+  let deleted = 0;
+  let skipped = 0;
+  let stateRemoved = 0;
+  const errors = [];
+  const stateCleanupKeys = new Set();
+  try {
+    for (const plan of plans) {
+      const planErrors = [];
+      let planDeleted = 0;
+      let planSkipped = 0;
+      for (const target of plan.targets ?? []) {
+        for (const key of templateDeletionTargetManagedKeys(target)) {
+          stateCleanupKeys.add(key);
+        }
+
+        try {
+          const resolved = await resolveTemplateDeletionTargetCard(layerKey, target);
+          if (!resolved.cardId) {
+            const message = `${target.target_class_code || '-'} ${target.idempotency_key || target.card_description || target.rule_id || '-'}: карточка не найдена`;
+            skipped += 1;
+            planSkipped += 1;
+            target.status = 'skipped';
+            target.applied_at = new Date().toISOString();
+            target.delete_result = { action: 'skipped', message };
+            continue;
+          }
+
+          for (const key of templateDeletionTargetManagedKeys({ ...target, card_id: resolved.cardId })) {
+            stateCleanupKeys.add(key);
+          }
+
+          const result = await deleteCmdbClassCard(resolved.classCode, resolved.cardId);
+          if (result.action === 'deleted') {
+            deleted += 1;
+            planDeleted += 1;
+            target.status = 'deleted';
+            target.card_id = resolved.cardId;
+            target.applied_at = new Date().toISOString();
+            target.delete_result = result;
+          } else {
+            skipped += 1;
+            planSkipped += 1;
+            target.status = 'skipped';
+            target.card_id = resolved.cardId;
+            target.applied_at = new Date().toISOString();
+            target.delete_result = result;
+          }
+        } catch (error) {
+          errors.push(`${target.target_class_code || '-'} ${target.idempotency_key || target.card_id || target.rule_id || '-'}: ${error.message}`);
+          planErrors.push(`${target.target_class_code || '-'} ${target.idempotency_key || target.card_id || target.rule_id || '-'}: ${error.message}`);
+          target.status = 'failed';
+          target.applied_at = new Date().toISOString();
+          target.delete_result = { action: 'failed', message: error.message };
+        }
+      }
+
+      plan.applied_at = new Date().toISOString();
+      plan.apply_result = {
+        deleted: planDeleted,
+        skipped: planSkipped,
+        errors: planErrors
+      };
+      plan.status = planErrors.length > 0 ? 'failed' : 'done';
+    }
+
+    writeRuleDocument(layerKey, document);
+    try {
+      await loadCmdbClassInstances();
+      await persistCmdbSourceCache();
+    } catch (error) {
+      errors.push(`обновление кэша CMDBuild: ${error.message}`);
+    }
+
+    if (stateCleanupKeys.size > 0) {
+      try {
+        const cleanupResult = await cleanupZabbixStateManagedKeys(layerKey, [...stateCleanupKeys], { dryRun: false });
+        stateRemoved = cleanupResult.removed ?? 0;
+      } catch (error) {
+        errors.push(`очистка Zabbix state: ${error.message}`);
+      }
+    }
+
+    state.templateApplyMessage = `${layerHumanLabel(layerKey)}: планы удаления выполнены. Удалено ${deleted}, пропущено ${skipped}, state zabbixconfig2api очищено ${stateRemoved}.`;
+    state.templateApplyError = errors.length > 0
+      ? `Часть целей не удалена: ${errors.slice(0, 8).join('; ')}${errors.length > 8 ? `; еще ${errors.length - 8}` : ''}`
+      : '';
+  } catch (error) {
+    state.templateApplyMessage = '';
+    state.templateApplyError = error.message;
+  } finally {
+    state.templateDeletionApplying[layerKey] = false;
+    renderTemplateApplyView();
+    renderTemplateAuditView();
+    renderConversionConfigSyncView();
+  }
+}
+
+async function resolveTemplateDeletionTargetCard(layerKey, target) {
+  const classCode = String(target?.target_class_code || target?.class_code || '').trim();
+  if (!classCode) {
+    return { classCode: '', cardId: '' };
+  }
+
+  let card = findTemplateDeletionTargetCard(layerKey, target);
+  if (!card) {
+    await refreshManagedClassCards(layerKey, classCode);
+    card = findTemplateDeletionTargetCard(layerKey, target);
+  }
+
+  return {
+    classCode,
+    cardId: String(card?.id ?? card?._id ?? '')
+  };
+}
+
+function templateDeletionTargetManagedKeys(target) {
+  const classCode = String(target?.target_class_code || target?.class_code || '').trim();
+  const cardId = String(target?.card_id || '').trim();
+  return [
+    String(target?.managed_key || '').trim(),
+    String(target?.idempotency_key || '').trim(),
+    String(target?.population_source_key || '').trim(),
+    classCode && cardId ? `cmdbuild:${classCode}:${cardId}` : ''
+  ].filter(Boolean);
+}
+
+function findTemplateDeletionTargetCard(layerKey, target) {
+  const classCode = String(target?.target_class_code || target?.class_code || '').trim();
+  const layer = schemaLayerForRuleLayer(layerKey).toLowerCase();
+  const classItem = state.cmdbClassInstances.find((item) =>
+    String(item.layer).toLowerCase() === layer
+    && canonicalToken(item.classCode) === canonicalToken(classCode));
+  if (!classItem) {
+    return null;
+  }
+
+  const expectedCardId = String(target?.card_id || '').trim();
+  const expectedIdempotency = String(target?.idempotency_key || '').trim();
+  const expectedManagedKey = String(target?.managed_key || '').trim();
+  const expectedPopulationSourceKey = String(target?.population_source_key || '').trim();
+  const expectedRuleId = String(target?.rule_id || '').trim();
+  const expectedName = String(target?.card_name || '').trim();
+  const expectedDescription = String(target?.card_description || '').trim();
+  const expectedKeys = new Set([
+    expectedManagedKey,
+    expectedIdempotency,
+    expectedPopulationSourceKey
+  ].filter(Boolean));
+  for (const card of classItem.cards ?? []) {
+    const cardId = String(card.id ?? card._id ?? '').trim();
+    if (expectedCardId && cardId === expectedCardId) {
+      return card;
+    }
+
+    const populationSourceKey = String(cardAttributeValue(card, POPULATION_SOURCE_KEY_ATTRIBUTE) || '').trim();
+    if (populationSourceKey && expectedKeys.has(populationSourceKey)) {
+      return card;
+    }
+
+    const populationRuleId = String(cardAttributeValue(card, 'population_rule_id') || '').trim();
+    if (expectedRuleId && populationRuleId === expectedRuleId) {
+      return card;
+    }
+
+    const code = String(cardAttributeValue(card, 'Code') || card.code || card.Code || '').trim();
+    if (code && expectedKeys.has(code)) {
+      return card;
+    }
+
+    const managedKey = zabbixManagedKeyForCard(classCode, card);
+    if (managedKey && expectedKeys.has(managedKey)) {
+      return card;
+    }
+
+    const description = String(card.description || cardAttributeValue(card, 'Description') || '').trim();
+    if (expectedDescription && description === expectedDescription) {
+      return card;
+    }
+
+    const name = String(cardAttributeValue(card, 'name') || card.name || '').trim();
+    if (expectedName && name === expectedName) {
+      return card;
+    }
+  }
+
+  return null;
+}
+
+async function refreshManagedClassCards(layerKey, classCode) {
+  const layer = schemaLayerForRuleLayer(layerKey);
+  const response = await fetch(`/api/cmdbuild/classes/${encodeURIComponent(classCode)}/cards?layer=${encodeURIComponent(layer)}`, {
+    headers: cmdbuildFetchHeaders({ accept: 'application/json' })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.detail || payload.error || `Не удалось загрузить карточки ${classCode}: ${response.status}`;
+    handleCmdbuildAuthFailure(detail);
+    throw new Error(detail);
+  }
+
+  upsertManagedClassCards(layer, classCode, payload);
+}
+
+function upsertManagedClassCards(layer, classCode, payload) {
+  const cards = Array.isArray(payload.cards)
+    ? payload.cards
+    : Array.isArray(payload.Cards)
+      ? payload.Cards
+      : [];
+  const schemaClass = state.classes.find((item) => canonicalToken(item.code) === canonicalToken(classCode));
+  let classItem = state.cmdbClassInstances.find((item) =>
+    String(item.layer).toLowerCase() === String(layer).toLowerCase()
+    && canonicalToken(item.classCode) === canonicalToken(classCode));
+  if (!classItem) {
+    classItem = {
+      layer,
+      classCode,
+      className: schemaClass?.displayName || classCode,
+      classDescription: schemaClass?.displayName || classCode,
+      attributes: targetClassAttributes(classCode),
+      cards: []
+    };
+    state.cmdbClassInstances.push(classItem);
+  }
+
+  classItem.cards = cards.map((card) => ({ ...card, classCode }));
+}
+
+async function deleteCmdbClassCard(classCode, cardId) {
+  const response = await fetch(`/api/cmdbuild/classes/${encodeURIComponent(classCode)}/cards/${encodeURIComponent(cardId)}`, {
+    method: 'DELETE',
+    headers: cmdbuildFetchHeaders({ accept: 'application/json' })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.detail || payload.error || `Не удалось удалить карточку ${classCode}#${cardId}: ${response.status}`;
+    handleCmdbuildAuthFailure(detail);
+    throw new Error(detail);
+  }
+
+  return payload;
 }
 
 function renderTemplateApplyLastResultCard() {
@@ -13399,16 +17001,18 @@ function templateMaterializationPlan(layerKey, options = {}) {
         throw new Error(`Шаблон породил ${rules.length} правил при лимите ${maxRules}; сузьте regex, значения измерения или увеличьте лимит.`);
       }
       const templateWarnings = warnings.filter((message) => templateAuditMessageBelongsToTemplate(message, template, rules));
-      if (candidates.length > 0 && rules.length === 0 && templateWarnings.length > 0) {
-        errors.push(...templateWarnings);
-        for (const warning of templateWarnings) {
+      const blockingTemplateWarnings = templateWarnings.filter((message) =>
+        !isNonBlockingTemplateEmptySourceWarning(message));
+      if (candidates.length > 0 && rules.length === 0 && blockingTemplateWarnings.length > 0) {
+        errors.push(...blockingTemplateWarnings);
+        for (const warning of blockingTemplateWarnings) {
           const index = warnings.indexOf(warning);
           if (index >= 0) {
             warnings.splice(index, 1);
           }
         }
         if (!options.safe) {
-          throw new Error(templateWarnings[0]);
+          throw new Error(blockingTemplateWarnings[0]);
         }
       }
       candidateCount += candidates.length;
@@ -13440,6 +17044,11 @@ function templateCandidateMaterializationMessage(template, candidate, error) {
 
 function isSkippableTemplateCandidateError(error) {
   return Boolean(error?.templateDimensionNoValues);
+}
+
+function isNonBlockingTemplateEmptySourceWarning(message) {
+  const text = String(message ?? '').toLocaleLowerCase('ru-RU');
+  return text.includes('в классе-источнике') && text.includes('нет карточек');
 }
 
 function applyTemplateManagedRelationsToGeneratedRules(layerKey, generatedRules, templateDocument, errors, options = {}) {
@@ -13817,6 +17426,7 @@ function fallbackManagedRelationDomain(layerKey, sourceClassCode, targetClassCod
   const standardBase = {
     'service|ServiceResource|ServiceUserEndpointFleet|member_of': 'ServiceResourceMemberOfFleet',
     'service|ServiceUserEndpointFleet|ServiceWorkplaceGroup|aggregates_to': 'ServiceFleetAggregatesToWorkplaceGroup',
+    'service|ServiceUserEndpointFleet|ServicePlatformService|aggregates_to': 'ServiceFleetAggregatesToPlatformService',
     'service|ServiceWorkplaceGroup|ServicePlatformService|aggregates_to': 'ServiceWorkplaceGroupAggregatesToPlatformService',
     'service|ServicePlatformService|ServiceDatabaseService|service_depends_on': 'ServicePlatformDependsOnDatabase',
     'service|ServicePlatformService|ServiceStoragePool|service_depends_on': 'ServicePlatformDependsOnStoragePool',
@@ -13837,6 +17447,7 @@ function fallbackManagedRelationDomain(layerKey, sourceClassCode, targetClassCod
     'suppression|SuppressionProxyGroup|SuppressionResource|depends_on': 'SuppressionProxyGroupSuppressesResource'
   }[`${layerKey}|${sourceBase}|${targetBase}|${relationType}`];
   const fallbackBase = standardBase
+    || fallbackServiceContainmentDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType)
     || fallbackServiceDependencyDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType)
     || fallbackSuppressionSuppressDomainBase(
       layerKey,
@@ -13856,6 +17467,27 @@ function fallbackManagedRelationDomain(layerKey, sourceClassCode, targetClassCod
     relationType,
     attributes: [{ code: 'is_active' }]
   };
+}
+
+function fallbackServiceContainmentDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType) {
+  if (layerKey !== 'service' || relationType !== 'aggregates_to') {
+    return '';
+  }
+
+  if (!isServiceManagedClassCode(sourceClassCode)
+    || !isServiceManagedClassCode(targetClassCode)
+    || canonicalToken(targetBase) !== canonicalToken('ServicePlatformService')
+    || canonicalToken(sourceBase) === canonicalToken(targetBase)) {
+    return '';
+  }
+
+  const sourcePart = domainCodePart(sourceBase);
+  const targetPart = 'PlatformService';
+  if (!sourcePart || !targetPart) {
+    return '';
+  }
+
+  return `${sourcePart}AggregatesTo${targetPart}`;
 }
 
 function fallbackServiceDependencyDomainBase(layerKey, sourceClassCode, targetClassCode, sourceBase, targetBase, relationType) {
@@ -15416,6 +19048,10 @@ function normalizeTemplateDocument(document, layerKey) {
     ? normalized.templateVersions.map((snapshot) => normalizeTemplateVersionSnapshot(snapshot, layerKey))
         .filter((snapshot) => snapshot.template_id && snapshot.template_version)
     : [];
+  normalized.serviceObjectTemplateRelations = Array.isArray(normalized.serviceObjectTemplateRelations)
+    ? normalized.serviceObjectTemplateRelations.map(normalizeServiceObjectTemplateRelation)
+        .filter((relation) => relation.relation_id)
+    : [];
   return normalized;
 }
 
@@ -15533,8 +19169,35 @@ function defaultTemplateDocument(layerKey) {
   return {
     layer: layerKey,
     templates: [],
-    templateVersions: []
+    templateVersions: [],
+    serviceObjectTemplateRelations: []
   };
+}
+
+function normalizeServiceObjectTemplateRelation(relation) {
+  const normalized = relation && typeof relation === 'object' && !Array.isArray(relation)
+    ? relation
+    : {};
+  normalized.relation_id = normalizeRuleId(normalized.relation_id || normalized.id || [
+    'service-template-link',
+    normalized.relation_kind,
+    normalized.source_class_code,
+    normalized.source_card_id,
+    normalized.target_template_id
+  ].filter(Boolean).join('-'));
+  normalized.relation_kind = String(normalized.relation_kind ?? normalized.kind ?? '').trim();
+  normalized.relation_type = String(normalized.relation_type ?? '').trim();
+  normalized.domain_direction = String(normalized.domain_direction ?? 'source_to_target').trim() || 'source_to_target';
+  normalized.source_type = String(normalized.source_type ?? '').trim();
+  normalized.source_class_code = String(normalized.source_class_code ?? '').trim();
+  normalized.source_card_id = String(normalized.source_card_id ?? '').trim();
+  normalized.target_type = 'service_template';
+  normalized.target_template_id = String(normalized.target_template_id ?? '').trim();
+  normalized.target_class_code = String(normalized.target_class_code ?? '').trim();
+  normalized.created_at = String(normalized.created_at ?? '').trim();
+  normalized.updated_at = String(normalized.updated_at ?? '').trim();
+  normalized.status = String(normalized.status ?? 'pending_targets').trim() || 'pending_targets';
+  return normalized;
 }
 
 function normalizeTemplateVersionSnapshot(snapshot, layerKey) {
@@ -15588,8 +19251,7 @@ function normalizeTemplateManagedRelation(relation, template, layerKey) {
       target_card_id: targetCardId,
       attributes
     });
-
-  return {
+  const result = {
     kind: effectiveKind,
     relation_role: relationRole,
     target_template_id: targetTemplateId,
@@ -15600,6 +19262,12 @@ function normalizeTemplateManagedRelation(relation, template, layerKey) {
     artifact_fingerprint: fingerprint,
     attributes
   };
+
+  if (normalized.derived_from && typeof normalized.derived_from === 'object' && !Array.isArray(normalized.derived_from)) {
+    result.derived_from = cloneJson(normalized.derived_from);
+  }
+
+  return result;
 }
 
 function normalizeRuleManagedRelation(relation, rule, layerKey) {
@@ -15627,8 +19295,7 @@ function normalizeRuleManagedRelation(relation, rule, layerKey) {
       target_rule_id: targetRuleId,
       attributes
     });
-
-  return {
+  const result = {
     kind: effectiveKind,
     relation_role: relationRole,
     target_template_id: targetTemplateId,
@@ -15637,6 +19304,12 @@ function normalizeRuleManagedRelation(relation, rule, layerKey) {
     artifact_fingerprint: fingerprint,
     attributes
   };
+
+  if (normalized.derived_from && typeof normalized.derived_from === 'object' && !Array.isArray(normalized.derived_from)) {
+    result.derived_from = cloneJson(normalized.derived_from);
+  }
+
+  return result;
 }
 
 function templateManagedRelationKey(layerKey, templateId, kind, relationRole, target, targetCardId = '') {
@@ -15705,6 +19378,9 @@ function templateEditorConfig(layerKey) {
     sourceFieldCopySelect: document.querySelector(`#${prefix}SourceFieldCopySelect`),
     sourceFieldCopyValue: document.querySelector(`#${prefix}SourceFieldCopyValue`),
     sourceFieldCopyExpression: document.querySelector(`#${prefix}SourceFieldCopyExpression`),
+    deriveSource: document.querySelector(`#${prefix}DeriveSource`),
+    derivePreview: document.querySelector(`#${prefix}DerivePreview`),
+    deriveButton: document.querySelector(`#${prefix}DeriveButton`),
     status: document.querySelector(`#${prefix}Status`)
   };
 }
@@ -16387,7 +20063,12 @@ function normalizeTemplateDeletionPlan(plan, layerKey) {
         target_class_code: String(target?.target_class_code ?? target?.class_code ?? ''),
         card_id: String(target?.card_id ?? ''),
         idempotency_key: String(target?.idempotency_key ?? ''),
-        card_description: String(target?.card_description ?? '')
+        card_description: String(target?.card_description ?? ''),
+        status: String(target?.status ?? '').trim(),
+        applied_at: String(target?.applied_at ?? '').trim(),
+        delete_result: target?.delete_result && typeof target.delete_result === 'object' && !Array.isArray(target.delete_result)
+          ? target.delete_result
+          : null
       }))
     : [];
   return normalized;
@@ -16554,7 +20235,7 @@ function ruleSelectOptions(rules, options = {}) {
 
   const visibleRules = rules
     .map((rule, index) => ({ rule, index }))
-    .filter(({ rule }) => !filterTemplateRules || !isGeneratedTemplateRule(rule));
+    .filter(({ rule }) => !filterTemplateRules || !isTemplateOwnedRule(rule));
   if (visibleRules.length === 0) {
     return [{ value: '', label: 'Все правила скрыты фильтром шаблонов', disabled: true }];
   }
@@ -16636,7 +20317,7 @@ function targetInstanceOptionsByClass(layerKey, options = {}) {
   const classOrder = schemaClassOrderMap(layer);
   const result = new Map();
   const hiddenTemplateTargets = options.filterTemplateTargets === true
-    ? generatedTemplateTargetRefs(layerKey)
+    ? generatedTemplateTargetRefs(layerKey, { includeDetached: true })
     : null;
   const classItems = state.cmdbClassInstances
     .filter((item) => String(item.layer).toLowerCase() === layer.toLowerCase())
@@ -16679,14 +20360,21 @@ function addRuleTargetInstanceOptions(result, layerKey, options = {}) {
   }
 }
 
-function generatedTemplateTargetRefs(layerKey) {
+function generatedTemplateTargetRefs(layerKey, options = {}) {
+  return generatedTemplateTargetRefsForLayer(layerKey, options);
+}
+
+function generatedTemplateTargetRefsForLayer(layerKey, options = {}) {
+  const includeDetached = options.includeDetached === true;
   const refs = {
     cardKeys: new Set(),
     populationRuleIds: new Set(),
     populationKeys: new Set()
   };
   for (const rule of state.ruleExamples[layerKey] ?? []) {
-    if (!isGeneratedTemplateRule(rule)) {
+    if (includeDetached
+      ? !ruleTemplateId(rule)
+      : !isGeneratedTemplateRule(rule)) {
       continue;
     }
 
@@ -16887,10 +20575,32 @@ function selectChoiceItems(field) {
       return {
         value: option.value,
         label: label || option.value,
-        meta: option.value && option.value !== label ? option.value : '',
+        meta: selectChoiceItemMeta(field, option.value, label),
         selected: option.selected
       };
     });
+}
+
+function selectChoiceItemMeta(field, value, label) {
+  if (!value || value === label || field?.matches('[data-derive-source]') || looksLikeEncodedJsonValue(value)) {
+    return '';
+  }
+
+  return value;
+}
+
+function looksLikeEncodedJsonValue(value) {
+  const text = String(value ?? '').trim();
+  if (!text.includes('%')) {
+    return false;
+  }
+
+  try {
+    const decoded = decodeURIComponent(text);
+    return decoded.startsWith('{') || decoded.startsWith('[');
+  } catch {
+    return false;
+  }
 }
 
 function datalistChoiceItems(field) {
@@ -17111,7 +20821,10 @@ function ruleEditorConfig(layerKey) {
     status: document.querySelector(`#${prefix}Status`),
     applyButton: document.querySelector(`#${prefix}ApplyButton`),
     fieldOptions: document.querySelector(`#${prefix}SourceFieldOptions`),
-    targetFieldOptions: document.querySelector(`#${prefix}TargetFieldOptions`)
+    targetFieldOptions: document.querySelector(`#${prefix}TargetFieldOptions`),
+    deriveSource: document.querySelector(`#${prefix}DeriveSource`),
+    derivePreview: document.querySelector(`#${prefix}DerivePreview`),
+    deriveButton: document.querySelector(`#${prefix}DeriveButton`)
   };
 }
 
@@ -17467,11 +21180,11 @@ function updateOpenSet(set, key, isOpen) {
   set.delete(key);
 }
 
-function addCustomEntity() {
-  const layer = state.activeLayer;
-  const codeInput = document.querySelector('#entityCodeInput');
-  const displayInput = document.querySelector('#entityDisplayInput');
-  const purposeInput = document.querySelector('#entityPurposeInput');
+function addCustomEntity(options = {}) {
+  const layer = options.layer || state.activeLayer;
+  const codeInput = document.querySelector(options.codeSelector || '#entityCodeInput');
+  const displayInput = document.querySelector(options.displaySelector || '#entityDisplayInput');
+  const purposeInput = document.querySelector(options.purposeSelector || '#entityPurposeInput');
   const code = normalizeEntityCode(codeInput.value);
 
   if (!code) {
@@ -17502,11 +21215,14 @@ function addCustomEntity() {
   return true;
 }
 
-function renderCustomEntityList() {
-  const container = document.querySelector('#customEntityList');
+function renderCustomEntityList(container = document.querySelector('#customEntityList'), layer = state.activeLayer) {
+  if (!container) {
+    return;
+  }
+
   const entities = state.customEntities
     .map((entity, index) => ({ entity, index }))
-    .filter((item) => item.entity.layer === state.activeLayer);
+    .filter((item) => item.entity.layer === layer);
 
   if (entities.length === 0) {
     container.innerHTML = '';
@@ -17521,6 +21237,1421 @@ function renderCustomEntityList() {
       <button type="button" class="icon-button" data-remove-entity="${index}" title="Удалить сущность">×</button>
     </div>
   `).join('');
+}
+
+function renderServiceObjectsView() {
+  const typeSelect = document.querySelector('#serviceObjectType');
+  const objectSelect = document.querySelector('#serviceObjectSelect');
+  const attributeList = document.querySelector('#serviceObjectAttributeList');
+  const status = document.querySelector('#serviceObjectStatus');
+  const list = document.querySelector('#serviceObjectList');
+  const saveButton = document.querySelector('#createServiceObjectButton');
+  if (!typeSelect || !objectSelect || !attributeList || !status || !list || !saveButton) {
+    return;
+  }
+
+  const currentType = serviceObjectTypeDefinition(state.serviceObjectEditor.type)?.key || SERVICE_OBJECT_TYPE_DEFINITIONS[0].key;
+  setSelectOptions(typeSelect, serviceObjectTypeOptions(), currentType);
+  state.serviceObjectEditor.type = typeSelect.value || currentType;
+  setSelectOptions(objectSelect, serviceObjectSelectOptions(state.serviceObjectEditor.type), state.serviceObjectEditor.selectedObject);
+  state.serviceObjectEditor.selectedObject = objectSelect.value || '';
+  attributeList.innerHTML = renderServiceObjectAttributeList(state.serviceObjectEditor.type);
+  saveButton.textContent = state.serviceObjectEditor.selectedObject ? 'Сохранить изменения' : 'Создать объект';
+  list.innerHTML = renderServiceObjectList();
+  status.textContent = state.serviceObjectEditor.error
+    || state.serviceObjectEditor.message
+    || serviceObjectSummaryText();
+  status.classList.toggle('error', Boolean(state.serviceObjectEditor.error));
+  renderServiceObjectRelationEditor();
+}
+
+function serviceObjectTypeOptions() {
+  return SERVICE_OBJECT_TYPE_DEFINITIONS.map((definition) => ({
+    value: definition.key,
+    label: `${definition.label} (${serviceObjectClassCode(definition.key)})`
+  }));
+}
+
+function serviceObjectSelectOptions(type) {
+  const cards = serviceObjectCards(type);
+  const definition = serviceObjectTypeDefinition(type);
+  return cards.length > 0
+    ? [
+        { value: '', label: `Новый объект: ${definition.label}` },
+        ...cards.map((card) => ({
+          value: serviceObjectRefValue(type, serviceObjectClassCode(type), card.id),
+          label: targetCardDisplayLabel(card, serviceObjectClassCode(type))
+        }))
+      ]
+    : [{ value: '', label: `Новый объект: ${definition.label}` }];
+}
+
+function serviceObjectRefValue(type, classCode, cardId) {
+  return deriveSourceValue({
+    type,
+    classCode,
+    cardId: String(cardId ?? '')
+  });
+}
+
+function parseServiceObjectRef(value) {
+  const ref = parseDeriveSourceValue(value);
+  return ref?.classCode && ref?.cardId ? ref : null;
+}
+
+function serviceObjectTypeDefinition(type) {
+  return serviceObjectTypeDefinitionOrNull(type)
+    ?? SERVICE_OBJECT_TYPE_DEFINITIONS[0];
+}
+
+function serviceObjectTypeDefinitionOrNull(type) {
+  return SERVICE_OBJECT_TYPE_DEFINITIONS.find((definition) => definition.key === type) ?? null;
+}
+
+function serviceObjectClassCode(type) {
+  const definition = serviceObjectTypeDefinition(type);
+  const expected = `${state.prefix}${definition.classBase}`;
+  const existing = state.classes.find((item) =>
+    canonicalToken(removeManagedPrefix(item.code)) === canonicalToken(definition.classBase))
+    ?? state.cmdbClassInstances.find((item) =>
+      canonicalToken(removeManagedPrefix(item.classCode)) === canonicalToken(definition.classBase));
+  return existing?.code || existing?.classCode || expected;
+}
+
+function renderServiceObjectAttributeList(type) {
+  const rows = serviceObjectAttributeRows(type);
+  if (rows.length === 0) {
+    return '<div class="empty-state">Атрибуты выбранного типа не загружены. Синхронизируйте схему CMDBuild или соберите предпросмотр.</div>';
+  }
+
+  return `
+    <div class="rule-attribute-header" role="row">
+      <span role="columnheader">атрибут</span>
+      <span role="columnheader">значение</span>
+      <span role="columnheader">помощь</span>
+    </div>
+    ${rows.map((row) => serviceObjectAttributeRowTemplate(row)).join('')}
+  `;
+}
+
+function serviceObjectAttributeRows(type) {
+  const definition = serviceObjectTypeDefinition(type);
+  const classCode = serviceObjectClassCode(type);
+  const attributes = targetClassAttributes(classCode);
+  const byExactCode = new Map(attributes.map((attribute) => [attributeCode(attribute), attribute]));
+  const byToken = new Map(attributes.map((attribute) => [canonicalToken(attributeCode(attribute)), attribute]));
+  const values = state.serviceObjectEditor.values ?? {};
+  return definition.attributes
+    .map((code) => byExactCode.get(code) ?? byToken.get(canonicalToken(code)))
+    .filter(Boolean)
+    .map((attribute) => {
+      const code = attributeCode(attribute);
+      return {
+        attribute,
+        code,
+        layerKey: 'service',
+        value: Object.hasOwn(values, code)
+          ? values[code]
+          : defaultServiceObjectValue(definition, code)
+      };
+    });
+}
+
+function defaultServiceObjectValue(definition, code) {
+  const exactDefault = definition.defaults?.[code];
+  if (exactDefault !== undefined) {
+    return exactDefault;
+  }
+
+  const token = canonicalToken(code);
+  const defaultEntry = Object.entries(definition.defaults ?? {})
+    .find(([key]) => canonicalToken(key) === token);
+  if (defaultEntry) {
+    return defaultEntry[1];
+  }
+
+  return '';
+}
+
+function serviceObjectAttributeRowTemplate(row) {
+  const label = row.attribute.displayName || row.attribute.description || row.code;
+  const help = targetAttributeHelpText(row.attribute, row.code, row.layerKey);
+  return `
+    <div class="rule-attribute-row" data-service-object-attribute-row>
+      <div class="rule-attribute-name">
+        <strong>${escapeHtml(label)}</strong>
+        <span>${escapeHtml(row.code)}</span>
+      </div>
+      ${ruleTargetValueControlTemplate(row.attribute, row.value, { valueDataAttribute: 'data-service-object-value' })}
+      <div class="rule-attribute-help" data-rule-attribute-help>
+        ${escapeHtml(help)}
+      </div>
+    </div>
+  `;
+}
+
+function updateServiceObjectEditorValue(target) {
+  if (!target?.matches?.('[data-service-object-value]')) {
+    return;
+  }
+
+  const code = target.dataset.targetAttribute;
+  if (!code) {
+    return;
+  }
+
+  state.serviceObjectEditor.values ??= {};
+  state.serviceObjectEditor.values[code] = target.value;
+}
+
+function loadSelectedServiceObjectIntoEditor(value) {
+  const ref = parseServiceObjectRef(value);
+  state.serviceObjectEditor.selectedObject = value || '';
+  state.serviceObjectEditor.message = '';
+  state.serviceObjectEditor.error = '';
+  if (!ref) {
+    state.serviceObjectEditor.values = {};
+    renderServiceObjectsView();
+    return;
+  }
+
+  const type = serviceObjectTypeByClassCode(ref.classCode)?.key || ref.type || state.serviceObjectEditor.type;
+  state.serviceObjectEditor.type = type;
+  const card = serviceObjectCards(type).find((item) => String(item.id) === String(ref.cardId));
+  state.serviceObjectEditor.values = card ? serviceObjectValuesFromCard(type, card) : {};
+  renderServiceObjectsView();
+}
+
+function resetServiceObjectEditor() {
+  state.serviceObjectEditor.selectedObject = '';
+  state.serviceObjectEditor.values = {};
+  state.serviceObjectEditor.message = '';
+  state.serviceObjectEditor.error = '';
+  renderServiceObjectsView();
+}
+
+function serviceObjectTypeByClassCode(classCode) {
+  const baseCode = removeManagedPrefix(classCode);
+  return SERVICE_OBJECT_TYPE_DEFINITIONS.find((definition) =>
+    canonicalToken(definition.classBase) === canonicalToken(baseCode)
+    || canonicalToken(serviceObjectClassCode(definition.key)) === canonicalToken(classCode));
+}
+
+function serviceAggregateTypeDefinition(type) {
+  return SERVICE_AGGREGATE_TYPE_DEFINITIONS.find((definition) => definition.key === type) ?? null;
+}
+
+function serviceAggregateClassCode(type) {
+  const definition = serviceAggregateTypeDefinition(type);
+  if (!definition) {
+    return '';
+  }
+
+  const expected = `${state.prefix}${definition.classBase}`;
+  const existing = state.classes.find((item) =>
+    canonicalToken(removeManagedPrefix(item.code)) === canonicalToken(definition.classBase))
+    ?? state.cmdbClassInstances.find((item) =>
+      canonicalToken(removeManagedPrefix(item.classCode)) === canonicalToken(definition.classBase));
+  return existing?.code || existing?.classCode || expected;
+}
+
+function serviceAggregateCards(type, options = {}) {
+  const classCode = serviceAggregateClassCode(type);
+  if (!classCode) {
+    return [];
+  }
+
+  const hiddenTemplateTargets = options.filterTemplateTargets === true
+    ? generatedTemplateTargetRefsForLayer('service', { includeDetached: true })
+    : null;
+  return state.cmdbClassInstances
+    .filter((item) =>
+      String(item.layer).toLowerCase() === 'service'
+      && canonicalToken(item.classCode) === canonicalToken(classCode))
+    .flatMap((item) => (item.cards ?? []).map((card) => ({ ...card, classCode: item.classCode })))
+    .filter((card) => !isTemplateGeneratedTargetCard(hiddenTemplateTargets, classCode, card))
+    .sort((left, right) =>
+      targetCardDisplayLabel(left, left.classCode)
+        .localeCompare(targetCardDisplayLabel(right, right.classCode), undefined, { sensitivity: 'base' }));
+}
+
+function serviceAggregateTypeByClassCode(classCode) {
+  const baseCode = removeManagedPrefix(classCode);
+  return SERVICE_AGGREGATE_TYPE_DEFINITIONS.find((definition) =>
+    canonicalToken(definition.classBase) === canonicalToken(baseCode)
+    || canonicalToken(serviceAggregateClassCode(definition.key)) === canonicalToken(classCode));
+}
+
+function serviceRelationEndpointDefinition(type) {
+  if (type === 'service_template') {
+    return {
+      key: 'service_template',
+      label: 'Шаблон агрегатов'
+    };
+  }
+
+  return serviceObjectTypeDefinitionOrNull(type) ?? serviceAggregateTypeDefinition(type);
+}
+
+function serviceRelationEndpointClassCode(type) {
+  if (type === 'service_template') {
+    return '';
+  }
+
+  return serviceObjectTypeDefinitionOrNull(type)
+    ? serviceObjectClassCode(type)
+    : serviceAggregateClassCode(type);
+}
+
+function serviceRelationEndpointCards(type, options = {}) {
+  if (type === 'service_template') {
+    return [];
+  }
+
+  return serviceObjectTypeDefinitionOrNull(type)
+    ? serviceObjectCards(type)
+    : serviceAggregateCards(type, options);
+}
+
+function serviceRelationEndpointTypeByClassCode(classCode) {
+  return serviceObjectTypeByClassCode(classCode)?.key
+    || serviceAggregateTypeByClassCode(classCode)?.key
+    || '';
+}
+
+function serviceRelationEndpointCard(type, cardId) {
+  return serviceRelationEndpointCards(type).find((card) => String(card.id) === String(cardId));
+}
+
+function serviceObjectValuesFromCard(type, card) {
+  const values = {};
+  for (const row of serviceObjectAttributeRows(type)) {
+    const code = row.code;
+    const token = canonicalToken(code);
+    const value = token === 'description'
+      ? (cardAttributeValue(card, code) || card.description || '')
+      : cardAttributeValue(card, code);
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      values[code] = value;
+    }
+  }
+
+  return values;
+}
+
+function serviceObjectSummaryText() {
+  const counts = SERVICE_OBJECT_TYPE_DEFINITIONS
+    .map((definition) => `${definition.label}: ${serviceObjectCards(definition.key).length}`)
+    .join(' · ');
+  return counts || 'Объекты сервиса не загружены.';
+}
+
+function serviceObjectTotalCount() {
+  return SERVICE_OBJECT_TYPE_DEFINITIONS
+    .reduce((sum, definition) => sum + serviceObjectCards(definition.key).length, 0);
+}
+
+function renderServiceObjectList() {
+  const groups = SERVICE_OBJECT_TYPE_DEFINITIONS.map((definition) => ({
+    definition,
+    cards: serviceObjectCards(definition.key)
+  }));
+  if (groups.every((group) => group.cards.length === 0)) {
+    return '<div class="empty-state">Объекты сервиса пока не загружены или не созданы.</div>';
+  }
+
+  return groups.map((group) => `
+    <div class="entity-chip service-object-group">
+      <span class="badge service">${escapeHtml(group.definition.label)}</span>
+      <strong>${escapeHtml(serviceObjectClassCode(group.definition.key))}</strong>
+      <span>${escapeHtml(group.cards.length)} объектов</span>
+    </div>
+    ${group.cards.map((card) => `
+      <div class="entity-chip">
+        <span class="badge service">${escapeHtml(group.definition.label)}</span>
+        <strong>${escapeHtml(targetCardDisplayLabel(card, serviceObjectClassCode(group.definition.key)))}</strong>
+        <button type="button" class="secondary-button compact-button" data-service-object-edit="${escapeHtml(serviceObjectRefValue(group.definition.key, serviceObjectClassCode(group.definition.key), card.id))}">Редактировать</button>
+      </div>
+    `).join('')}
+  `).join('');
+}
+
+function serviceObjectCards(type) {
+  const classCode = serviceObjectClassCode(type);
+  return state.cmdbClassInstances
+    .filter((item) =>
+      String(item.layer).toLowerCase() === 'service'
+      && canonicalToken(item.classCode) === canonicalToken(classCode))
+    .flatMap((item) => (item.cards ?? []).map((card) => ({ ...card, classCode: item.classCode })))
+    .sort((left, right) =>
+      targetCardDisplayLabel(left, left.classCode)
+        .localeCompare(targetCardDisplayLabel(right, right.classCode), undefined, { sensitivity: 'base' }));
+}
+
+async function refreshServiceObjectCards() {
+  for (const definition of SERVICE_OBJECT_TYPE_DEFINITIONS) {
+    const classCode = serviceObjectClassCode(definition.key);
+    const response = await fetch(`/api/cmdbuild/classes/${encodeURIComponent(classCode)}/cards?layer=Service`, {
+      headers: cmdbuildFetchHeaders({ accept: 'application/json' })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.detail || payload.error || `Не удалось загрузить объекты ${classCode}: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
+      throw new Error(detail);
+    }
+
+    upsertServiceObjectClassCards(classCode, payload);
+  }
+}
+
+async function refreshServiceObjectsFromCmdb(options = {}) {
+  const showMessage = options.showMessage !== false;
+  if (showMessage) {
+    state.serviceObjectEditor.message = 'Обновляю объекты сервиса из CMDBuild...';
+    state.serviceObjectEditor.error = '';
+    renderServiceObjectsView();
+  }
+
+  try {
+    await refreshServiceObjectCards();
+    await refreshServiceObjectRelations({ render: false });
+    await persistCmdbSourceCache();
+    state.serviceObjectEditor.message = 'Объекты сервиса обновлены из CMDBuild.';
+    state.serviceObjectEditor.error = '';
+  } catch (error) {
+    state.serviceObjectEditor.message = '';
+    state.serviceObjectEditor.error = error.message;
+  }
+
+  renderServiceObjectsView();
+}
+
+function upsertServiceObjectClassCards(classCode, payload) {
+  const cards = Array.isArray(payload.cards)
+    ? payload.cards
+    : Array.isArray(payload.Cards)
+      ? payload.Cards
+      : [];
+  const schemaClass = state.classes.find((item) => canonicalToken(item.code) === canonicalToken(classCode));
+  let classItem = state.cmdbClassInstances.find((item) =>
+    String(item.layer).toLowerCase() === 'service'
+    && canonicalToken(item.classCode) === canonicalToken(classCode));
+  if (!classItem) {
+    classItem = {
+      layer: 'Service',
+      classCode,
+      className: schemaClass?.displayName || classCode,
+      classDescription: schemaClass?.displayName || classCode,
+      attributes: targetClassAttributes(classCode),
+      cards: []
+    };
+    state.cmdbClassInstances.push(classItem);
+  }
+
+  classItem.cards = cards.map((card) => ({ ...card, classCode }));
+}
+
+async function createServiceObject() {
+  const type = serviceObjectTypeDefinition(state.serviceObjectEditor.type).key;
+  const classCode = serviceObjectClassCode(type);
+  const selectedRef = parseServiceObjectRef(state.serviceObjectEditor.selectedObject);
+  const isUpdate = Boolean(selectedRef?.cardId);
+  state.serviceObjectEditor.message = isUpdate
+    ? 'Сохраняю изменения объекта сервиса в CMDBuild...'
+    : 'Создаю объект сервиса в CMDBuild...';
+  state.serviceObjectEditor.error = '';
+  renderServiceObjectsView();
+
+  try {
+    const values = readServiceObjectValues(type);
+    const url = isUpdate
+      ? `/api/cmdbuild/classes/${encodeURIComponent(selectedRef.classCode || classCode)}/cards/${encodeURIComponent(selectedRef.cardId)}`
+      : `/api/cmdbuild/classes/${encodeURIComponent(classCode)}/cards`;
+    const response = await fetch(url, {
+      method: isUpdate ? 'PUT' : 'POST',
+      headers: cmdbuildFetchHeaders({
+        'content-type': 'application/json',
+        accept: 'application/json'
+      }),
+      body: JSON.stringify({ values })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.detail || payload.error || `Не удалось ${isUpdate ? 'изменить' : 'создать'} объект сервиса: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
+      throw new Error(detail);
+    }
+
+    const cardId = String(payload.id ?? payload.Id ?? selectedRef?.cardId ?? '').trim();
+    if (!cardId) {
+      throw new Error('CMDBuild не вернул _id карточки.');
+    }
+
+    const description = String(payload.description ?? payload.Description ?? values.Description ?? values.description ?? values.name ?? cardId);
+    rememberCreatedTargetCard('service', classCode, {
+      id: cardId,
+      description,
+      values
+    });
+    state.serviceObjectEditor.selectedObject = serviceObjectRefValue(type, classCode, cardId);
+    state.serviceObjectEditor.values = serviceObjectValuesFromCard(type, serviceObjectCards(type).find((card) => String(card.id) === cardId) ?? {
+      id: cardId,
+      classCode,
+      description,
+      attributes: targetClassAttributes(classCode).map((attribute) => ({
+        code: attributeCode(attribute),
+        value: values[attributeCode(attribute)] == null ? '' : String(values[attributeCode(attribute)])
+      }))
+    });
+    const cacheWarning = await persistCmdbSourceCache()
+      .then(() => '')
+      .catch((cacheError) => ` Локальный кэш CMDBuild не обновлен: ${cacheError.message}`);
+    state.serviceObjectEditor.message = `${isUpdate ? 'Изменен' : 'Создан'} объект ${description} (${classCode} #${cardId}).${cacheWarning}`;
+    state.serviceObjectEditor.error = '';
+  } catch (error) {
+    state.serviceObjectEditor.message = '';
+    state.serviceObjectEditor.error = error.message;
+  }
+
+  renderServiceObjectsView();
+}
+
+function readServiceObjectValues(type) {
+  const definition = serviceObjectTypeDefinition(type);
+  const attributes = serviceObjectAttributeRows(type).map((row) => row.attribute);
+  const attributeByExactCode = new Map(attributes.map((attribute) => [attributeCode(attribute), attribute]));
+  const values = {};
+  for (const field of document.querySelectorAll('#serviceObjectAttributeList [data-service-object-value]')) {
+    const code = field.dataset.targetAttribute;
+    const attribute = attributeByExactCode.get(code);
+    if (!code || !attribute) {
+      continue;
+    }
+
+    const rawValue = String(field.value ?? '').trim();
+    const required = serviceObjectAttributeRequired(definition, attribute);
+    if (!rawValue && !required) {
+      continue;
+    }
+
+    if (!rawValue && required) {
+      throw new Error(`Заполните обязательный атрибут ${code}.`);
+    }
+
+    values[code] = coerceRuleTargetObjectValue(attribute, rawValue);
+  }
+
+  const code = String(values.Code ?? values.code ?? '').trim();
+  const name = String(values.name ?? '').trim();
+  if (!code) {
+    throw new Error('Заполните Code объекта.');
+  }
+  if (!name) {
+    throw new Error('Заполните name объекта.');
+  }
+
+  values.Code = code;
+  values.name = name;
+  values.Description = String(values.Description ?? values.description ?? name).trim();
+  values.description = String(values.description ?? values.Description).trim();
+  values.is_active = true;
+  values.managed_by_builder = true;
+  values.auto_population_enabled = false;
+  return values;
+}
+
+function serviceObjectAttributeRequired(definition, attribute) {
+  const code = attributeCode(attribute);
+  if (['code', 'name'].includes(canonicalToken(code))) {
+    return true;
+  }
+
+  const defaultValue = defaultServiceObjectValue(definition, code);
+  return attribute.required === true && String(defaultValue ?? '').trim() === '';
+}
+
+function renderServiceObjectRelationEditor() {
+  const existingSelect = document.querySelector('#serviceObjectRelationSelect');
+  const relationSelect = document.querySelector('#serviceObjectRelationKind');
+  const sourceSelect = document.querySelector('#serviceObjectRelationSource');
+  const targetSelect = document.querySelector('#serviceObjectRelationTarget');
+  const filterTemplateRulesInput = document.querySelector('#serviceObjectRelationFilterTemplateRules');
+  const hint = document.querySelector('#serviceObjectRelationHint');
+  const status = document.querySelector('#serviceObjectRelationStatus');
+  const saveButton = document.querySelector('#createServiceObjectRelationButton');
+  if (!existingSelect || !relationSelect || !sourceSelect || !targetSelect || !hint || !status || !saveButton) {
+    return;
+  }
+
+  const filterTemplateRules = serviceObjectRelationTemplateFilterEnabled();
+  if (filterTemplateRulesInput) {
+    filterTemplateRulesInput.checked = filterTemplateRules;
+  }
+
+  setSelectOptions(existingSelect, serviceObjectRelationSelectOptions(), state.serviceObjectEditor.selectedRelation);
+  state.serviceObjectEditor.selectedRelation = existingSelect.value || '';
+  const current = serviceObjectRelationDefinition(state.serviceObjectEditor.relationKind)
+    ?? SERVICE_OBJECT_RELATION_DEFINITIONS[0];
+  setSelectOptions(relationSelect, SERVICE_OBJECT_RELATION_DEFINITIONS.map((definition) => ({
+    value: definition.key,
+    label: definition.label
+  })), current.key);
+  state.serviceObjectEditor.relationKind = relationSelect.value || current.key;
+  const definition = serviceObjectRelationDefinition(state.serviceObjectEditor.relationKind);
+  setSelectOptions(sourceSelect, serviceObjectRelationEndpointOptions(definition.sourceTypes, {
+    filterTemplateTargets: filterTemplateRules
+  }), state.serviceObjectEditor.relationSource);
+  setSelectOptions(targetSelect, serviceObjectRelationEndpointOptions(definition.targetTypes, {
+    filterTemplateTargets: filterTemplateRules
+  }), state.serviceObjectEditor.relationTarget);
+  state.serviceObjectEditor.relationSource = sourceSelect.value || '';
+  state.serviceObjectEditor.relationTarget = targetSelect.value || '';
+  const sourceRef = parseDeriveSourceValue(state.serviceObjectEditor.relationSource);
+  const targetRef = parseDeriveSourceValue(state.serviceObjectEditor.relationTarget);
+  const domain = sourceRef && targetRef
+    ? serviceObjectRelationDomain(definition, sourceRef.classCode, targetRef.classCode)
+    : null;
+  saveButton.textContent = state.serviceObjectEditor.selectedRelation ? 'Сохранить связь' : 'Создать связь';
+  hint.textContent = [
+    definition.hint,
+    serviceObjectRelationHiddenTemplateSummary(definition.sourceTypes),
+    serviceObjectRelationHiddenTemplateSummary(definition.targetTypes),
+    state.serviceObjectEditor.relationsLoading ? 'Загружаю текущие связи CMDBuild...' : '',
+    domain
+      ? `Domain CMDBuild: ${domain.code || domain.Code}.`
+      : 'Для выбранной пары пока не найден domain CMDBuild; примените сервисную схему или выберите другую пару.'
+  ].filter(Boolean).join(' ');
+  status.textContent = state.serviceObjectEditor.relationError || state.serviceObjectEditor.relationMessage || serviceObjectRelationSummaryText();
+  status.classList.toggle('error', Boolean(state.serviceObjectEditor.relationError));
+}
+
+function serviceObjectRelationDefinition(key) {
+  return SERVICE_OBJECT_RELATION_DEFINITIONS.find((definition) => definition.key === key)
+    ?? SERVICE_OBJECT_RELATION_DEFINITIONS[0];
+}
+
+function serviceObjectRelationTemplateFilterEnabled() {
+  return state.serviceObjectEditor.filterTemplateRules !== false;
+}
+
+function serviceObjectRelationHiddenTemplateSummary(types) {
+  if (!serviceObjectRelationTemplateFilterEnabled()) {
+    return '';
+  }
+
+  const hidden = serviceObjectRelationHiddenTemplateEndpoints(types);
+  if (hidden.length === 0) {
+    return '';
+  }
+
+  const examples = hidden.slice(0, 3).map((item) => item.label).join('; ');
+  return `Скрыто фильтром шаблонов: ${hidden.length}${examples ? `, например ${examples}` : ''}. Снимите галку, чтобы выбрать эти агрегаты.`;
+}
+
+function serviceObjectRelationSelectOptions() {
+  const rows = serviceObjectRelationRows();
+  return rows.length > 0
+    ? [
+        { value: '', label: 'Новая связь' },
+        ...rows.map((row) => ({
+          value: serviceObjectRelationRefValue(row),
+          label: `${row.definition.label}: ${row.sourceLabel} -> ${row.targetLabel}`
+        }))
+      ]
+    : [{ value: '', label: 'Новая связь' }];
+}
+
+function serviceObjectRelationSummaryText() {
+  const count = serviceObjectRelationRows().length;
+  return count ? `Связей сервисных объектов: ${count}.` : 'Связи сервисных объектов пока не загружены или не созданы.';
+}
+
+function serviceObjectRelationRows() {
+  const domainByCode = new Map(serviceObjectRelationDomains()
+    .map((domain) => [canonicalToken(domain.code || domain.Code), domain]));
+  const cmdbRows = (state.serviceObjectEditor.relations ?? [])
+    .map((relation) => serviceObjectRelationRow(relation, domainByCode))
+    .filter(Boolean);
+  return cmdbRows
+    .concat(serviceObjectTemplateRelationRows())
+    .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }));
+}
+
+function serviceObjectRelationRow(relation, domainByCode, hiddenTemplateTargets = null) {
+  const domainCode = relation.domainCode ?? relation.DomainCode ?? '';
+  const domain = domainByCode.get(canonicalToken(domainCode));
+  if (!domain) {
+    return null;
+  }
+
+  const relationSourceClassCode = relation.sourceType ?? relation.SourceType ?? '';
+  const relationSourceCardId = relation.sourceId ?? relation.SourceId ?? '';
+  const relationTargetClassCode = relation.destinationType ?? relation.DestinationType ?? '';
+  const relationTargetCardId = relation.destinationId ?? relation.DestinationId ?? '';
+  const match = serviceObjectRelationDefinitionForClasses(
+    domain,
+    relationSourceClassCode,
+    relationTargetClassCode);
+  if (!match) {
+    return null;
+  }
+
+  const sourceClassCode = match.reversed ? relationTargetClassCode : relationSourceClassCode;
+  const sourceCardId = match.reversed ? relationTargetCardId : relationSourceCardId;
+  const targetClassCode = match.reversed ? relationSourceClassCode : relationTargetClassCode;
+  const targetCardId = match.reversed ? relationSourceCardId : relationTargetCardId;
+  const sourceType = serviceRelationEndpointTypeByClassCode(sourceClassCode);
+  const targetType = serviceRelationEndpointTypeByClassCode(targetClassCode);
+  const sourceCard = serviceRelationEndpointCard(sourceType, sourceCardId);
+  const targetCard = serviceRelationEndpointCard(targetType, targetCardId);
+  if (isServiceRelationEndpointTemplateGenerated(sourceType, sourceClassCode, sourceCardId, sourceCard, hiddenTemplateTargets)
+    || isServiceRelationEndpointTemplateGenerated(targetType, targetClassCode, targetCardId, targetCard, hiddenTemplateTargets)) {
+    return null;
+  }
+  const sourceLabel = sourceCard ? targetCardDisplayLabel(sourceCard, sourceClassCode) : `${sourceClassCode} #${sourceCardId}`;
+  const targetLabel = targetCard ? targetCardDisplayLabel(targetCard, targetClassCode) : `${targetClassCode} #${targetCardId}`;
+  return {
+    definition: match.definition,
+    domainCode,
+    relationId: relation.relationId ?? relation.RelationId ?? '',
+    sourceType,
+    sourceClassCode,
+    sourceCardId,
+    sourceLabel,
+    targetType,
+    targetClassCode,
+    targetCardId,
+    targetLabel,
+    label: `${match.definition.label}: ${sourceLabel} -> ${targetLabel}`
+  };
+}
+
+function serviceObjectRelationRefValue(row) {
+  return deriveSourceValue({
+    kind: row.definition.key,
+    domainCode: row.domainCode,
+    relationId: row.relationId,
+    pendingTemplate: Boolean(row.pendingTemplate),
+    sourceType: row.sourceType,
+    sourceClassCode: row.sourceClassCode,
+    sourceCardId: row.sourceCardId,
+    targetType: row.targetType,
+    targetClassCode: row.targetClassCode,
+    targetCardId: row.targetCardId,
+    targetTemplateId: row.targetTemplateId
+  });
+}
+
+function serviceObjectTemplateRelationRows() {
+  const document = normalizeTemplateDocument(state.templateDocuments.service, 'service');
+  return (document.serviceObjectTemplateRelations ?? [])
+    .map((relation) => serviceObjectTemplateRelationRow(relation))
+    .filter(Boolean);
+}
+
+function serviceObjectTemplateRelationRow(relation) {
+  const definition = SERVICE_OBJECT_RELATION_DEFINITIONS.find((item) => item.key === relation.relation_kind);
+  if (!definition?.key || !relation.source_class_code || !relation.source_card_id || !relation.target_template_id || !relation.target_class_code) {
+    return null;
+  }
+
+  const sourceType = serviceRelationEndpointTypeByClassCode(relation.source_class_code)
+    || relation.source_type
+    || 'service';
+  const sourceCard = serviceRelationEndpointCard(sourceType, relation.source_card_id);
+  const sourceLabel = sourceCard
+    ? targetCardDisplayLabel(sourceCard, relation.source_class_code)
+    : `${relation.source_class_code} #${relation.source_card_id}`;
+  const targetLabel = serviceObjectTemplateRelationTargetLabel(relation);
+  return {
+    definition,
+    domainCode: '',
+    relationId: relation.relation_id,
+    pendingTemplate: true,
+    relationStatus: relation.status || 'pending_targets',
+    sourceType,
+    sourceClassCode: relation.source_class_code,
+    sourceCardId: relation.source_card_id,
+    sourceLabel,
+    targetType: 'service_template',
+    targetClassCode: relation.target_class_code,
+    targetCardId: '',
+    targetTemplateId: relation.target_template_id,
+    targetLabel,
+    label: `${definition.label}: ${sourceLabel} -> ${targetLabel}`
+  };
+}
+
+function serviceObjectTemplateRelationTargetLabel(relation) {
+  const templateId = String(relation?.target_template_id ?? '').trim();
+  const template = serviceObjectTemplateRelationTargetTemplate(relation);
+  const templateName = String(template?.name || serviceGeneratedTemplateName(templateId) || templateId).trim();
+  const targetClass = String(relation?.target_class_code ?? template?.target?.class_code ?? '').trim();
+  const targets = serviceTemplateGeneratedTargets(templateId);
+  const generatedText = targets.length > 0
+    ? `текущих агрегатов ${targets.length}`
+    : 'текущих агрегатов нет';
+  return `Шаблон: ${templateName} [${templateId}] -> ${targetClass}, ${generatedText}`;
+}
+
+function serviceObjectTemplateRelationTargetTemplate(relation) {
+  const templateId = String(relation?.target_template_id ?? '').trim();
+  if (!templateId) {
+    return null;
+  }
+
+  return findLayerTemplate('service', templateId) ?? {
+    template_id: templateId,
+    name: serviceGeneratedTemplateName(templateId) || templateId,
+    target: { class_code: String(relation?.target_class_code ?? '').trim() }
+  };
+}
+
+function serviceObjectTemplateRelationId(definition, source, target) {
+  return normalizeRuleId([
+    'service-template-link',
+    definition?.key || '',
+    source?.classCode || '',
+    source?.cardId || '',
+    target?.templateId || '',
+    target?.classCode || ''
+  ].filter(Boolean).join('-'));
+}
+
+function upsertServiceObjectTemplateRelation(definition, source, target, selectedRelation = null) {
+  const document = normalizeTemplateDocument(state.templateDocuments.service, 'service');
+  const relationId = serviceObjectTemplateRelationId(definition, source, target);
+  const now = new Date().toISOString();
+  const previous = (document.serviceObjectTemplateRelations ?? [])
+    .find((relation) => relation.relation_id === relationId);
+  const relation = normalizeServiceObjectTemplateRelation({
+    relation_id: relationId,
+    relation_kind: definition.key,
+    relation_type: definition.relationType,
+    domain_direction: definition.domainDirection || 'source_to_target',
+    source_type: source.type || serviceRelationEndpointTypeByClassCode(source.classCode),
+    source_class_code: source.classCode,
+    source_card_id: source.cardId,
+    target_type: 'service_template',
+    target_template_id: target.templateId,
+    target_class_code: target.classCode,
+    created_at: previous?.created_at || now,
+    updated_at: now,
+    status: 'pending_targets'
+  });
+  const selectedId = selectedRelation?.pendingTemplate ? String(selectedRelation.relationId ?? '').trim() : '';
+  document.serviceObjectTemplateRelations = (document.serviceObjectTemplateRelations ?? [])
+    .filter((item) => item.relation_id !== relationId && (!selectedId || item.relation_id !== selectedId));
+  document.serviceObjectTemplateRelations.push(relation);
+  state.templateDocuments.service = normalizeTemplateDocument(document, 'service');
+  return relation;
+}
+
+function updateServiceObjectTemplateRelationStatus(relationId, status) {
+  const document = normalizeTemplateDocument(state.templateDocuments.service, 'service');
+  const relation = (document.serviceObjectTemplateRelations ?? [])
+    .find((item) => item.relation_id === relationId);
+  if (!relation) {
+    return null;
+  }
+
+  relation.status = String(status ?? '').trim() || relation.status || 'pending_targets';
+  relation.updated_at = new Date().toISOString();
+  state.templateDocuments.service = normalizeTemplateDocument(document, 'service');
+  return relation;
+}
+
+function serviceObjectRelationEndpointOptions(types, options = {}) {
+  const items = types.flatMap((type) => {
+    if (type === 'service_template') {
+      return serviceObjectRelationTemplateOptions();
+    }
+
+    const definition = serviceRelationEndpointDefinition(type);
+    const classCode = serviceRelationEndpointClassCode(type);
+    if (!definition || !classCode) {
+      return [];
+    }
+
+    return serviceRelationEndpointCards(type, options).map((card) => ({
+      value: deriveSourceValue({
+        type,
+        classCode,
+        cardId: String(card.id ?? '')
+      }),
+      label: `${definition.label}: ${serviceRelationEndpointCardDisplayLabel(type, card, classCode)}`
+    }));
+  });
+
+  if (items.length > 0) {
+    return [{ value: '', label: 'Выберите объект' }, ...items];
+  }
+
+  const hidden = options.filterTemplateTargets === true
+    ? serviceObjectRelationHiddenTemplateEndpoints(types)
+    : [];
+  if (hidden.length > 0) {
+    const examples = hidden.slice(0, 2).map((item) => item.label).join('; ');
+    return [{
+      value: '',
+      label: `Нет видимых объектов: скрыто фильтром шаблонов ${hidden.length}${examples ? `, например ${examples}` : ''}`,
+      disabled: true
+    }];
+  }
+
+  return [{ value: '', label: 'Нет объектов подходящего типа', disabled: true }];
+}
+
+function serviceObjectRelationTemplateOptions() {
+  const document = normalizeTemplateDocument(state.templateDocuments.service, 'service');
+  const seen = new Set();
+  const currentTemplates = (document.templates ?? [])
+    .filter((template) => template.enabled !== false)
+    .filter((template) => serviceAggregateTypeByClassCode(template.target?.class_code))
+    .map((template) => ({ template, historical: false }));
+  const templates = currentTemplates
+    .concat(serviceObjectRelationHistoricalTemplateOptions(document, seen))
+    .concat(serviceObjectRelationSavedTemplateOptions(document, seen))
+    .map((template) => {
+      const targetClass = String(template.template.target?.class_code ?? '').trim();
+      const generated = serviceTemplateGeneratedTargets(template.template.template_id);
+      const generatedText = generated.length > 0
+        ? `, текущих агрегатов ${generated.length}`
+        : ', текущих агрегатов нет';
+      const prefix = template.historical ? 'Шаблон из текущих правил' : 'Шаблон';
+      return {
+        value: deriveSourceValue({
+          type: 'service_template',
+          templateId: template.template.template_id,
+          classCode: targetClass
+        }),
+        label: `${prefix}: ${template.template.name || template.template.template_id} [${template.template.template_id}] -> ${targetClass}${generatedText}`
+      };
+    })
+    .sort(compareLinkRelationEntityLabels);
+
+  return templates.length > 0
+    ? templates
+    : [];
+}
+
+function serviceObjectRelationHistoricalTemplateOptions(document, seen) {
+  for (const template of document.templates ?? []) {
+    seen.add(String(template.template_id ?? '').trim());
+  }
+
+  const byTemplate = new Map();
+  for (const rule of state.ruleExamples.service ?? []) {
+    const templateId = ruleTemplateId(rule);
+    const targetClass = ruleTargetClassCode(rule);
+    if (!templateId || seen.has(templateId) || !serviceAggregateTypeByClassCode(targetClass)) {
+      continue;
+    }
+
+    const name = String(rule?.template_generation?.template_name
+      || rule?.target?.created_by_template?.template_name
+      || rule?.generated_from_template
+      || templateId).trim();
+    if (!byTemplate.has(templateId)) {
+      byTemplate.set(templateId, {
+        template: {
+          template_id: templateId,
+          name,
+          target: { class_code: targetClass }
+        },
+        historical: true
+      });
+    }
+  }
+
+  for (const templateId of byTemplate.keys()) {
+    seen.add(templateId);
+  }
+
+  return [...byTemplate.values()];
+}
+
+function serviceObjectRelationSavedTemplateOptions(document, seen) {
+  const result = [];
+  for (const relation of document.serviceObjectTemplateRelations ?? []) {
+    const templateId = String(relation.target_template_id ?? '').trim();
+    const targetClass = String(relation.target_class_code ?? '').trim();
+    if (!templateId || seen.has(templateId) || !serviceAggregateTypeByClassCode(targetClass)) {
+      continue;
+    }
+
+    seen.add(templateId);
+    result.push({
+      template: {
+        template_id: templateId,
+        name: serviceGeneratedTemplateName(templateId) || templateId,
+        target: { class_code: targetClass }
+      },
+      historical: true
+    });
+  }
+
+  return result;
+}
+
+function serviceTemplateGeneratedTargets(templateId) {
+  const id = String(templateId ?? '').trim();
+  if (!id) {
+    return [];
+  }
+
+  const result = [];
+  const seen = new Set();
+  const rules = (state.ruleExamples.service ?? [])
+    .filter((rule) => ruleTemplateId(rule) === id);
+  for (const rule of rules) {
+    const classCode = ruleTargetClassCode(rule);
+    if (!classCode) {
+      continue;
+    }
+
+    const classItem = state.cmdbClassInstances.find((item) =>
+      String(item.layer).toLowerCase() === 'service'
+      && canonicalToken(item.classCode) === canonicalToken(classCode));
+    const card = (classItem?.cards ?? [])
+      .find((candidate) => targetCardMatchesRule(candidate, classCode, rule));
+    if (!card?.id) {
+      continue;
+    }
+
+    const key = `${canonicalToken(classCode)}\u0000${String(card.id)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push({
+      rule,
+      classCode,
+      card: { ...card, classCode }
+    });
+  }
+
+  return result.sort((left, right) =>
+    serviceRelationEndpointCardDisplayLabel(serviceAggregateTypeByClassCode(left.classCode)?.key || '', left.card, left.classCode)
+      .localeCompare(
+        serviceRelationEndpointCardDisplayLabel(serviceAggregateTypeByClassCode(right.classCode)?.key || '', right.card, right.classCode),
+        undefined,
+        { sensitivity: 'base' }));
+}
+
+function serviceObjectRelationHiddenTemplateEndpoints(types) {
+  return types.flatMap((type) => {
+    if (type === 'service_template') {
+      return [];
+    }
+
+    const definition = serviceRelationEndpointDefinition(type);
+    const classCode = serviceRelationEndpointClassCode(type);
+    if (!definition || !classCode || serviceObjectTypeDefinitionOrNull(type)) {
+      return [];
+    }
+
+    const visibleCards = new Set(serviceRelationEndpointCards(type, { filterTemplateTargets: true })
+      .map((card) => String(card.id ?? ''))
+      .filter(Boolean));
+    return serviceRelationEndpointCards(type, { filterTemplateTargets: false })
+      .filter((card) => String(card.id ?? '') && !visibleCards.has(String(card.id ?? '')))
+      .map((card) => ({
+        type,
+        classCode,
+        cardId: String(card.id ?? ''),
+        label: `${definition.label}: ${serviceRelationEndpointCardDisplayLabel(type, card, classCode)}`
+      }));
+  });
+}
+
+function serviceRelationEndpointCardDisplayLabel(type, card, classCode) {
+  const baseLabel = targetCardDisplayLabel(card, classCode);
+  if (serviceObjectTypeDefinitionOrNull(type)) {
+    return baseLabel;
+  }
+
+  const rule = generatedRuleForTargetCard('service', classCode, card);
+  const ruleName = String(rule?.name ?? '').trim();
+  if (ruleName && !labelContainsText(baseLabel, ruleName)) {
+    return `${ruleName} (${baseLabel})`;
+  }
+
+  const templateName = String(rule?.template_generation?.template_name
+    || rule?.target?.created_by_template?.template_name
+    || '').trim();
+  if (templateName && !labelContainsText(baseLabel, templateName)) {
+    return `${templateName}: ${baseLabel}`;
+  }
+
+  return baseLabel;
+}
+
+function labelContainsText(label, text) {
+  const normalizedLabel = String(label ?? '').trim().toLocaleLowerCase('ru-RU');
+  const normalizedText = String(text ?? '').trim().toLocaleLowerCase('ru-RU');
+  return Boolean(normalizedLabel && normalizedText && normalizedLabel.includes(normalizedText));
+}
+
+function generatedRuleForTargetCard(layerKey, classCode, card) {
+  return (state.ruleExamples[layerKey] ?? []).find((rule) => {
+    return targetCardMatchesRule(card, classCode, rule);
+  }) ?? null;
+}
+
+function targetCardMatchesRule(card, classCode, rule) {
+  const classToken = canonicalToken(classCode || card?.classCode);
+  if (classToken && canonicalToken(ruleTargetClassCode(rule)) !== classToken) {
+    return false;
+  }
+
+  const cardId = String(card?.id ?? '').trim();
+  const populationRuleId = String(cardAttributeValue(card, 'population_rule_id') ?? '').trim();
+  const populationKey = String(cardAttributeValue(card, POPULATION_SOURCE_KEY_ATTRIBUTE) ?? '').trim();
+  const ruleId = String(rule?.rule_id ?? '').trim();
+  if (populationRuleId && canonicalToken(ruleId) === canonicalToken(populationRuleId)) {
+    return true;
+  }
+
+  const ruleCardId = String(rule?.target?.card_id ?? '').trim();
+  if (cardId && ruleCardId && String(cardId) === String(ruleCardId)) {
+    return true;
+  }
+
+  const idempotencyKey = String(rule?.target?.idempotency_key ?? '').trim();
+  const rulePopulationKey = String(rule?.target?.attribute_mappings?.[POPULATION_SOURCE_KEY_ATTRIBUTE] ?? '').trim();
+  return Boolean(populationKey
+    && (populationKey === idempotencyKey || populationKey === rulePopulationKey));
+}
+
+function isServiceRelationEndpointTemplateGenerated(type, classCode, cardId, card, hiddenTemplateTargets) {
+  if (!hiddenTemplateTargets || serviceObjectTypeDefinitionOrNull(type)) {
+    return false;
+  }
+
+  return isTemplateGeneratedTargetCard(hiddenTemplateTargets, classCode, card ?? { id: cardId, classCode });
+}
+
+function serviceObjectRelationDomain(definition, sourceClassCode, targetClassCode) {
+  const domains = serviceObjectRelationDomains();
+  return domains.find((domain) =>
+    canonicalToken(domain.relationType) === canonicalToken(definition.relationType)
+    && serviceObjectRelationDomainMatches(definition, domain, sourceClassCode, targetClassCode));
+}
+
+function serviceObjectRelationDomains() {
+  const byCode = new Map();
+  for (const domain of state.domains.concat(state.suggestedDomains, state.cmdbDomains)) {
+    const code = canonicalToken(domain?.code || domain?.Code);
+    if (code && !byCode.has(code)) {
+      byCode.set(code, domain);
+    }
+  }
+
+  return [...byCode.values()];
+}
+
+function serviceObjectRelationDomainMatches(definition, domain, sourceClassCode, targetClassCode) {
+  const direction = definition.domainDirection || 'source_to_target';
+  if (direction === 'target_to_source') {
+    return canonicalToken(domain.sourceClassCode) === canonicalToken(targetClassCode)
+      && canonicalToken(domain.targetClassCode) === canonicalToken(sourceClassCode);
+  }
+
+  return canonicalToken(domain.sourceClassCode) === canonicalToken(sourceClassCode)
+    && canonicalToken(domain.targetClassCode) === canonicalToken(targetClassCode);
+}
+
+function serviceObjectRelationDefinitionForClasses(domain, relationSourceClassCode, relationTargetClassCode) {
+  for (const definition of SERVICE_OBJECT_RELATION_DEFINITIONS) {
+    if (canonicalToken(definition.relationType) !== canonicalToken(domain.relationType)) {
+      continue;
+    }
+
+    const sourceType = serviceRelationEndpointTypeByClassCode(relationSourceClassCode);
+    const targetType = serviceRelationEndpointTypeByClassCode(relationTargetClassCode);
+    if ((definition.domainDirection || 'source_to_target') === 'source_to_target'
+      && definition.sourceTypes.includes(sourceType)
+      && definition.targetTypes.includes(targetType)) {
+      return { definition, reversed: false };
+    }
+
+    const reversedSourceType = serviceRelationEndpointTypeByClassCode(relationTargetClassCode);
+    const reversedTargetType = serviceRelationEndpointTypeByClassCode(relationSourceClassCode);
+    if (definition.domainDirection === 'target_to_source'
+      && definition.sourceTypes.includes(reversedSourceType)
+      && definition.targetTypes.includes(reversedTargetType)) {
+      return { definition, reversed: true };
+    }
+  }
+
+  return null;
+}
+
+async function refreshServiceObjectRelations(options = {}) {
+  state.serviceObjectEditor.relationsLoading = true;
+  state.serviceObjectEditor.relationError = '';
+  if (options.render !== false) {
+    renderServiceObjectRelationEditor();
+  }
+
+  try {
+    const url = new URL('/api/cmdbuild/domains/relations', window.location.origin);
+    url.searchParams.set('prefix', state.prefix);
+    const response = await fetch(url, {
+      headers: cmdbuildFetchHeaders({ accept: 'application/json' })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.detail || payload.error || `Не удалось загрузить связи CMDBuild: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
+      throw new Error(detail);
+    }
+
+    state.serviceObjectEditor.relations = payload.relations ?? payload.Relations ?? [];
+    state.serviceObjectEditor.relationsLoaded = true;
+    state.serviceObjectEditor.relationMessage = `Связи обновлены из CMDBuild: ${serviceObjectRelationRows().length}.`;
+  } catch (error) {
+    state.serviceObjectEditor.relationError = error.message;
+    state.serviceObjectEditor.relationMessage = '';
+  } finally {
+    state.serviceObjectEditor.relationsLoading = false;
+    if (options.render !== false) {
+      renderServiceObjectRelationEditor();
+    }
+  }
+}
+
+function loadSelectedServiceObjectRelationIntoEditor(value) {
+  const ref = parseDeriveSourceValue(value);
+  state.serviceObjectEditor.selectedRelation = value || '';
+  state.serviceObjectEditor.relationMessage = '';
+  state.serviceObjectEditor.relationError = '';
+  if (!ref?.relationId) {
+    state.serviceObjectEditor.relationSource = '';
+    state.serviceObjectEditor.relationTarget = '';
+    renderServiceObjectRelationEditor();
+    return;
+  }
+
+  state.serviceObjectEditor.relationKind = serviceObjectRelationDefinition(ref.kind)?.key || ref.kind || state.serviceObjectEditor.relationKind;
+  state.serviceObjectEditor.relationSource = serviceObjectRefValue(ref.sourceType, ref.sourceClassCode, ref.sourceCardId);
+  state.serviceObjectEditor.relationTarget = ref.targetType === 'service_template'
+    ? deriveSourceValue({
+        type: 'service_template',
+        templateId: ref.targetTemplateId,
+        classCode: ref.targetClassCode
+      })
+    : serviceObjectRefValue(ref.targetType, ref.targetClassCode, ref.targetCardId);
+  renderServiceObjectRelationEditor();
+}
+
+function resetServiceObjectRelationEditor() {
+  state.serviceObjectEditor.selectedRelation = '';
+  state.serviceObjectEditor.relationSource = '';
+  state.serviceObjectEditor.relationTarget = '';
+  state.serviceObjectEditor.relationMessage = '';
+  state.serviceObjectEditor.relationError = '';
+  renderServiceObjectRelationEditor();
+}
+
+async function createServiceObjectRelation() {
+  const definition = serviceObjectRelationDefinition(state.serviceObjectEditor.relationKind);
+  const source = parseDeriveSourceValue(state.serviceObjectEditor.relationSource);
+  const target = parseDeriveSourceValue(state.serviceObjectEditor.relationTarget);
+  const selectedRelation = parseDeriveSourceValue(state.serviceObjectEditor.selectedRelation);
+  const status = document.querySelector('#serviceObjectRelationStatus');
+  if (!status) {
+    return;
+  }
+
+  try {
+    if (!source?.classCode || !source?.cardId || !target?.classCode || !target?.cardId) {
+      if (target?.type === 'service_template' && source?.classCode && source?.cardId && target?.templateId && target?.classCode) {
+        await createServiceObjectTemplateRelations(definition, source, target, status, selectedRelation);
+        return;
+      }
+
+      throw new Error('Выберите источник и цель связи.');
+    }
+    if (canonicalToken(source.classCode) === canonicalToken(target.classCode)
+      && String(source.cardId) === String(target.cardId)) {
+      throw new Error('Источник и цель связи не должны быть одной и той же карточкой.');
+    }
+
+    const domain = serviceObjectRelationDomain(definition, source.classCode, target.classCode);
+    if (!domain?.code) {
+      throw new Error('Для выбранной пары сервисных объектов не найден domain CMDBuild. Примените сервисную схему или выберите другую связь.');
+    }
+
+    const desired = {
+      domainCode: domain.code,
+      sourceClassCode: source.classCode,
+      sourceCardId: source.cardId,
+      targetClassCode: target.classCode,
+      targetCardId: target.cardId
+    };
+    if (selectedRelation?.relationId && serviceObjectRelationSameTarget(selectedRelation, desired)) {
+      status.textContent = 'Связь уже соответствует выбранным значениям.';
+      status.classList.toggle('error', false);
+      return;
+    }
+
+    status.textContent = selectedRelation?.relationId
+      ? 'Сохраняю изменение связи в CMDBuild...'
+      : 'Создаю связь в CMDBuild...';
+    status.classList.toggle('error', false);
+    const payload = await postServiceObjectRelation(domain.code, source, target);
+    if (selectedRelation?.relationId) {
+      await deleteServiceObjectRelation(selectedRelation.domainCode, selectedRelation.relationId);
+    }
+
+    const action = payload.action || payload.Action || 'created';
+    state.serviceObjectEditor.selectedRelation = '';
+    state.serviceObjectEditor.relationMessage = action === 'skipped'
+      ? `Связь уже существует или пропущена: ${payload.message || payload.Message || domain.code}.`
+      : `${selectedRelation?.relationId ? 'Связь изменена' : 'Связь создана'}: ${domain.code}${payload.relationId || payload.RelationId ? ` #${payload.relationId || payload.RelationId}` : ''}.`;
+    await refreshServiceObjectRelations({ render: false });
+    status.textContent = state.serviceObjectEditor.relationMessage;
+    status.classList.toggle('error', false);
+  } catch (error) {
+    state.serviceObjectEditor.relationError = error.message;
+    state.serviceObjectEditor.relationMessage = '';
+    status.textContent = state.serviceObjectEditor.relationError;
+    status.classList.toggle('error', true);
+  }
+}
+
+async function createServiceObjectTemplateRelations(definition, source, target, status, selectedRelation = null) {
+  const templateId = String(target.templateId ?? '').trim();
+  const template = findLayerTemplate('service', templateId);
+  const templateName = template?.name || serviceGeneratedTemplateName(templateId) || templateId;
+  const savedRelation = upsertServiceObjectTemplateRelation(definition, source, target, selectedRelation);
+
+  const targets = serviceTemplateGeneratedTargets(templateId);
+  if (targets.length === 0) {
+    state.serviceObjectEditor.selectedRelation = serviceObjectRelationRefValue(serviceObjectTemplateRelationRow(savedRelation));
+    state.serviceObjectEditor.relationMessage = `Связь с шаблоном "${templateName}" сохранена как ожидающая. Сейчас агрегатов нет; после создания агрегатов повторно нажмите "Сохранить связь", чтобы развернуть ее в CMDBuild-связи.`;
+    state.serviceObjectEditor.relationError = '';
+    status.textContent = state.serviceObjectEditor.relationMessage;
+    status.classList.toggle('error', false);
+    renderConversionConfigSyncView();
+    renderServiceObjectRelationEditor();
+    renderRelationsGraphView();
+    return;
+  }
+
+  const domainByClass = new Map();
+  for (const item of targets) {
+    const domain = serviceObjectRelationDomain(definition, source.classCode, item.classCode);
+    if (!domain?.code) {
+      throw new Error(`Для связи сервиса "${source.classCode} #${source.cardId}" с агрегатами шаблона "${templateName}" не найден domain CMDBuild (${source.classCode} -> ${item.classCode}). Примените сервисную схему или выберите другой тип связи.`);
+    }
+
+    domainByClass.set(item.classCode, domain);
+  }
+
+  status.textContent = `Создаю связи с агрегатами шаблона "${templateName}": 0/${targets.length}...`;
+  status.classList.toggle('error', false);
+  let created = 0;
+  let skipped = 0;
+  const errors = [];
+  for (const [index, item] of targets.entries()) {
+    const domain = domainByClass.get(item.classCode);
+    try {
+      const payload = await postServiceObjectRelation(domain.code, source, {
+        type: serviceAggregateTypeByClassCode(item.classCode)?.key || '',
+        classCode: item.classCode,
+        cardId: String(item.card.id ?? '')
+      });
+      const action = payload.action || payload.Action || 'created';
+      if (action === 'skipped') {
+        skipped += 1;
+      } else {
+        created += 1;
+      }
+    } catch (error) {
+      errors.push(`${serviceRelationEndpointCardDisplayLabel('', item.card, item.classCode)}: ${error.message}`);
+    }
+
+    status.textContent = `Создаю связи с агрегатами шаблона "${templateName}": ${index + 1}/${targets.length}...`;
+  }
+
+  await refreshServiceObjectRelations({ render: false });
+  const errorText = errors.length > 0
+    ? ` Ошибки: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? `; еще ${errors.length - 3}` : ''}.`
+    : '';
+  const finalRelation = updateServiceObjectTemplateRelationStatus(savedRelation.relation_id, errors.length > 0 ? 'partial' : 'materialized') ?? savedRelation;
+  state.serviceObjectEditor.selectedRelation = serviceObjectRelationRefValue(serviceObjectTemplateRelationRow(finalRelation));
+  state.serviceObjectEditor.relationMessage = `Шаблон "${templateName}" развернут в связи: создано ${created}, уже было ${skipped}, ошибок ${errors.length}.${errorText}`;
+  state.serviceObjectEditor.relationError = errors.length > 0 ? state.serviceObjectEditor.relationMessage : '';
+  status.textContent = state.serviceObjectEditor.relationMessage;
+  status.classList.toggle('error', errors.length > 0);
+  renderConversionConfigSyncView();
+  renderRelationsGraphView();
+}
+
+function serviceGeneratedTemplateName(templateId) {
+  const id = String(templateId ?? '').trim();
+  if (!id) {
+    return '';
+  }
+
+  const rule = (state.ruleExamples.service ?? []).find((item) => ruleTemplateId(item) === id);
+  return String(rule?.template_generation?.template_name
+    || rule?.target?.created_by_template?.template_name
+    || rule?.generated_from_template
+    || '').trim();
+}
+
+function serviceObjectRelationSameTarget(selectedRelation, desired) {
+  return canonicalToken(selectedRelation.domainCode) === canonicalToken(desired.domainCode)
+    && canonicalToken(selectedRelation.sourceClassCode) === canonicalToken(desired.sourceClassCode)
+    && String(selectedRelation.sourceCardId) === String(desired.sourceCardId)
+    && canonicalToken(selectedRelation.targetClassCode) === canonicalToken(desired.targetClassCode)
+    && String(selectedRelation.targetCardId) === String(desired.targetCardId);
+}
+
+async function postServiceObjectRelation(domainCode, source, target) {
+  const response = await fetch(`/api/cmdbuild/domains/${encodeURIComponent(domainCode)}/relations`, {
+    method: 'POST',
+    headers: cmdbuildFetchHeaders({
+      'content-type': 'application/json',
+      accept: 'application/json'
+    }),
+    body: JSON.stringify({
+      sourceClassCode: source.classCode,
+      sourceCardId: source.cardId,
+      destinationClassCode: target.classCode,
+      destinationCardId: target.cardId,
+      attributes: { is_active: true }
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.detail || payload.error || `Не удалось создать связь: ${response.status}`;
+    handleCmdbuildAuthFailure(detail);
+    throw new Error(detail);
+  }
+
+  return payload;
+}
+
+async function deleteServiceObjectRelation(domainCode, relationId) {
+  const response = await fetch(`/api/cmdbuild/domains/${encodeURIComponent(domainCode)}/relations/${encodeURIComponent(relationId)}`, {
+    method: 'DELETE',
+    headers: cmdbuildFetchHeaders({ accept: 'application/json' })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.detail || payload.error || `Не удалось удалить старую связь: ${response.status}`;
+    handleCmdbuildAuthFailure(detail);
+    throw new Error(detail);
+  }
+
+  return payload;
 }
 
 function byActiveLayer(items) {

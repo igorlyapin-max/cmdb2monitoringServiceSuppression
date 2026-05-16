@@ -5,6 +5,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.ConversionRules;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -58,6 +59,9 @@ var schema = factory.Build(new CmdbuildSchemaOptions
 });
 
 Assert(schema.Classes.Any(c => c.Code == "C2M_ServiceNetworkAccessZone"), "service network zone class is missing");
+Assert(schema.Classes.Any(c => c.Code == "C2M_ServiceSlaCalendar"), "service SLA calendar class is missing");
+Assert(schema.Classes.Any(c => c.Code == "C2M_ServiceSlaPolicy"), "service SLA policy class is missing");
+Assert(schema.Classes.Any(c => c.Code == "C2M_ServiceSlaDowntime"), "service SLA downtime class is missing");
 Assert(schema.Classes.Any(c => c.Code == "C2M_SuppressionNetworkAccessZone"), "suppression network zone class is missing");
 Assert(schema.Classes.Any(c => c.Code == "C2M_ServiceApplicationCluster"), "custom service class is missing");
 Assert(schema.Classes.Any(c => c.Code == "C2M_SuppressionFirewallGroup"), "custom suppression class is missing");
@@ -86,6 +90,9 @@ Assert(schema.SuggestedDomains.Any(d =>
     "custom suppression entity must be able to point to suppressed resources.");
 AssertServiceAggregationLookup(schema);
 AssertServiceTypeLookup(schema);
+AssertServiceSlaCalendar(schema);
+AssertServiceSlaPolicy(schema);
+AssertServiceSlaDowntime(schema);
 AssertAttributeValidationRules(schema);
 
 AssertAttributes(
@@ -123,6 +130,21 @@ AssertAttributes(
     "C2M_ServicePlatformService",
     present: ["service_type", "sla_target"],
     absent: ServiceInheritedAttributeCodes());
+AssertAttributes(
+    schema,
+    "C2M_ServiceSlaCalendar",
+    present: ["calendar_code", "calendar_type", "monday_hours", "tuesday_hours", "wednesday_hours", "thursday_hours", "friday_hours", "saturday_hours", "sunday_hours", "timezone", "zabbix_calendar_name", "external_calendar_id"],
+    absent: ServiceInheritedAttributeCodes().Concat(["service_type", "sla_target", "reporting_period", "calendar", "zabbix_sla_name"]).ToArray());
+AssertAttributes(
+    schema,
+    "C2M_ServiceSlaPolicy",
+    present: ["sla_target", "reporting_period", "calendar", "timezone", "zabbix_sla_name"],
+    absent: ServiceInheritedAttributeCodes().Concat(["service_type"]).ToArray());
+AssertAttributes(
+    schema,
+    "C2M_ServiceSlaDowntime",
+    present: ["downtime_type", "schedule_type", "start_time", "duration_minutes", "day_of_week", "day_of_month", "valid_from", "valid_to", "reason", "timezone", "zabbix_downtime_name"],
+    absent: ServiceInheritedAttributeCodes().Concat(["service_type", "sla_target", "reporting_period", "calendar", "zabbix_sla_name"]).ToArray());
 AssertAttributes(
     schema,
     "C2M_ServiceDatabaseService",
@@ -179,11 +201,7 @@ foreach (var (domainCode, sourceClassCode) in new[]
             && domain.RelationType == "depends_on"),
         $"{sourceClassCode} must be able to point to suppressed resources.");
 }
-var serviceConcreteClasses = schema.Classes
-    .Where(classDefinition => classDefinition.Layer == BuilderLayer.Service && !classDefinition.IsSuperclass)
-    .Select(classDefinition => classDefinition.Code)
-    .OrderBy(code => code, StringComparer.Ordinal)
-    .ToArray();
+var serviceConcreteClasses = ServiceTopologyClassCodes(schema);
 foreach (var sourceClassCode in serviceConcreteClasses)
 {
     foreach (var targetClassCode in serviceConcreteClasses)
@@ -194,7 +212,34 @@ foreach (var sourceClassCode in serviceConcreteClasses)
                 && domain.RelationType == "service_depends_on"),
             $"{sourceClassCode} must be able to depend on {targetClassCode} through relationType=service_depends_on.");
     }
+
+    Assert(schema.Domains.Any(domain =>
+            domain.SourceClassCode == sourceClassCode
+            && domain.TargetClassCode == "C2M_ServiceSlaPolicy"
+            && domain.RelationType == "has_sla_policy"),
+        $"{sourceClassCode} must be able to reference C2M_ServiceSlaPolicy through relationType=has_sla_policy.");
+
+    if (sourceClassCode != "C2M_ServicePlatformService")
+    {
+        Assert(schema.Domains.Any(domain =>
+                domain.SourceClassCode == sourceClassCode
+                && domain.TargetClassCode == "C2M_ServicePlatformService"
+                && domain.RelationType == "aggregates_to"),
+            $"{sourceClassCode} must be containable by C2M_ServicePlatformService through relationType=aggregates_to.");
+    }
 }
+Assert(!schema.Domains.Any(domain =>
+        domain.SourceClassCode == "C2M_ServiceSlaPolicy"
+        && domain.RelationType == "service_depends_on"),
+    "C2M_ServiceSlaPolicy must not participate in service dependency topology as a source.");
+Assert(!schema.Domains.Any(domain =>
+        domain.SourceClassCode == "C2M_ServiceSlaDowntime"
+        && domain.RelationType == "service_depends_on"),
+    "C2M_ServiceSlaDowntime must not participate in service dependency topology as a source.");
+Assert(!schema.Domains.Any(domain =>
+        domain.SourceClassCode == "C2M_ServiceSlaCalendar"
+        && domain.RelationType == "service_depends_on"),
+    "C2M_ServiceSlaCalendar must not participate in service dependency topology as a source.");
 var suppressionConcreteClasses = schema.Classes
     .Where(classDefinition => classDefinition.Layer == BuilderLayer.Suppression && !classDefinition.IsSuperclass)
     .Select(classDefinition => classDefinition.Code)
@@ -216,6 +261,11 @@ foreach (var sourceClassCode in suppressionConcreteClasses)
 }
 Assert(schema.Domains.Select(domain => domain.Code).Distinct(StringComparer.Ordinal).Count() == schema.Domains.Count,
     "domain codes must be unique.");
+foreach (var domain in schema.Domains.Concat(schema.SuggestedDomains))
+{
+    Assert(domain.Code.Length <= 58,
+        $"{domain.Code}: CMDBuild domain code must fit PostgreSQL _Map_<domain> identifier length.");
+}
 AssertDomainAttributes(
     schema,
     "C2M_ServicePlatformDependsOnDatabase",
@@ -347,8 +397,12 @@ AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
 AssertSemanticFingerprintChangesWhenHostIdAppears();
 await AssertZabbixManagedServiceClientCreatesTaggedServiceAsync();
+await AssertZabbixManagedServiceClientCreatesServiceWithParentsAsync();
 await AssertZabbixManagedServiceClientClearsChildrenAsync();
+await AssertZabbixManagedServiceClientKeepsFoundChildrenWhenSomeRelationsAreMissingAsync();
+await AssertZabbixManagedServiceClientTagsExistingServiceWithoutTopologyMutationAsync();
 await AssertZabbixSourceLeafServiceCreatesProblemTagsAsync();
+await AssertZabbixClientAppliesSlaAndPreservesManualDowntimeAsync();
 await AssertZabbixClientEnsuresHostTagsAsync();
 await AssertZabbixClientAppliesTriggerDependenciesAsync();
 await AssertZabbixClientAppliesSuppressionAggregateAsync();
@@ -640,6 +694,44 @@ static async Task AssertZabbixManagedServiceClientCreatesTaggedServiceAsync()
         "Zabbix service.create source hostid tag is invalid.");
 }
 
+static async Task AssertZabbixManagedServiceClientCreatesServiceWithParentsAsync()
+{
+    var handler = new DiagnosticZabbixHandler();
+    handler.ManagedServiceIdsByKey["cmdbuild:C2M_ServicePlatformService:100"] = "8001";
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyManagedServiceAsync(
+        new ZabbixManagedServiceDefinition
+        {
+            Layer = "service",
+            ManagedKey = "workplaces:City04",
+            ClassCode = "C2M_ServiceWorkplaceGroup",
+            Name = "Рабочие места / City04",
+            ParentManagedKeys = ["cmdbuild:C2M_ServicePlatformService:100"]
+        },
+        CancellationToken.None);
+
+    Assert(result.Success, "Zabbix managed service parent-link result must be successful.");
+    Assert(result.RelationsApplied == 1, "Zabbix managed service parent relation must be counted as applied.");
+    var payloadText = handler.CreatePayload
+        ?? throw new InvalidOperationException("Zabbix service.create payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var parameters = document.RootElement.GetProperty("params");
+    var parents = parameters.GetProperty("parents").EnumerateArray().ToArray();
+    Assert(parents.Length == 1, "Zabbix service.create must include one parent reference.");
+    Assert(JsonString(parents[0], "serviceid") == "8001",
+        "Zabbix service.create must attach the service to the resolved parent service.");
+}
+
 static async Task AssertZabbixManagedServiceClientClearsChildrenAsync()
 {
     var handler = new DiagnosticZabbixHandler { ExistingManagedService = true };
@@ -680,6 +772,105 @@ static async Task AssertZabbixManagedServiceClientClearsChildrenAsync()
         "Zabbix service.update must send an empty children array when desired relations are empty.");
 }
 
+static async Task AssertZabbixManagedServiceClientKeepsFoundChildrenWhenSomeRelationsAreMissingAsync()
+{
+    var handler = new DiagnosticZabbixHandler();
+    handler.ManagedServiceIdsByKey["workplaces:City31"] = "9001";
+    handler.ManagedServiceIdsByKey["source:service:NTbook:434731"] = "9002";
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyManagedServiceAsync(
+        new ZabbixManagedServiceDefinition
+        {
+            Layer = "service",
+            ManagedKey = "workplaces:City31",
+            ClassCode = "C2M_ServiceUserEndpointFleet",
+            Name = "Рабочие места / City31",
+            Relations =
+            [
+                new ZabbixManagedServiceRelation
+                {
+                    DomainCode = "C2M_ServiceFleetDependsOnNetworkZone",
+                    TargetClassCode = "C2M_ServiceNetworkAccessZone",
+                    TargetLookup = "supp-service-copy:City31"
+                }
+            ],
+            ChildManagedKeys = ["source:service:NTbook:434731"]
+        },
+        CancellationToken.None);
+
+    Assert(result.Success, "Zabbix managed service partial topology result must be successful.");
+    Assert(result.Action == "updated", "Zabbix managed service partial topology action must be updated.");
+    Assert(result.RelationsApplied == 1, "Zabbix managed service must still apply found source leaf children.");
+    Assert(result.RelationsDeferred == 1, "Zabbix managed service must still report the missing dependency relation.");
+    var payloadText = handler.UpdatePayload
+        ?? throw new InvalidOperationException("Zabbix service.update payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var parameters = document.RootElement.GetProperty("params");
+    var children = parameters.GetProperty("children").EnumerateArray().ToArray();
+    Assert(children.Length == 1, "Zabbix service.update must include found children despite missing dependency warnings.");
+    Assert(JsonString(children[0], "serviceid") == "9002",
+        "Zabbix service.update must attach the source leaf child instead of leaving it in the root.");
+}
+
+static async Task AssertZabbixManagedServiceClientTagsExistingServiceWithoutTopologyMutationAsync()
+{
+    var handler = new DiagnosticZabbixHandler { ExistingManagedService = true };
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplyManagedServiceTagsAsync(
+        new ZabbixManagedServiceDefinition
+        {
+            Layer = "suppression",
+            ManagedKey = "rule:City04",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ZabbixManagedServiceTags.SlaPolicy] = "workplace-99",
+                [ZabbixManagedServiceTags.SlaTarget] = "99.9"
+            }
+        },
+        CancellationToken.None);
+
+    Assert(result.Success, "Zabbix managed service tag-only update must be successful.");
+    Assert(result.Action == "tagged", "Zabbix managed service tag-only action is invalid.");
+    Assert(result.ServiceId == "9001", "Zabbix managed service tag-only update must return the existing service id.");
+    Assert(handler.CreatePayload is null, "Zabbix tag-only service update must not create an isolated service.");
+
+    var payloadText = handler.UpdatePayload
+        ?? throw new InvalidOperationException("Zabbix tag-only service.update payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var payload = document.RootElement;
+    Assert(JsonString(payload, "method") == "service.update", "Zabbix method must be service.update.");
+    var parameters = payload.GetProperty("params");
+    Assert(JsonString(parameters, "serviceid") == "9001", "Zabbix tag-only service.update id is invalid.");
+    Assert(!parameters.TryGetProperty("children", out _), "Zabbix tag-only service.update must not send children.");
+    Assert(!parameters.TryGetProperty("name", out _), "Zabbix tag-only service.update must not rewrite service name.");
+    var tags = parameters.GetProperty("tags")
+        .EnumerateArray()
+        .ToDictionary(tag => JsonString(tag, "tag"), tag => JsonString(tag, "value"), StringComparer.Ordinal);
+    Assert(tags["customer:keep"] == "manual", "Zabbix tag-only service.update must preserve existing custom tags.");
+    Assert(tags[ZabbixManagedServiceTags.SlaPolicy] == "workplace-99", "Zabbix tag-only service.update must add SLA policy tag.");
+    Assert(tags[ZabbixManagedServiceTags.SlaTarget] == "99.9", "Zabbix tag-only service.update must add SLA target tag.");
+}
+
 static async Task AssertZabbixSourceLeafServiceCreatesProblemTagsAsync()
 {
     var command = BuildRouterCorePlans("City04")
@@ -687,10 +878,29 @@ static async Task AssertZabbixSourceLeafServiceCreatesProblemTagsAsync()
         .Single(command => command.RuleId == "core-router");
     var leaf = ZabbixManagedServiceMapper.FromSourceBinding(command, "service");
     Assert(leaf.ManagedKey == "source:service:routerCore:447411", "source leaf managed key is invalid.");
+    Assert(leaf.Name == "routerCore / ctest2-routerCore-002",
+        "source leaf must use a stable source object display attribute instead of the grouping key.");
     Assert(leaf.ProblemTags.Count == 1, "source leaf must expose a problem tag for host binding.");
     Assert(leaf.ProblemTags[0].Tag == ZabbixManagedServiceTags.SourceZabbixHostId,
         "source leaf problem tag must use the managed source hostid tag.");
     Assert(leaf.ProblemTags[0].Value == "30011", "source leaf problem tag value is invalid.");
+    var lookupDimensionLeaf = ZabbixManagedServiceMapper.FromSourceBinding(
+        command with
+        {
+            Source = command.Source with
+            {
+                ClassCode = "NTbook",
+                KeyAttribute = "Critical",
+                KeyValue = "177140",
+                Attributes = new Dictionary<string, string>(command.Source.Attributes, StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Code"] = "ctest2-NTbook-023"
+                }
+            }
+        },
+        "service");
+    Assert(lookupDimensionLeaf.Name == "NTbook / ctest2-NTbook-023",
+        "source leaf must not expose lookup/reference ids such as Critical=177140 as a Zabbix service name.");
 
     var handler = new DiagnosticZabbixHandler();
     var client = new ZabbixClient(
@@ -720,6 +930,70 @@ static async Task AssertZabbixSourceLeafServiceCreatesProblemTagsAsync()
         "Zabbix source leaf problem tag key is invalid.");
     Assert(JsonString(problemTags[0], "value") == "30011",
         "Zabbix source leaf problem tag value is invalid.");
+}
+
+static async Task AssertZabbixClientAppliesSlaAndPreservesManualDowntimeAsync()
+{
+    var handler = new DiagnosticZabbixHandler { ExistingSla = true };
+    var client = new ZabbixClient(
+        new HttpClient(handler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+
+    var result = await client.ApplySlaAsync(
+        new ZabbixSlaDefinition
+        {
+            PolicyKey = "workplace-99",
+            Name = "CMDB2M SLA workplace",
+            Slo = 99.9m,
+            Period = ZabbixSlaPeriods.Monthly,
+            Timezone = "Europe/Moscow",
+            EffectiveDate = 1777584000,
+            ManagedExcludedDowntimePrefix = "CMDB2M REG:",
+            ServiceTags =
+            [
+                new ZabbixSlaServiceTag(ZabbixManagedServiceTags.SlaPolicy, "workplace-99")
+            ],
+            Schedule =
+            [
+                new ZabbixSlaSchedulePeriod(0, 604800)
+            ],
+            ExcludedDowntimes =
+            [
+                new ZabbixSlaExcludedDowntime("CMDB2M REG:weekly Sunday [workplace-99]", 1777800000, 1777807200)
+            ]
+        },
+        CancellationToken.None);
+
+    Assert(result.Action == "updated", "Existing Zabbix SLA must be updated.");
+    Assert(result.ManagedExcludedDowntimes == 1, "Managed excluded downtime counter is invalid.");
+    Assert(result.PreservedManualExcludedDowntimes == 1, "Manual excluded downtime must be preserved.");
+
+    var payloadText = handler.SlaUpdatePayload
+        ?? throw new InvalidOperationException("Zabbix sla.update payload was not captured.");
+    using var document = JsonDocument.Parse(payloadText);
+    var payload = document.RootElement;
+    Assert(JsonString(payload, "method") == "sla.update", "Zabbix method must be sla.update.");
+    var parameters = payload.GetProperty("params");
+    Assert(JsonString(parameters, "slaid") == "71001", "Zabbix sla.update id is invalid.");
+    Assert(JsonString(parameters, "status") == "0", "Zabbix SLA must be enabled with status=0.");
+    var serviceTags = parameters.GetProperty("service_tags").EnumerateArray().ToArray();
+    Assert(serviceTags.Any(tag =>
+            JsonString(tag, "tag") == ZabbixManagedServiceTags.SlaPolicy
+            && JsonString(tag, "value") == "workplace-99"),
+        "Zabbix SLA must select services by managed SLA policy tag.");
+    var excludedDowntimes = parameters.GetProperty("excluded_downtimes").EnumerateArray().ToArray();
+    Assert(excludedDowntimes.Length == 2, "Zabbix SLA must preserve one manual downtime and add one managed downtime.");
+    Assert(excludedDowntimes.Any(item => JsonString(item, "name") == "manual one-time change"),
+        "Zabbix SLA update must preserve manual excluded downtime.");
+    Assert(!excludedDowntimes.Any(item => JsonString(item, "name") == "CMDB2M REG:old window"),
+        "Zabbix SLA update must remove stale managed excluded downtime.");
 }
 
 static async Task AssertZabbixClientEnsuresHostTagsAsync()
@@ -1067,7 +1341,8 @@ static async Task AssertCmdbuildApplyCreatesSourceLinkAsync()
             BaseUrl = "http://cmdbuild.local/services/rest/v3",
             AuthMode = "None",
             RequestTimeoutMs = 5000
-        }));
+        }),
+        new HttpContextAccessor());
 
     var result = await client.ApplyAggregationCommandAsync(command, CancellationToken.None);
     Assert(result.Success, "CMDBuild apply result must be successful.");
@@ -1549,6 +1824,168 @@ static void AssertServiceTypeLookup(CmdbuildSchemaDefinition schema)
         "sla_target help must explain percentage values and purpose.");
 }
 
+static void AssertServiceSlaPolicy(CmdbuildSchemaDefinition schema)
+{
+    var lookup = schema.Lookups.Single(lookup => lookup.Code == "ServiceSlaReportingPeriod");
+    Assert(lookup.Values.Select(value => value.Code).SequenceEqual(["daily", "weekly", "monthly", "quarterly", "yearly"]),
+        "service SLA reporting period lookup values are invalid.");
+
+    var slaPolicy = schema.Classes.Single(c => c.Code == "C2M_ServiceSlaPolicy");
+    Assert(slaPolicy.Layer == BuilderLayer.Service, "SLA policy must belong to the service layer.");
+    Assert(slaPolicy.ParentClassCode == "C2M_ServiceManagedObject", "SLA policy must inherit the service managed superclass.");
+    Assert(slaPolicy.Purpose.Contains("SLA", StringComparison.Ordinal), "SLA policy purpose must explain SLA usage.");
+    Assert(slaPolicy.Help.Contains("авторитетную цель SLA", StringComparison.Ordinal)
+        && slaPolicy.Help.Contains("has_sla_policy", StringComparison.Ordinal)
+        && slaPolicy.Help.Contains("has_sla_calendar", StringComparison.Ordinal)
+        && slaPolicy.Help.Contains("has_regular_downtime", StringComparison.Ordinal)
+        && slaPolicy.Help.Contains("Zabbix SLA", StringComparison.Ordinal)
+        && slaPolicy.Help.Contains("24x7 monthly 99.9", StringComparison.Ordinal),
+        "SLA policy help must explain CMDBuild ownership and examples.");
+
+    var slaTarget = slaPolicy.Attributes.Single(attribute => attribute.Code == "sla_target");
+    Assert(slaTarget.Type == "decimal", "SLA policy sla_target must be a decimal percentage.");
+    Assert(slaTarget.Required, "SLA policy sla_target must be required.");
+    Assert(!string.IsNullOrWhiteSpace(slaTarget.ValidationRules), "SLA policy sla_target must validate percentage input.");
+    Assert(slaTarget.ValidationRules.Contains("parsed >= 0", StringComparison.Ordinal)
+        && slaTarget.ValidationRules.Contains("parsed <= 100", StringComparison.Ordinal)
+        && slaTarget.ValidationRules.Contains("99.9", StringComparison.Ordinal)
+        && slaTarget.ValidationRules.Contains("0.999", StringComparison.Ordinal),
+        "SLA policy sla_target validationRules script is incomplete.");
+
+    var reportingPeriod = slaPolicy.Attributes.Single(attribute => attribute.Code == "reporting_period");
+    Assert(reportingPeriod.Type == "lookup", "SLA policy reporting_period must be a lookup.");
+    Assert(reportingPeriod.LookupTypeCode == "ServiceSlaReportingPeriod",
+        "SLA policy reporting_period must reference ServiceSlaReportingPeriod lookup.");
+    Assert(reportingPeriod.Required, "SLA policy reporting_period must be required.");
+
+    var calendar = slaPolicy.Attributes.Single(attribute => attribute.Code == "calendar");
+    Assert(calendar.Help.Contains("legacy", StringComparison.Ordinal)
+        && calendar.Help.Contains("has_sla_calendar", StringComparison.Ordinal)
+        && calendar.Help.Contains("ServiceSlaCalendar", StringComparison.Ordinal),
+        "SLA policy calendar help must point to ServiceSlaCalendar relation.");
+
+    AssertDomainAttributes(
+        schema,
+        "C2M_ServicePlatformServiceHasSlaPolicy",
+        present: ["is_active", "source"],
+        absent: ["priority", "is_dynamic", "fallback_supported", "is_critical"]);
+}
+
+static void AssertServiceSlaCalendar(CmdbuildSchemaDefinition schema)
+{
+    var calendar = schema.Classes.Single(c => c.Code == "C2M_ServiceSlaCalendar");
+    Assert(calendar.Layer == BuilderLayer.Service, "SLA calendar must belong to the service layer.");
+    Assert(calendar.ParentClassCode == "C2M_ServiceManagedObject", "SLA calendar must inherit the service managed superclass.");
+    Assert(calendar.Purpose.Contains("календар", StringComparison.OrdinalIgnoreCase)
+        || calendar.Purpose.Contains("calendar", StringComparison.OrdinalIgnoreCase),
+        "SLA calendar purpose must explain calendar usage.");
+    Assert(calendar.Help.Contains("переиспользуемые рабочие календари SLA", StringComparison.Ordinal)
+        && calendar.Help.Contains("has_sla_calendar", StringComparison.Ordinal)
+        && calendar.Help.Contains("calendar_code", StringComparison.Ordinal)
+        && calendar.Help.Contains("monday_hours", StringComparison.Ordinal)
+        && calendar.Help.Contains("sunday_hours", StringComparison.Ordinal)
+        && calendar.Help.Contains("HH:mm-HH:mm", StringComparison.Ordinal)
+        && calendar.Help.Contains("внешним/ручным", StringComparison.Ordinal)
+        && calendar.Help.Contains("24x7", StringComparison.Ordinal),
+        "SLA calendar help must explain CMDBuild ownership, relation and examples.");
+
+    var calendarCode = calendar.Attributes.Single(attribute => attribute.Code == "calendar_code");
+    Assert(calendarCode.Type == "string" && calendarCode.Required, "SLA calendar calendar_code must be a required string.");
+    Assert(calendarCode.Help.Contains("стабильный ключ", StringComparison.OrdinalIgnoreCase)
+        && calendarCode.Help.Contains("Zabbix", StringComparison.Ordinal),
+        "SLA calendar calendar_code help must explain the stable key.");
+
+    foreach (var dayAttributeCode in new[]
+    {
+        "monday_hours",
+        "tuesday_hours",
+        "wednesday_hours",
+        "thursday_hours",
+        "friday_hours",
+        "saturday_hours",
+        "sunday_hours"
+    })
+    {
+        var dayHours = calendar.Attributes.Single(attribute => attribute.Code == dayAttributeCode);
+        Assert(dayHours.Type == "string", $"SLA calendar {dayAttributeCode} must be a string.");
+        Assert(dayHours.Help.Contains("HH:mm-HH:mm", StringComparison.Ordinal)
+            && dayHours.Help.Contains("09:00-18:00", StringComparison.Ordinal)
+            && dayHours.Help.Contains("09:00-13:00;14:00-18:00", StringComparison.Ordinal),
+            $"SLA calendar {dayAttributeCode} help must include the expected format and examples.");
+        Assert(!string.IsNullOrWhiteSpace(dayHours.ValidationRules), $"SLA calendar {dayAttributeCode} must validate time intervals.");
+        Assert(dayHours.ValidationRules.Contains(dayAttributeCode, StringComparison.Ordinal)
+            && dayHours.ValidationRules.Contains("HH:mm-HH:mm", StringComparison.Ordinal)
+            && dayHours.ValidationRules.Contains("09:00-13:00;14:00-18:00", StringComparison.Ordinal)
+            && dayHours.ValidationRules.Contains("minutes(bounds[0]) >= minutes(bounds[1])", StringComparison.Ordinal),
+            $"SLA calendar {dayAttributeCode} validationRules script is incomplete.");
+    }
+
+    var domain = schema.Domains.Single(domain => domain.Code == "C2M_ServiceSlaPolicyHasSlaCalendar");
+    Assert(domain.SourceClassCode == "C2M_ServiceSlaPolicy", "SLA calendar domain source is invalid.");
+    Assert(domain.TargetClassCode == "C2M_ServiceSlaCalendar", "SLA calendar domain target is invalid.");
+    Assert(domain.RelationType == "has_sla_calendar", "SLA calendar domain relation type is invalid.");
+    Assert(domain.DisplayName.Contains("календар", StringComparison.OrdinalIgnoreCase)
+        || domain.DisplayName.Contains("has_sla_calendar", StringComparison.Ordinal),
+        "SLA calendar domain display name must explain calendar usage.");
+    Assert(domain.Help.Contains("календарем SLA", StringComparison.Ordinal)
+        && domain.Help.Contains("Zabbix SLA", StringComparison.Ordinal),
+        "SLA calendar domain help must explain Zabbix SLA usage.");
+    AssertDomainAttributes(
+        schema,
+        "C2M_ServiceSlaPolicyHasSlaCalendar",
+        present: ["is_active", "source"],
+        absent: ["priority", "is_dynamic", "fallback_supported", "is_critical"]);
+}
+
+static void AssertServiceSlaDowntime(CmdbuildSchemaDefinition schema)
+{
+    var downtimeTypeLookup = schema.Lookups.Single(lookup => lookup.Code == "ServiceSlaDowntimeType");
+    Assert(downtimeTypeLookup.Values.Select(value => value.Code).SequenceEqual(["regular"]),
+        "service SLA downtime type lookup values are invalid.");
+    var scheduleLookup = schema.Lookups.Single(lookup => lookup.Code == "ServiceSlaDowntimeSchedule");
+    Assert(scheduleLookup.Values.Select(value => value.Code).SequenceEqual(["daily", "weekly", "monthly"]),
+        "service SLA downtime schedule lookup values are invalid.");
+
+    var downtime = schema.Classes.Single(c => c.Code == "C2M_ServiceSlaDowntime");
+    Assert(downtime.Layer == BuilderLayer.Service, "SLA downtime must belong to the service layer.");
+    Assert(downtime.ParentClassCode == "C2M_ServiceManagedObject", "SLA downtime must inherit the service managed superclass.");
+    Assert(downtime.Purpose.Contains("downtime", StringComparison.OrdinalIgnoreCase)
+        || downtime.Purpose.Contains("исключения SLA", StringComparison.OrdinalIgnoreCase),
+        "SLA downtime purpose must explain downtime usage.");
+    Assert(downtime.Help.Contains("регулярные договорные окна", StringComparison.Ordinal)
+        && downtime.Help.Contains("has_regular_downtime", StringComparison.Ordinal)
+        && downtime.Help.Contains("ручными в Zabbix", StringComparison.Ordinal)
+        && downtime.Help.Contains("managed-префикс", StringComparison.Ordinal),
+        "SLA downtime help must explain regular CMDBuild ownership and manual Zabbix downtime preservation.");
+
+    var downtimeType = downtime.Attributes.Single(attribute => attribute.Code == "downtime_type");
+    Assert(downtimeType.Type == "lookup", "SLA downtime downtime_type must be a lookup.");
+    Assert(downtimeType.LookupTypeCode == "ServiceSlaDowntimeType",
+        "SLA downtime downtime_type must reference ServiceSlaDowntimeType lookup.");
+    Assert(downtimeType.Required, "SLA downtime downtime_type must be required.");
+
+    var scheduleType = downtime.Attributes.Single(attribute => attribute.Code == "schedule_type");
+    Assert(scheduleType.Type == "lookup", "SLA downtime schedule_type must be a lookup.");
+    Assert(scheduleType.LookupTypeCode == "ServiceSlaDowntimeSchedule",
+        "SLA downtime schedule_type must reference ServiceSlaDowntimeSchedule lookup.");
+    Assert(scheduleType.Required, "SLA downtime schedule_type must be required.");
+
+    var startTime = downtime.Attributes.Single(attribute => attribute.Code == "start_time");
+    Assert(startTime.Type == "string" && startTime.Required, "SLA downtime start_time must be a required string.");
+    var duration = downtime.Attributes.Single(attribute => attribute.Code == "duration_minutes");
+    Assert(duration.Type == "integer" && duration.Required, "SLA downtime duration_minutes must be a required integer.");
+
+    var domain = schema.Domains.Single(domain => domain.Code == "C2M_ServiceSlaPolicyHasRegularDowntime");
+    Assert(domain.SourceClassCode == "C2M_ServiceSlaPolicy", "SLA downtime domain source is invalid.");
+    Assert(domain.TargetClassCode == "C2M_ServiceSlaDowntime", "SLA downtime domain target is invalid.");
+    Assert(domain.RelationType == "has_regular_downtime", "SLA downtime domain relation type is invalid.");
+    AssertDomainAttributes(
+        schema,
+        "C2M_ServiceSlaPolicyHasRegularDowntime",
+        present: ["is_active", "source"],
+        absent: ["priority", "is_dynamic", "fallback_supported", "is_critical"]);
+}
+
 static void AssertAttributeValidationRules(CmdbuildSchemaDefinition schema)
 {
     var serviceSuperclass = schema.Classes.Single(c => c.Code == "C2M_ServiceManagedObject");
@@ -1616,16 +2053,32 @@ static void AssertSourceLinkDomain(
     string sourceClassCode,
     string targetClassCode)
 {
-    var domain = schema.Domains.Single(d => d.Code == domainCode);
-    Assert(domain.IsSourceLink, $"{domainCode}: source link marker is missing.");
-    Assert(domain.RelationType == "populated_from", $"{domainCode}: invalid relation type.");
-    Assert(domain.SourceClassCode == sourceClassCode, $"{domainCode}: invalid managed class.");
-    Assert(domain.TargetClassCode == targetClassCode, $"{domainCode}: invalid customer class.");
+    var domain = schema.Domains.SingleOrDefault(d => d.Code == domainCode)
+        ?? schema.Domains.Single(d =>
+            d.IsSourceLink
+            && d.RelationType == "populated_from"
+            && d.SourceClassCode == sourceClassCode
+            && d.TargetClassCode == targetClassCode);
+    Assert(domain.IsSourceLink, $"{domain.Code}: source link marker is missing.");
+    Assert(domain.RelationType == "populated_from", $"{domain.Code}: invalid relation type.");
+    Assert(domain.SourceClassCode == sourceClassCode, $"{domain.Code}: invalid managed class.");
+    Assert(domain.TargetClassCode == targetClassCode, $"{domain.Code}: invalid customer class.");
     AssertDomainAttributes(
         schema,
-        domainCode,
+        domain.Code,
         present: ["is_active", "source", "population_rule_id"],
         absent: ["priority", "is_dynamic", "fallback_supported", "is_critical"]);
+}
+
+static string[] ServiceTopologyClassCodes(CmdbuildSchemaDefinition schema)
+{
+    return schema.Classes
+        .Where(classDefinition => classDefinition.Layer == BuilderLayer.Service
+            && !classDefinition.IsSuperclass
+            && classDefinition.Code is not "C2M_ServiceSlaCalendar" and not "C2M_ServiceSlaPolicy" and not "C2M_ServiceSlaDowntime")
+        .Select(classDefinition => classDefinition.Code)
+        .OrderBy(code => code, StringComparer.Ordinal)
+        .ToArray();
 }
 
 static string JsonString(JsonElement element, string propertyName)
@@ -1792,9 +2245,13 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 {
     public bool ExistingManagedService { get; init; }
 
+    public Dictionary<string, string> ManagedServiceIdsByKey { get; } = new(StringComparer.Ordinal);
+
     public bool ExistingAggregateHost { get; init; }
 
     public bool ExistingAggregateItem { get; init; }
+
+    public bool ExistingSla { get; init; }
 
     public string? CreatePayload { get; private set; }
 
@@ -1820,6 +2277,10 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     public string? HistoryPushPayload { get; private set; }
 
+    public string? SlaCreatePayload { get; private set; }
+
+    public string? SlaUpdatePayload { get; private set; }
+
     private readonly List<string> triggerGetPayloads = [];
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -1841,15 +2302,12 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
               "id": 1
             }
             """),
-            "service.get" => ExistingManagedService ? ExistingServiceResponse() : Json(HttpStatusCode.OK, """
-            {
-              "jsonrpc": "2.0",
-              "result": [],
-              "id": 2
-            }
-            """),
+            "service.get" => ServiceGetResponse(body),
             "service.create" => CaptureCreate(body),
             "service.update" => CaptureUpdate(body),
+            "sla.get" => ExistingSla ? ExistingSlaResponse() : EmptyArrayResponse(),
+            "sla.create" => CaptureSlaCreate(body),
+            "sla.update" => CaptureSlaUpdate(body),
             "hostgroup.get" => EmptyArrayResponse(),
             "hostgroup.create" => Json(HttpStatusCode.OK, """
             {
@@ -1904,6 +2362,40 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
         """);
     }
 
+    private HttpResponseMessage ServiceGetResponse(string body)
+    {
+        if (TryReadServiceGetTag(body, ZabbixManagedServiceTags.Key, out var managedKey)
+            && ManagedServiceIdsByKey.TryGetValue(managedKey, out var serviceId))
+        {
+            return ManagedServiceResponse(serviceId, managedKey);
+        }
+
+        return ExistingManagedService ? ExistingServiceResponse() : EmptyArrayResponse();
+    }
+
+    private static bool TryReadServiceGetTag(string body, string tagName, out string value)
+    {
+        value = "";
+        using var document = JsonDocument.Parse(body);
+        if (!document.RootElement.TryGetProperty("params", out var parameters)
+            || !parameters.TryGetProperty("tags", out var tags)
+            || tags.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var tag in tags.EnumerateArray())
+        {
+            if (JsonStringValue(tag, "tag") == tagName)
+            {
+                value = JsonStringValue(tag, "value");
+                return !string.IsNullOrWhiteSpace(value);
+            }
+        }
+
+        return false;
+    }
+
     private HttpResponseMessage CaptureUpdate(string body)
     {
         UpdatePayload = body;
@@ -1916,6 +2408,38 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             ]
           },
           "id": 4
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureSlaCreate(string body)
+    {
+        SlaCreatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "slaids": [
+              "71001"
+            ]
+          },
+          "id": 30
+        }
+        """);
+    }
+
+    private HttpResponseMessage CaptureSlaUpdate(string body)
+    {
+        SlaUpdatePayload = body;
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": {
+            "slaids": [
+              "71001"
+            ]
+          },
+          "id": 31
         }
         """);
     }
@@ -2211,6 +2735,10 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
                 {
                   "tag": "cmdb2monitoring:key",
                   "value": "rule:City04"
+                },
+                {
+                  "tag": "customer:keep",
+                  "value": "manual"
                 }
               ],
               "children": [
@@ -2223,6 +2751,85 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             }
           ],
           "id": 2
+        }
+        """);
+    }
+
+    private static HttpResponseMessage ManagedServiceResponse(string serviceId, string managedKey)
+    {
+        return Json(
+            HttpStatusCode.OK,
+            $$"""
+            {
+              "jsonrpc": "2.0",
+              "result": [
+                {
+                  "serviceid": "{{serviceId}}",
+                  "name": "{{managedKey}}",
+                  "algorithm": "2",
+                  "sortorder": "0",
+                  "description": "",
+                  "tags": [
+                    {
+                      "tag": "cmdb2monitoring:managed",
+                      "value": "true"
+                    },
+                    {
+                      "tag": "cmdb2monitoring:key",
+                      "value": "{{managedKey}}"
+                    }
+                  ],
+                  "children": [],
+                  "parents": []
+                }
+              ],
+              "id": 2
+            }
+            """);
+    }
+
+    private static HttpResponseMessage ExistingSlaResponse()
+    {
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "slaid": "71001",
+              "name": "CMDB2M SLA workplace",
+              "period": "2",
+              "slo": "99.9",
+              "timezone": "Europe/Moscow",
+              "status": "0",
+              "description": "",
+              "service_tags": [
+                {
+                  "tag": "cmdb2monitoring:sla_policy",
+                  "operator": "0",
+                  "value": "workplace-99"
+                }
+              ],
+              "schedule": [
+                {
+                  "period_from": "0",
+                  "period_to": "604800"
+                }
+              ],
+              "excluded_downtimes": [
+                {
+                  "name": "manual one-time change",
+                  "period_from": "1777600000",
+                  "period_to": "1777603600"
+                },
+                {
+                  "name": "CMDB2M REG:old window",
+                  "period_from": "1777610000",
+                  "period_to": "1777613600"
+                }
+              ]
+            }
+          ],
+          "id": 32
         }
         """);
     }

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -29,6 +30,7 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, {
         roles: config.auth.roles,
         cmdbuildSchema: config.cmdbuildSchema,
+        cmdbuild: publicCmdbuildConfig(),
         webhooks: publicWebhooksConfig(),
         kafka: config.kafka ?? {},
         readiness: config.readiness ?? {},
@@ -93,7 +95,8 @@ const server = http.createServer(async (request, response) => {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          accept: 'application/json'
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
         },
         body: JSON.stringify(body)
       });
@@ -105,7 +108,8 @@ const server = http.createServer(async (request, response) => {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          accept: 'application/json'
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
         },
         body: JSON.stringify(body)
       });
@@ -118,22 +122,44 @@ const server = http.createServer(async (request, response) => {
         return sendJson(response, 400, { error: 'layer must be service or suppression' });
       }
 
-      return proxyJson(response, config.backend.rulesApplyCurrentUrl, {
+      const directApplyUrl = stringValue(config.backend.zabbixCommandApplyUrl);
+      const targets = directApplyUrl ? ['zabbix-direct'] : ['zabbix'];
+      const operationId = stringValue(body?.operationId) || randomUUID();
+      const backendBody = {
+        operationId,
+        layers: [layer],
+        targets,
+        cmdbuildPrefix: stringValue(body?.cmdbuildPrefix || body?.prefix || config.cmdbuildSchema?.defaultPrefix),
+        serviceModelRoot: stringValue(body?.serviceModelRoot),
+        suppressionModelRoot: stringValue(body?.suppressionModelRoot),
+        zabbixCommandApplyUrl: directApplyUrl,
+        dryRun: Boolean(body?.dryRun),
+        sourceClasses: Array.isArray(body?.sourceClasses) ? body.sourceClasses : [],
+        maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
+        eventType: stringValue(body?.eventType) || 'UPDATE'
+      };
+      const backendInit = {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          accept: 'application/json'
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
         },
-        body: JSON.stringify({
-          operationId: stringValue(body?.operationId),
-          layers: [layer],
-          targets: ['zabbix'],
+        body: JSON.stringify(backendBody)
+      };
+
+      if (body?.detached === true) {
+        runDetachedJsonRequest(config.backend.rulesApplyCurrentUrl, backendInit, operationId);
+        return sendJson(response, 202, {
+          operationId,
+          status: 'accepted',
+          detached: true,
           dryRun: Boolean(body?.dryRun),
-          sourceClasses: Array.isArray(body?.sourceClasses) ? body.sourceClasses : [],
-          maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
-          eventType: stringValue(body?.eventType) || 'UPDATE'
-        })
-      });
+          topics: targets
+        });
+      }
+
+      return proxyJson(response, config.backend.rulesApplyCurrentUrl, backendInit);
     }
 
     const zabbixApplyProgressMatch = url.pathname.match(/^\/api\/zabbix\/apply-current\/progress\/([^/]+)$/);
@@ -142,6 +168,19 @@ const server = http.createServer(async (request, response) => {
         config.backend.rulesApplyCurrentUrl,
         'progress',
         decodeURIComponent(zabbixApplyProgressMatch[1])));
+    }
+
+    const zabbixApplyCancelMatch = url.pathname.match(/^\/api\/zabbix\/apply-current\/cancel\/([^/]+)$/);
+    if (zabbixApplyCancelMatch && request.method === 'POST') {
+      return proxyJson(response, appendPath(
+        config.backend.rulesApplyCurrentUrl,
+        'cancel',
+        decodeURIComponent(zabbixApplyCancelMatch[1])), {
+        method: 'POST',
+        headers: {
+          accept: 'application/json'
+        }
+      });
     }
 
     if (url.pathname === '/api/zabbix/apply/status' && request.method === 'GET') {
@@ -153,6 +192,57 @@ const server = http.createServer(async (request, response) => {
       return proxyJson(response, targetUrl);
     }
 
+    if (url.pathname === '/api/zabbix/apply-state/stale-report' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixApplyStateStaleReportUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixApplyStateStaleReportUrl is not configured' });
+      }
+
+      const body = await readJsonBody(request);
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body ?? {})
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/apply-state/cleanup' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixApplyStateCleanupUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixApplyStateCleanupUrl is not configured' });
+      }
+
+      const body = await readJsonBody(request);
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body ?? {})
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/apply-state/delete-zabbix-services' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixApplyStateDeleteServicesUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixApplyStateDeleteServicesUrl is not configured' });
+      }
+
+      const body = await readJsonBody(request);
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body ?? {})
+      });
+    }
+
     if (url.pathname === '/api/zabbix/trigger-dependencies/status' && request.method === 'GET') {
       const targetUrl = config.backend.zabbixTriggerDependenciesStatusUrl;
       if (!targetUrl) {
@@ -160,6 +250,60 @@ const server = http.createServer(async (request, response) => {
       }
 
       return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/zabbix/sla/status' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixSlaStatusUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixSlaStatusUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/zabbix/sla/service/dry-run' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixSlaDryRunUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixSlaDryRunUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
+        },
+        body: '{}'
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/sla/service/apply' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixSlaApplyUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixSlaApplyUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
+        },
+        body: '{}'
+      });
+    }
+
+    if (url.pathname === '/api/admin/zabbixconfig2api/settings' && request.method === 'GET') {
+      const result = await readZabbixconfig2apiSettings();
+      return sendJson(response, result.statusCode, result.body);
+    }
+
+    if (url.pathname === '/api/admin/zabbixconfig2api/settings' && request.method === 'PUT') {
+      const body = await readJsonBody(request);
+      const result = await updateZabbixconfig2apiSettings(body);
+      return sendJson(response, result.statusCode, result.body);
     }
 
     if (url.pathname === '/api/zabbix/trigger-dependencies/dry-run' && request.method === 'POST') {
@@ -213,11 +357,15 @@ const server = http.createServer(async (request, response) => {
       if (url.searchParams.has('includePrototypes')) {
         backendUrl.searchParams.set('includePrototypes', url.searchParams.get('includePrototypes'));
       }
-      return proxyJson(response, backendUrl);
+      return proxyJson(response, backendUrl, {
+        headers: cmdbuildBackendAuthHeaders(request)
+      });
     }
 
     if (url.pathname === '/api/cmdbuild/classes/schema' && request.method === 'GET') {
-      return proxyJson(response, config.backend.cmdbuildClassSchemasUrl);
+      return proxyJson(response, config.backend.cmdbuildClassSchemasUrl, {
+        headers: cmdbuildBackendAuthHeaders(request)
+      });
     }
 
     if (url.pathname === '/api/cmdbuild/classes/instances' && request.method === 'GET') {
@@ -227,7 +375,9 @@ const server = http.createServer(async (request, response) => {
           backendUrl.searchParams.set(key, url.searchParams.get(key));
         }
       }
-      return proxyJson(response, backendUrl);
+      return proxyJson(response, backendUrl, {
+        headers: cmdbuildBackendAuthHeaders(request)
+      });
     }
 
     const cardCreateMatch = url.pathname.match(/^\/api\/cmdbuild\/classes\/([^/]+)\/cards$/);
@@ -239,7 +389,9 @@ const server = http.createServer(async (request, response) => {
           backendUrl.searchParams.set(key, url.searchParams.get(key));
         }
       }
-      return proxyJson(response, backendUrl);
+      return proxyJson(response, backendUrl, {
+        headers: cmdbuildBackendAuthHeaders(request)
+      });
     }
 
     if (cardCreateMatch && request.method === 'POST') {
@@ -250,9 +402,37 @@ const server = http.createServer(async (request, response) => {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          accept: 'application/json'
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
         },
         body: JSON.stringify(body)
+      });
+    }
+
+    const cardUpdateMatch = url.pathname.match(/^\/api\/cmdbuild\/classes\/([^/]+)\/cards\/([^/]+)$/);
+    if (cardUpdateMatch && request.method === 'PUT') {
+      const classCode = decodeURIComponent(cardUpdateMatch[1]);
+      const cardId = decodeURIComponent(cardUpdateMatch[2]);
+      const backendUrl = new URL(`${config.backend.cmdbuildClassesUrl}/${encodeURIComponent(classCode)}/cards/${encodeURIComponent(cardId)}`);
+      const body = await readJsonBody(request);
+      return proxyJson(response, backendUrl, {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
+        },
+        body: JSON.stringify(body)
+      });
+    }
+
+    if (cardUpdateMatch && request.method === 'DELETE') {
+      const classCode = decodeURIComponent(cardUpdateMatch[1]);
+      const cardId = decodeURIComponent(cardUpdateMatch[2]);
+      const backendUrl = new URL(`${config.backend.cmdbuildClassesUrl}/${encodeURIComponent(classCode)}/cards/${encodeURIComponent(cardId)}`);
+      return proxyJson(response, backendUrl, {
+        method: 'DELETE',
+        headers: cmdbuildBackendAuthHeaders(request)
       });
     }
 
@@ -261,7 +441,9 @@ const server = http.createServer(async (request, response) => {
       if (url.searchParams.has('prefix')) {
         backendUrl.searchParams.set('prefix', url.searchParams.get('prefix'));
       }
-      return proxyJson(response, backendUrl);
+      return proxyJson(response, backendUrl, {
+        headers: cmdbuildBackendAuthHeaders(request)
+      });
     }
 
     if (url.pathname === '/api/cmdbuild/domains/relations' && request.method === 'GET') {
@@ -269,7 +451,39 @@ const server = http.createServer(async (request, response) => {
       if (url.searchParams.has('prefix')) {
         backendUrl.searchParams.set('prefix', url.searchParams.get('prefix'));
       }
-      return proxyJson(response, backendUrl);
+      return proxyJson(response, backendUrl, {
+        headers: cmdbuildBackendAuthHeaders(request)
+      });
+    }
+
+    const domainRelationCreateMatch = url.pathname.match(/^\/api\/cmdbuild\/domains\/([^/]+)\/relations$/);
+    if (domainRelationCreateMatch && request.method === 'POST') {
+      const domainCode = decodeURIComponent(domainRelationCreateMatch[1]);
+      const backendUrl = appendPath(config.backend.cmdbuildDomainsUrl, domainCode, 'relations');
+      const body = await readJsonBody(request);
+      return proxyJson(response, backendUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
+        },
+        body: JSON.stringify(body)
+      });
+    }
+
+    const domainRelationDeleteMatch = url.pathname.match(/^\/api\/cmdbuild\/domains\/([^/]+)\/relations\/([^/]+)$/);
+    if (domainRelationDeleteMatch && request.method === 'DELETE') {
+      const domainCode = decodeURIComponent(domainRelationDeleteMatch[1]);
+      const relationId = decodeURIComponent(domainRelationDeleteMatch[2]);
+      const backendUrl = appendPath(config.backend.cmdbuildDomainsUrl, domainCode, 'relations', relationId);
+      return proxyJson(response, backendUrl, {
+        method: 'DELETE',
+        headers: {
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
+        }
+      });
     }
 
     if (url.pathname === '/api/zabbix/check' && request.method === 'GET') {
@@ -322,6 +536,17 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+const longRunningRequestTimeoutMs = Number.parseInt(
+  process.env.MONITORING_UI_LONG_REQUEST_TIMEOUT_MS ?? '',
+  10);
+const effectiveLongRunningRequestTimeoutMs = Number.isInteger(longRunningRequestTimeoutMs) && longRunningRequestTimeoutMs > 0
+  ? longRunningRequestTimeoutMs
+  : 30 * 60 * 1000;
+server.requestTimeout = effectiveLongRunningRequestTimeoutMs;
+server.timeout = effectiveLongRunningRequestTimeoutMs;
+server.headersTimeout = Math.min(60 * 1000, effectiveLongRunningRequestTimeoutMs);
+server.keepAliveTimeout = 75 * 1000;
+
 server.listen(config.server.port, config.server.host, () => {
   console.log(`monitoring-ui-api listening on http://${config.server.host}:${config.server.port}`);
 });
@@ -362,6 +587,52 @@ async function proxyJson(response, targetUrl, init = undefined) {
   response.end(text);
 }
 
+function runDetachedJsonRequest(targetUrl, init, operationId) {
+  void (async () => {
+    try {
+      const backendResponse = await httpRequestBuffer(targetUrl, init, effectiveLongRunningRequestTimeoutMs);
+      if (backendResponse.statusCode < 200 || backendResponse.statusCode >= 300) {
+        console.error(`detached request ${operationId} failed: HTTP ${backendResponse.statusCode}`);
+      }
+    } catch (error) {
+      console.error(`detached request ${operationId} failed:`, error);
+    }
+  })();
+}
+
+function httpRequestBuffer(targetUrl, init = {}, timeoutMs = effectiveLongRunningRequestTimeoutMs) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(targetUrl);
+    const transport = parsedUrl.protocol === 'https:' ? https : http;
+    const request = transport.request(parsedUrl, {
+      method: init.method ?? 'GET',
+      headers: init.headers ?? {},
+      timeout: timeoutMs
+    }, (backendResponse) => {
+      const chunks = [];
+      backendResponse.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+      backendResponse.on('end', () => {
+        resolve({
+          statusCode: backendResponse.statusCode ?? 0,
+          headers: backendResponse.headers,
+          body: Buffer.concat(chunks)
+        });
+      });
+    });
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`request timed out after ${timeoutMs} ms`));
+    });
+    request.on('error', reject);
+    if (init.body != null) {
+      request.write(init.body);
+    }
+    request.end();
+  });
+}
+
 function publicConversionConfig() {
   const storage = conversionConfigStorage();
   const runtime = conversionConfigRuntimeRulesFile();
@@ -374,6 +645,17 @@ function publicConversionConfig() {
   };
 }
 
+function publicCmdbuildConfig() {
+  const cmdbuild = cmdbuildConfiguration();
+  return {
+    authMode: cmdbuild.apiToken ? 'Token' : (cmdbuild.authMode || 'Login'),
+    username: cmdbuild.username,
+    baseUrlConfigured: Boolean(cmdbuild.baseUrl),
+    usernameConfigured: Boolean(cmdbuild.username),
+    apiTokenConfigured: Boolean(cmdbuild.apiToken)
+  };
+}
+
 function publicWebhooksConfig() {
   const {
     targetBearerToken,
@@ -381,6 +663,57 @@ function publicWebhooksConfig() {
     ...publicConfig
   } = config.webhooks ?? {};
   return publicConfig;
+}
+
+function cmdbuildBackendAuthHeaders(request) {
+  return {
+    ...cmdbuildConfiguredBackendAuthHeaders(),
+    ...cmdbuildRequestBackendAuthHeaders(request)
+  };
+}
+
+function cmdbuildConfiguredBackendAuthHeaders() {
+  const cmdbuild = cmdbuildConfiguration();
+  const headers = {};
+  if (cmdbuild.baseUrl) {
+    headers['x-cmdb2monitoring-cmdbuild-base-url'] = cmdbuild.baseUrl;
+  }
+  if (cmdbuild.requestTimeoutMs) {
+    headers['x-cmdb2monitoring-cmdbuild-timeout-ms'] = String(cmdbuild.requestTimeoutMs);
+  }
+  if (cmdbuild.apiToken) {
+    headers['x-cmdb2monitoring-cmdbuild-auth-mode'] = 'Token';
+    headers['x-cmdb2monitoring-cmdbuild-api-token'] = cmdbuild.apiToken;
+    return headers;
+  }
+  if (cmdbuild.username || cmdbuild.password) {
+    headers['x-cmdb2monitoring-cmdbuild-auth-mode'] = 'Login';
+    if (cmdbuild.username) {
+      headers['x-cmdb2monitoring-cmdbuild-username'] = cmdbuild.username;
+    }
+    if (cmdbuild.password) {
+      headers['x-cmdb2monitoring-cmdbuild-password'] = cmdbuild.password;
+    }
+  }
+  return headers;
+}
+
+function cmdbuildRequestBackendAuthHeaders(request) {
+  const headers = {};
+  copyRequestHeader(request, headers, 'x-cmdb2monitoring-cmdbuild-auth-mode');
+  copyRequestHeader(request, headers, 'x-cmdb2monitoring-cmdbuild-base-url');
+  copyRequestHeader(request, headers, 'x-cmdb2monitoring-cmdbuild-username');
+  copyRequestHeader(request, headers, 'x-cmdb2monitoring-cmdbuild-password');
+  copyRequestHeader(request, headers, 'x-cmdb2monitoring-cmdbuild-api-token');
+  copyRequestHeader(request, headers, 'x-cmdb2monitoring-cmdbuild-timeout-ms');
+  return headers;
+}
+
+function copyRequestHeader(request, target, name) {
+  const value = stringValue(request.headers[name]);
+  if (value) {
+    target[name] = value;
+  }
 }
 
 function conversionConfigStorage() {
@@ -413,6 +746,281 @@ function conversionConfigRuntimeRulesFile() {
     configuredFile,
     file
   };
+}
+
+function zabbixconfig2apiConfigFile() {
+  const section = config.managedMicroservices?.zabbixconfig2api ?? {};
+  const configuredFile = String(section.configFile ?? 'src/zabbixconfig2api/appsettings.json');
+  const file = path.isAbsolute(configuredFile)
+    ? configuredFile
+    : path.resolve(projectRoot, configuredFile);
+  return {
+    configuredFile,
+    file,
+    reloadApplierId: stringValue(section.reloadApplierId) || 'zabbixconfig2api'
+  };
+}
+
+async function readZabbixconfig2apiSettings() {
+  try {
+    const fileInfo = zabbixconfig2apiConfigFile();
+    const document = await readJsonFileIfExists(fileInfo.file);
+    if (!document) {
+      return {
+        statusCode: 404,
+        body: {
+          success: false,
+          error: `zabbixconfig2api config file not found: ${fileInfo.configuredFile}`,
+          configFile: fileInfo.configuredFile,
+          resolvedConfigFile: fileInfo.file
+        }
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: zabbixconfig2apiSettingsResponse(document, fileInfo)
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      body: {
+        success: false,
+        error: error.message
+      }
+    };
+  }
+}
+
+async function updateZabbixconfig2apiSettings(body) {
+  let fileInfo = null;
+  try {
+    fileInfo = zabbixconfig2apiConfigFile();
+    const document = await readJsonFileIfExists(fileInfo.file);
+    if (!document) {
+      return {
+        statusCode: 404,
+        body: {
+          success: false,
+          error: `zabbixconfig2api config file not found: ${fileInfo.configuredFile}`,
+          configFile: fileInfo.configuredFile,
+          resolvedConfigFile: fileInfo.file
+        }
+      };
+    }
+
+    const nextDocument = applyZabbixconfig2apiSettingsPatch(document, body ?? {});
+    await writeJsonFile(fileInfo.file, nextDocument);
+    const reload = await reloadApplierConfiguration(fileInfo.reloadApplierId);
+    const responseBody = {
+      ...zabbixconfig2apiSettingsResponse(nextDocument, fileInfo),
+      reload: reload.body
+    };
+    if (reload.statusCode >= 400) {
+      return {
+        statusCode: reload.statusCode,
+        body: {
+          ...responseBody,
+          success: false,
+          error: reload.body?.error || 'zabbixconfig2api_reload_failed'
+        }
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: responseBody
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        error: error.message,
+        configFile: fileInfo?.configuredFile ?? '',
+        resolvedConfigFile: fileInfo?.file ?? ''
+      }
+    };
+  }
+}
+
+function zabbixconfig2apiSettingsResponse(document, fileInfo) {
+  return {
+    success: true,
+    service: 'zabbixconfig2api',
+    configFile: fileInfo.configuredFile,
+    resolvedConfigFile: fileInfo.file,
+    reloadApplierId: fileInfo.reloadApplierId,
+    settings: normalizeZabbixconfig2apiSettings(document)
+  };
+}
+
+function normalizeZabbixconfig2apiSettings(document) {
+  const dependencies = objectValue(document.ZabbixTriggerDependencies);
+  const zabbix = objectValue(document.Zabbix);
+  const sla = objectValue(document.ZabbixSla);
+  return {
+    zabbixTriggerDependencies: {
+      transitiveGroupDependencyDepth: integerValue(dependencies.TransitiveGroupDependencyDepth, 2),
+      triggerGetBatchSize: integerValue(dependencies.TriggerGetBatchSize, 25),
+      maxSourceHostsPerAggregate: integerValue(dependencies.MaxSourceHostsPerAggregate, 1000),
+      maxAggregateFormulaLength: integerValue(dependencies.MaxAggregateFormulaLength, 65000),
+      maxDependenciesPerRun: integerValue(dependencies.MaxDependenciesPerRun, 10000),
+      sampleLimit: integerValue(dependencies.SampleLimit, 100),
+      aggregateStateTriggerIncludeTags: normalizeTagSelectors(dependencies.AggregateStateTriggerIncludeTags),
+      aggregateStateTriggerExcludeTags: normalizeTagSelectors(dependencies.AggregateStateTriggerExcludeTags),
+      aggregateStateTriggerIncludeNameRegex: stringValue(dependencies.AggregateStateTriggerIncludeNameRegex),
+      aggregateStateTriggerExcludeNameRegex: stringValue(dependencies.AggregateStateTriggerExcludeNameRegex),
+      aggregateStateTriggerMinPriority: integerValue(dependencies.AggregateStateTriggerMinPriority, 0)
+    },
+    zabbix: {
+      requestTimeoutMs: integerValue(zabbix.RequestTimeoutMs, 60000)
+    },
+    zabbixSla: {
+      enabled: booleanValue(sla.Enabled, true),
+      defaultPolicyKey: stringValue(sla.DefaultPolicyKey),
+      downtimePublicationHorizonMonths: integerValue(sla.DowntimePublicationHorizonMonths, 6),
+      managedExcludedDowntimePrefix: stringValue(sla.ManagedExcludedDowntimePrefix) || 'CMDB2M REG:',
+      cmdbuildPrefix: stringValue(sla.CmdbuildPrefix) || 'C2M_',
+      serviceRootPath: stringValue(sla.ServiceRootPath),
+      defaultReportingPeriod: stringValue(sla.DefaultReportingPeriod) || 'monthly',
+      defaultTimezone: stringValue(sla.DefaultTimezone) || 'Europe/Moscow',
+      sampleLimit: integerValue(sla.SampleLimit, 100)
+    }
+  };
+}
+
+function applyZabbixconfig2apiSettingsPatch(document, body) {
+  const next = JSON.parse(JSON.stringify(document ?? {}));
+  if (body.zabbixTriggerDependencies) {
+    const source = objectValue(body.zabbixTriggerDependencies);
+    const target = ensureObjectSection(next, 'ZabbixTriggerDependencies');
+    if ('transitiveGroupDependencyDepth' in source) {
+      target.TransitiveGroupDependencyDepth = validatedInteger(source.transitiveGroupDependencyDepth, 'ZabbixTriggerDependencies:TransitiveGroupDependencyDepth', 1, 3);
+    }
+    if ('triggerGetBatchSize' in source) {
+      target.TriggerGetBatchSize = validatedInteger(source.triggerGetBatchSize, 'ZabbixTriggerDependencies:TriggerGetBatchSize', 1, 100);
+    }
+    if ('maxSourceHostsPerAggregate' in source) {
+      target.MaxSourceHostsPerAggregate = validatedInteger(source.maxSourceHostsPerAggregate, 'ZabbixTriggerDependencies:MaxSourceHostsPerAggregate', 1, 100000);
+    }
+    if ('maxAggregateFormulaLength' in source) {
+      target.MaxAggregateFormulaLength = validatedInteger(source.maxAggregateFormulaLength, 'ZabbixTriggerDependencies:MaxAggregateFormulaLength', 1000, 1000000);
+    }
+    if ('maxDependenciesPerRun' in source) {
+      target.MaxDependenciesPerRun = validatedInteger(source.maxDependenciesPerRun, 'ZabbixTriggerDependencies:MaxDependenciesPerRun', 1, 1000000);
+    }
+    if ('sampleLimit' in source) {
+      target.SampleLimit = validatedInteger(source.sampleLimit, 'ZabbixTriggerDependencies:SampleLimit', 1, 10000);
+    }
+    if ('aggregateStateTriggerIncludeTags' in source) {
+      target.AggregateStateTriggerIncludeTags = normalizeTagSelectors(source.aggregateStateTriggerIncludeTags)
+        .map((item) => ({ Tag: item.tag, Value: item.value }));
+    }
+    if ('aggregateStateTriggerExcludeTags' in source) {
+      target.AggregateStateTriggerExcludeTags = normalizeTagSelectors(source.aggregateStateTriggerExcludeTags)
+        .map((item) => ({ Tag: item.tag, Value: item.value }));
+    }
+    if ('aggregateStateTriggerIncludeNameRegex' in source) {
+      target.AggregateStateTriggerIncludeNameRegex = stringValue(source.aggregateStateTriggerIncludeNameRegex);
+    }
+    if ('aggregateStateTriggerExcludeNameRegex' in source) {
+      target.AggregateStateTriggerExcludeNameRegex = stringValue(source.aggregateStateTriggerExcludeNameRegex);
+    }
+    if ('aggregateStateTriggerMinPriority' in source) {
+      target.AggregateStateTriggerMinPriority = validatedInteger(source.aggregateStateTriggerMinPriority, 'ZabbixTriggerDependencies:AggregateStateTriggerMinPriority', 0, 5);
+    }
+  }
+
+  if (body.zabbix) {
+    const source = objectValue(body.zabbix);
+    const target = ensureObjectSection(next, 'Zabbix');
+    if ('requestTimeoutMs' in source) {
+      target.RequestTimeoutMs = validatedInteger(source.requestTimeoutMs, 'Zabbix:RequestTimeoutMs', 1, 600000);
+    }
+  }
+
+  if (body.zabbixSla) {
+    const source = objectValue(body.zabbixSla);
+    const target = ensureObjectSection(next, 'ZabbixSla');
+    if ('enabled' in source) {
+      target.Enabled = booleanValue(source.enabled, true);
+    }
+    if ('defaultPolicyKey' in source) {
+      target.DefaultPolicyKey = stringValue(source.defaultPolicyKey);
+    }
+    if ('downtimePublicationHorizonMonths' in source) {
+      target.DowntimePublicationHorizonMonths = validatedInteger(source.downtimePublicationHorizonMonths, 'ZabbixSla:DowntimePublicationHorizonMonths', 1, 24);
+    }
+    if ('managedExcludedDowntimePrefix' in source) {
+      const prefix = stringValue(source.managedExcludedDowntimePrefix);
+      if (!prefix) {
+        throw new Error('ZabbixSla:ManagedExcludedDowntimePrefix is required.');
+      }
+      target.ManagedExcludedDowntimePrefix = prefix;
+    }
+    if ('sampleLimit' in source) {
+      target.SampleLimit = validatedInteger(source.sampleLimit, 'ZabbixSla:SampleLimit', 1, 10000);
+    }
+  }
+
+  return next;
+}
+
+function ensureObjectSection(document, sectionName) {
+  if (!document[sectionName] || typeof document[sectionName] !== 'object' || Array.isArray(document[sectionName])) {
+    document[sectionName] = {};
+  }
+
+  return document[sectionName];
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {};
+}
+
+function integerValue(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : fallback;
+}
+
+function validatedInteger(value, name, min, max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}.`);
+  }
+
+  return parsed;
+}
+
+function booleanValue(value, fallback) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = stringValue(value).toLowerCase();
+  if (['true', '1', 'yes', 'on', 'enabled', 'включено'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off', 'disabled', 'выключено'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function normalizeTagSelectors(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => ({
+      tag: stringValue(item?.tag ?? item?.Tag),
+      value: stringValue(item?.value ?? item?.Value)
+    }))
+    .filter((item) => item.tag);
 }
 
 async function readConversionConfigStorage() {
@@ -1588,9 +2196,11 @@ function cmdbuildConfiguration() {
   const section = config.cmdbuild ?? config.Cmdbuild ?? {};
   return {
     baseUrl: stringValue(section.baseUrl ?? section.BaseUrl),
+    authMode: stringValue(section.authMode ?? section.AuthMode),
     username: stringValue(section.username ?? section.Username),
     password: stringValue(section.password ?? section.Password),
-    apiToken: stringValue(section.apiToken ?? section.ApiToken)
+    apiToken: stringValue(section.apiToken ?? section.ApiToken),
+    requestTimeoutMs: Number(section.timeoutMs ?? section.requestTimeoutMs ?? section.RequestTimeoutMs ?? 0)
   };
 }
 

@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
@@ -15,6 +18,7 @@ using Microsoft.Extensions.Options;
 var builder = WebApplication.CreateBuilder(args);
 await builder.Configuration.ResolveSecretReferencesAsync("cmdbconfigbuilder");
 builder.AddServiceDefaults();
+builder.Services.AddHttpContextAccessor();
 
 builder.Services.AddOptions<ApplyOptions>()
     .Bind(builder.Configuration.GetSection(ApplyOptions.SectionName))
@@ -133,18 +137,36 @@ app.MapPost("/rules/apply-current", async (
     SourceEventEnricher enricher,
     KafkaJsonProducer producer,
     CmdbuildClient cmdbuild,
+    IHttpClientFactory httpClientFactory,
     IOptions<KafkaTopicsOptions> topicOptions,
+    IOptions<ConversionRulesOptions> conversionRulesOptions,
+    IHostEnvironment environment,
     ApplyCurrentRulesProgressStore progress,
     CancellationToken cancellationToken) =>
 {
     var operationId = progress.Start(request.OperationId, request.DryRun);
+    using var operationCancellation = progress.LinkCancellation(operationId, cancellationToken);
+    var applyCancellationToken = operationCancellation.Token;
+    var operationWatch = Stopwatch.StartNew();
+    var performance = new ApplyCurrentRulesPerformance();
     try
     {
         progress.Stage(operationId, "loading_rules", "Загрузка правил конвертации.");
-        var rules = await loader.LoadAsync(cancellationToken);
+        var loadRulesWatch = Stopwatch.StartNew();
+        var rules = await loader.LoadAsync(applyCancellationToken);
+        loadRulesWatch.Stop();
+        performance.LoadRulesMs += loadRulesWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.LoadRulesMs += loadRulesWatch.ElapsedMilliseconds);
+        var validationWatch = Stopwatch.StartNew();
         var validation = validator.Validate(rules);
+        validationWatch.Stop();
+        performance.ValidateRulesMs += validationWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.ValidateRulesMs += validationWatch.ElapsedMilliseconds);
         if (!validation.IsValid)
         {
+            operationWatch.Stop();
+            performance.TotalMs = operationWatch.ElapsedMilliseconds;
+            progress.AddPerformance(operationId, item => item.TotalMs = performance.TotalMs);
             progress.Fail(operationId, "validation_failed", "Правила конвертации не прошли проверку.");
             return Results.BadRequest(validation);
         }
@@ -161,13 +183,17 @@ app.MapPost("/rules/apply-current", async (
             DryRun = request.DryRun,
             Topic = string.Join(", ", publishTopics),
             Topics = publishTopics,
+            ZabbixDeliveryMode = publishTargets.ZabbixDirect ? "direct" : publishTargets.Zabbix ? "topic" : "",
             SourceClassCount = sourceClasses.Count,
-            RuleCount = selectedRules.Count
+            RuleCount = selectedRules.Count,
+            Performance = performance
         };
         var operationDeduplicationKeys = new HashSet<string>(StringComparer.Ordinal);
+        var pendingPlans = new List<PendingApplyCurrentPlan>();
 
         foreach (var sourceClass in sourceClasses)
         {
+            applyCancellationToken.ThrowIfCancellationRequested();
             progress.BeginClass(operationId, sourceClass);
             var classResult = new ApplyCurrentRulesClassResult
             {
@@ -177,7 +203,11 @@ app.MapPost("/rules/apply-current", async (
             try
             {
                 progress.Stage(operationId, "loading_cards", $"Загрузка карточек класса {sourceClass}.");
-                var catalog = await cmdbuild.ListClassCardsCatalogAsync(sourceClass, "source", cancellationToken);
+                var loadCardsWatch = Stopwatch.StartNew();
+                var catalog = await cmdbuild.ListClassCardsCatalogAsync(sourceClass, "source", applyCancellationToken);
+                loadCardsWatch.Stop();
+                performance.LoadCardsMs += loadCardsWatch.ElapsedMilliseconds;
+                progress.AddPerformance(operationId, item => item.LoadCardsMs += loadCardsWatch.ElapsedMilliseconds);
                 var cards = request.MaxCardsPerClass > 0
                     ? catalog.Cards.Take(request.MaxCardsPerClass).ToArray()
                     : catalog.Cards;
@@ -186,67 +216,40 @@ app.MapPost("/rules/apply-current", async (
 
                 foreach (var card in cards)
                 {
+                    applyCancellationToken.ThrowIfCancellationRequested();
                     progress.Stage(operationId, "processing_cards", $"Обработка {sourceClass}/{card.Id}.");
                     var rawEvent = BuildApplyCurrentRawEvent(sourceClass, card, request.EventType);
-                    var enrichedEvent = await enricher.EnrichAsync(rawEvent, selectedDocument, cancellationToken);
+                    var enrichWatch = Stopwatch.StartNew();
+                    var enrichedEvent = await enricher.EnrichAsync(rawEvent, selectedDocument, applyCancellationToken);
+                    enrichWatch.Stop();
+                    performance.EnrichMs += enrichWatch.ElapsedMilliseconds;
+                    progress.AddPerformance(operationId, item => item.EnrichMs += enrichWatch.ElapsedMilliseconds);
+                    var buildCommandsWatch = Stopwatch.StartNew();
                     var plans = engine.BuildCommandPlans(enrichedEvent, selectedDocument);
+                    buildCommandsWatch.Stop();
+                    performance.BuildCommandsMs += buildCommandsWatch.ElapsedMilliseconds;
+                    progress.AddPerformance(operationId, item => item.BuildCommandsMs += buildCommandsWatch.ElapsedMilliseconds);
                     classResult.CommandsBuilt += plans.Count;
                     result.CommandsBuilt += plans.Count;
                     progress.AddCommandsBuilt(operationId, plans.Count);
 
                     foreach (var plan in plans)
                     {
-                        result.ZabbixPlan.Add(plan.Command);
-                        progress.AddPlannedCommand(operationId, plan.Command);
-                        Increment(result.CommandsByLayer, plan.Command.Layer);
-                        if (result.SampleCommands.Count < 20)
-                        {
-                            result.SampleCommands.Add(new ApplyCurrentRulesCommandSample
-                            {
-                                RuleId = plan.Command.RuleId,
-                                Layer = plan.Command.Layer,
-                                SourceClass = plan.Command.Source.ClassCode,
-                                SourceCardId = plan.Command.Source.CardId,
-                                SourceKeyAttribute = plan.Command.Source.KeyAttribute,
-                                SourceKeyValue = plan.Command.Source.KeyValue,
-                                SourceZabbixHostId = plan.Command.Source.ZabbixHostId,
-                                TargetClass = plan.Command.Target.ClassCode,
-                                TargetKey = plan.Command.Target.IdempotencyKey
-                            });
-                        }
-
-                        if (request.DryRun)
-                        {
-                            continue;
-                        }
-
-                        if (ShouldSkipOperationDuplicate(plan, publishTargets, operationDeduplicationKeys))
-                        {
-                            classResult.CommandsSkippedAsDuplicates++;
-                            result.CommandsSkippedAsDuplicates++;
-                            progress.AddDuplicate(operationId);
-                            continue;
-                        }
-
-                        var publishedTopics = await PublishAggregationPlanAsync(
-                            producer,
-                            topicOptions.Value,
+                        TrackPendingZabbixPlan(
+                            pendingPlans,
                             plan,
-                            publishTargets,
-                            cancellationToken);
-                        classResult.CommandsPublished++;
-                        result.CommandsPublished++;
-                        progress.AddPublished(operationId, publishedTopics);
-                        foreach (var topic in publishedTopics)
-                        {
-                            Increment(result.CommandsPublishedByTopic, topic);
-                        }
+                            classResult,
+                            result,
+                            progress,
+                            operationId,
+                            serviceTopology: false);
                     }
 
                     progress.CardProcessed(operationId, sourceClass, card.Id);
                 }
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+            catch (Exception ex) when (!applyCancellationToken.IsCancellationRequested
+                && ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
             {
                 classResult.Error = ex.Message;
                 result.Errors.Add($"{sourceClass}: {ex.Message}");
@@ -258,13 +261,96 @@ app.MapPost("/rules/apply-current", async (
             progress.CompleteClass(operationId, classResult);
         }
 
+        if (ShouldPublishServiceTopology(request, publishTargets))
+        {
+            progress.Stage(operationId, "service_topology", "Публикация ручных сервисных объектов и их связей.");
+            var serviceTopologyResult = await ApplyServiceTopologyAsync(
+                request,
+                cmdbuild,
+                producer,
+                httpClientFactory.CreateClient(),
+                topicOptions.Value,
+                conversionRulesOptions.Value,
+                environment,
+                publishTargets,
+                operationId,
+                progress,
+                result,
+                selectedDocument,
+                pendingPlans,
+                operationDeduplicationKeys,
+                applyCancellationToken);
+            result.Classes.Add(serviceTopologyResult);
+            result.CardsScanned += serviceTopologyResult.Cards;
+            result.ServiceObjectsScanned = serviceTopologyResult.Cards;
+        }
+
+        progress.Stage(operationId, "zabbix_graph_validation", "Проверка полного desired graph перед публикацией в Zabbix.");
+        var graphValidationErrors = AddZabbixTopologyDiagnostics(result, pendingPlans, progress, operationId);
+        if (!request.DryRun)
+        {
+            var blockingErrors = result.Errors
+                .Concat(graphValidationErrors)
+                .Where(error => !string.IsNullOrWhiteSpace(error))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            if (blockingErrors.Length > 0)
+            {
+                var message = "Публикация в Zabbix заблокирована: desired graph содержит ошибки. Выполните dry-run и исправьте связи/шаблоны перед записью.";
+                result.Errors.Add(message);
+                progress.Fail(operationId, "zabbix_graph_validation_failed", message);
+                return Results.Conflict(result);
+            }
+
+            progress.Stage(
+                operationId,
+                "zabbix_graph_publish",
+                publishTargets.ZabbixDirect
+                    ? "Публикация проверенного целевого графа в Zabbix: batch выполняется целиком; дерево в Zabbix может быть промежуточным до завершения."
+                    : "Публикация проверенного целевого графа в Zabbix.");
+            await PublishPendingZabbixPlansAsync(
+                request,
+                producer,
+                httpClientFactory.CreateClient(),
+                topicOptions.Value,
+                publishTargets,
+                pendingPlans,
+                operationDeduplicationKeys,
+                result,
+                progress,
+                operationId,
+                applyCancellationToken);
+        }
+        operationWatch.Stop();
+        performance.TotalMs = operationWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.TotalMs = performance.TotalMs);
         progress.Complete(operationId);
         return Results.Ok(result);
     }
     catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException)
     {
+        operationWatch.Stop();
+        performance.TotalMs = operationWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.TotalMs = performance.TotalMs);
         progress.Fail(operationId, "failed", ex.Message);
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+    catch (TaskCanceledException ex) when (!applyCancellationToken.IsCancellationRequested)
+    {
+        operationWatch.Stop();
+        performance.TotalMs = operationWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.TotalMs = performance.TotalMs);
+        var message = $"Операция применения прервана по timeout внешнего вызова: {ex.Message}";
+        progress.Fail(operationId, "timeout", message);
+        return Results.Problem(message, statusCode: StatusCodes.Status504GatewayTimeout);
+    }
+    catch (OperationCanceledException)
+    {
+        operationWatch.Stop();
+        performance.TotalMs = operationWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.TotalMs = performance.TotalMs);
+        progress.Canceled(operationId, "Операция применения отменена.");
+        return Results.StatusCode(StatusCodes.Status499ClientClosedRequest);
     }
 });
 
@@ -276,6 +362,15 @@ app.MapGet("/rules/apply-current/progress/{operationId}", (
     return snapshot is null
         ? Results.NotFound(new { error = "not_found" })
         : Results.Ok(snapshot);
+});
+
+app.MapPost("/rules/apply-current/cancel/{operationId}", (
+    string operationId,
+    ApplyCurrentRulesProgressStore progress) =>
+{
+    return progress.RequestCancel(operationId)
+        ? Results.Ok(new { operationId, status = "cancel_requested" })
+        : Results.NotFound(new { error = "not_found", operationId });
 });
 
 app.MapGet("/integrations/check", async (
@@ -409,6 +504,1038 @@ static CmdbRawEvent BuildApplyCurrentRawEvent(
     };
 }
 
+static bool ShouldPublishServiceTopology(ApplyCurrentRulesRequest request, PublishTargets targets)
+{
+    if (!targets.Zabbix && !targets.ZabbixDirect)
+    {
+        return false;
+    }
+
+    var layers = new HashSet<string>(
+        (request.Layers ?? [])
+            .Select(item => item.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item)),
+        StringComparer.OrdinalIgnoreCase);
+    return layers.Count == 0 || layers.Contains("service");
+}
+
+static void AddPublishPerformance(
+    ApplyCurrentRulesPerformance performance,
+    ApplyCurrentRulesProgressStore progress,
+    string operationId,
+    bool zabbixDirect,
+    long elapsedMs,
+    bool serviceTopology)
+{
+    performance.PublishMs += elapsedMs;
+    if (serviceTopology)
+    {
+        performance.ServiceTopologyPublishMs += elapsedMs;
+    }
+
+    if (zabbixDirect)
+    {
+        performance.DirectZabbixApplyMs += elapsedMs;
+        performance.DirectZabbixApplyCalls++;
+    }
+    else
+    {
+        performance.KafkaPublishMs += elapsedMs;
+        performance.KafkaPublishCalls++;
+    }
+
+    progress.AddPerformance(operationId, item =>
+    {
+        item.PublishMs += elapsedMs;
+        if (serviceTopology)
+        {
+            item.ServiceTopologyPublishMs += elapsedMs;
+        }
+
+        if (zabbixDirect)
+        {
+            item.DirectZabbixApplyMs += elapsedMs;
+            item.DirectZabbixApplyCalls++;
+        }
+        else
+        {
+            item.KafkaPublishMs += elapsedMs;
+            item.KafkaPublishCalls++;
+        }
+    });
+}
+
+static IReadOnlyList<string> AddZabbixTopologyDiagnostics(
+    ApplyCurrentRulesResult result,
+    IReadOnlyList<PendingApplyCurrentPlan> pendingPlans,
+    ApplyCurrentRulesProgressStore progress,
+    string operationId)
+{
+    if (!result.CommandsByLayer.ContainsKey("service"))
+    {
+        return [];
+    }
+
+    var messages = new List<string>();
+    var orphanVisibleNodes = result.ZabbixPlan.OrphanVisibleNodes();
+    if (orphanVisibleNodes.Count > 0)
+    {
+        messages.Add(
+            $"Zabbix service topology: {orphanVisibleNodes.Count} видимых managed-узлов не имеют parent в desired graph и попадут в корень Zabbix Services. "
+            + string.Join("; ", orphanVisibleNodes
+                .Take(10)
+                .Select(item => $"{item.Name} ({item.ClassCode}, role={item.Role}, key={item.ManagedKey})")));
+    }
+
+    foreach (var cycle in FindZabbixServiceGraphCycles(pendingPlans))
+    {
+        messages.Add($"Zabbix service topology: обнаружен цикл desired graph: {cycle}.");
+    }
+
+    foreach (var duplicate in FindConflictingZabbixManagedKeys(pendingPlans))
+    {
+        messages.Add($"Zabbix service topology: managed key используется для разных объектов: {duplicate}.");
+    }
+
+    foreach (var message in messages.Distinct(StringComparer.Ordinal))
+    {
+        result.Errors.Add(message);
+        progress.AddError(operationId, message);
+    }
+
+    return messages;
+}
+
+static void TrackPendingZabbixPlan(
+    ICollection<PendingApplyCurrentPlan> pendingPlans,
+    AggregationCommandPlan plan,
+    ApplyCurrentRulesClassResult classResult,
+    ApplyCurrentRulesResult result,
+    ApplyCurrentRulesProgressStore progress,
+    string operationId,
+    bool serviceTopology)
+{
+    result.ZabbixPlan.Add(plan.Command);
+    progress.AddPlannedCommand(operationId, plan.Command);
+    pendingPlans.Add(new PendingApplyCurrentPlan(plan, classResult, serviceTopology));
+    Increment(result.CommandsByLayer, plan.Command.Layer);
+    if (result.SampleCommands.Count >= 20)
+    {
+        return;
+    }
+
+    result.SampleCommands.Add(new ApplyCurrentRulesCommandSample
+    {
+        RuleId = plan.Command.RuleId,
+        Layer = plan.Command.Layer,
+        SourceClass = plan.Command.Source.ClassCode,
+        SourceCardId = plan.Command.Source.CardId,
+        SourceKeyAttribute = plan.Command.Source.KeyAttribute,
+        SourceKeyValue = plan.Command.Source.KeyValue,
+        SourceZabbixHostId = plan.Command.Source.ZabbixHostId,
+        TargetClass = plan.Command.Target.ClassCode,
+        TargetKey = !string.IsNullOrWhiteSpace(plan.Command.Target.IdempotencyKey)
+            ? plan.Command.Target.IdempotencyKey
+            : plan.Command.Target.CardId
+    });
+}
+
+static async Task PublishPendingZabbixPlansAsync(
+    ApplyCurrentRulesRequest request,
+    KafkaJsonProducer producer,
+    HttpClient httpClient,
+    KafkaTopicsOptions topicOptions,
+    PublishTargets publishTargets,
+    IReadOnlyList<PendingApplyCurrentPlan> pendingPlans,
+    ISet<string> operationDeduplicationKeys,
+    ApplyCurrentRulesResult result,
+    ApplyCurrentRulesProgressStore progress,
+    string operationId,
+    CancellationToken cancellationToken)
+{
+    var orderedPlans = PrepareZabbixGraphPublishPlans(pendingPlans);
+    if (publishTargets.ZabbixDirect)
+    {
+        var graphPlans = new List<PendingApplyCurrentPlan>();
+        foreach (var pending in orderedPlans)
+        {
+            if (ShouldSkipOperationDuplicate(pending.Plan, publishTargets, operationDeduplicationKeys))
+            {
+                pending.ClassResult.CommandsSkippedAsDuplicates++;
+                result.CommandsSkippedAsDuplicates++;
+                progress.AddDuplicate(operationId);
+                continue;
+            }
+
+            graphPlans.Add(pending);
+        }
+
+        foreach (var layerGroup in graphPlans.GroupBy(item => item.Plan.Command.Layer, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var publishWatch = Stopwatch.StartNew();
+            var publishedTopics = await ApplyZabbixGraphDirectAsync(
+                httpClient,
+                request.ZabbixCommandApplyUrl,
+                layerGroup.Key,
+                layerGroup.Select(item => item.Plan.Command).ToArray(),
+                cancellationToken);
+            publishWatch.Stop();
+            var serviceTopology = layerGroup.Any(item => item.ServiceTopology);
+            AddPublishPerformance(
+                result.Performance,
+                progress,
+                operationId,
+                zabbixDirect: true,
+                publishWatch.ElapsedMilliseconds,
+                serviceTopology);
+            foreach (var pending in layerGroup)
+            {
+                pending.ClassResult.CommandsPublished++;
+                result.CommandsPublished++;
+                result.CommandsAppliedDirect++;
+                progress.AddPublished(operationId, publishedTopics);
+                foreach (var topic in publishedTopics)
+                {
+                    Increment(result.CommandsPublishedByTopic, topic);
+                }
+            }
+        }
+
+        return;
+    }
+
+    foreach (var pending in orderedPlans)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var plan = pending.Plan;
+        if (ShouldSkipOperationDuplicate(plan, publishTargets, operationDeduplicationKeys))
+        {
+            pending.ClassResult.CommandsSkippedAsDuplicates++;
+            result.CommandsSkippedAsDuplicates++;
+            progress.AddDuplicate(operationId);
+            continue;
+        }
+
+        var publishWatch = Stopwatch.StartNew();
+        var publishedTopics = await PublishAggregationPlanAsync(
+            producer,
+            topicOptions,
+            plan,
+            publishTargets,
+            cancellationToken);
+        publishWatch.Stop();
+        AddPublishPerformance(
+            result.Performance,
+            progress,
+            operationId,
+            publishTargets.ZabbixDirect,
+            publishWatch.ElapsedMilliseconds,
+            pending.ServiceTopology);
+        pending.ClassResult.CommandsPublished++;
+        result.CommandsPublished++;
+        if (publishTargets.ZabbixDirect)
+        {
+            result.CommandsAppliedDirect++;
+        }
+
+        progress.AddPublished(operationId, publishedTopics);
+        foreach (var topic in publishedTopics)
+        {
+            Increment(result.CommandsPublishedByTopic, topic);
+        }
+    }
+}
+
+static IReadOnlyList<PendingApplyCurrentPlan> PrepareZabbixGraphPublishPlans(
+    IReadOnlyList<PendingApplyCurrentPlan> pendingPlans)
+{
+    var servicePlans = pendingPlans
+        .Where(item => string.Equals(item.Plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+    var parentKeysByManagedKey = BuildParentKeysByManagedKey(servicePlans);
+    var enriched = pendingPlans
+        .Select(item => AttachParentManagedKeys(item, parentKeysByManagedKey))
+        .ToArray();
+    var depths = CalculateZabbixServiceGraphDepths(enriched, parentKeysByManagedKey);
+
+    return enriched
+        .Select((item, index) => new { item, index })
+        .OrderBy(pair => string.Equals(pair.item.Plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase)
+            ? depths.GetValueOrDefault(ZabbixManagedServiceMapper.ManagedKey(pair.item.Plan.Command.Target), 0)
+            : 0)
+        .ThenBy(pair => pair.index)
+        .Select(pair => pair.item)
+        .ToArray();
+}
+
+static PendingApplyCurrentPlan AttachParentManagedKeys(
+    PendingApplyCurrentPlan pending,
+    IReadOnlyDictionary<string, HashSet<string>> parentKeysByManagedKey)
+{
+    if (!string.Equals(pending.Plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase))
+    {
+        return pending;
+    }
+
+    var managedKey = ZabbixManagedServiceMapper.ManagedKey(pending.Plan.Command.Target);
+    if (string.IsNullOrWhiteSpace(managedKey)
+        || !parentKeysByManagedKey.TryGetValue(managedKey, out var parentKeys)
+        || parentKeys.Count == 0)
+    {
+        return pending;
+    }
+
+    var target = pending.Plan.Command.Target with
+    {
+        ParentManagedKeys = pending.Plan.Command.Target.ParentManagedKeys
+            .Concat(parentKeys)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray()
+    };
+    var command = pending.Plan.Command with { Target = target };
+    return pending with { Plan = pending.Plan with { Command = command } };
+}
+
+static Dictionary<string, HashSet<string>> BuildParentKeysByManagedKey(
+    IReadOnlyList<PendingApplyCurrentPlan> servicePlans)
+{
+    var knownKeys = servicePlans
+        .Select(item => ZabbixManagedServiceMapper.ManagedKey(item.Plan.Command.Target))
+        .Where(key => !string.IsNullOrWhiteSpace(key))
+        .ToHashSet(StringComparer.Ordinal);
+    var result = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+    foreach (var plan in servicePlans)
+    {
+        var parentKey = ZabbixManagedServiceMapper.ManagedKey(plan.Plan.Command.Target);
+        if (string.IsNullOrWhiteSpace(parentKey))
+        {
+            continue;
+        }
+
+        foreach (var relation in plan.Plan.Command.Target.Relations)
+        {
+            var childKey = ZabbixManagedServiceMapper
+                .LookupCandidates(relation.TargetClassCode, relation.TargetLookup)
+                .FirstOrDefault(knownKeys.Contains);
+            if (string.IsNullOrWhiteSpace(childKey) || string.Equals(childKey, parentKey, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!result.TryGetValue(childKey, out var parents))
+            {
+                parents = new HashSet<string>(StringComparer.Ordinal);
+                result[childKey] = parents;
+            }
+
+            parents.Add(parentKey);
+        }
+    }
+
+    return result;
+}
+
+static Dictionary<string, int> CalculateZabbixServiceGraphDepths(
+    IReadOnlyList<PendingApplyCurrentPlan> plans,
+    IReadOnlyDictionary<string, HashSet<string>> parentKeysByManagedKey)
+{
+    var keys = plans
+        .Where(item => string.Equals(item.Plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase))
+        .Select(item => ZabbixManagedServiceMapper.ManagedKey(item.Plan.Command.Target))
+        .Where(key => !string.IsNullOrWhiteSpace(key))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+    var depths = new Dictionary<string, int>(StringComparer.Ordinal);
+    var visiting = new HashSet<string>(StringComparer.Ordinal);
+
+    int Depth(string key)
+    {
+        if (depths.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        if (!visiting.Add(key))
+        {
+            return 0;
+        }
+
+        var depth = 0;
+        if (parentKeysByManagedKey.TryGetValue(key, out var parents))
+        {
+            depth = parents
+                .Where(parent => !string.Equals(parent, key, StringComparison.Ordinal))
+                .Select(parent => Depth(parent) + 1)
+                .DefaultIfEmpty(0)
+                .Max();
+        }
+
+        visiting.Remove(key);
+        depths[key] = depth;
+        return depth;
+    }
+
+    foreach (var key in keys)
+    {
+        Depth(key);
+    }
+
+    return depths;
+}
+
+static IReadOnlyList<string> FindZabbixServiceGraphCycles(
+    IReadOnlyList<PendingApplyCurrentPlan> pendingPlans)
+{
+    var servicePlans = pendingPlans
+        .Where(item => string.Equals(item.Plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+    var parentKeysByManagedKey = BuildParentKeysByManagedKey(servicePlans);
+    if (parentKeysByManagedKey.Count == 0)
+    {
+        return [];
+    }
+
+    var childrenByParent = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+    foreach (var (child, parents) in parentKeysByManagedKey)
+    {
+        foreach (var parent in parents)
+        {
+            if (!childrenByParent.TryGetValue(parent, out var children))
+            {
+                children = new HashSet<string>(StringComparer.Ordinal);
+                childrenByParent[parent] = children;
+            }
+
+            children.Add(child);
+        }
+    }
+
+    var cycles = new List<string>();
+    var visited = new HashSet<string>(StringComparer.Ordinal);
+    var stack = new List<string>();
+    var inStack = new HashSet<string>(StringComparer.Ordinal);
+
+    void Visit(string key)
+    {
+        if (cycles.Count >= 10)
+        {
+            return;
+        }
+
+        if (inStack.Contains(key))
+        {
+            var start = stack.IndexOf(key);
+            if (start >= 0)
+            {
+                cycles.Add(string.Join(" -> ", stack.Skip(start).Concat([key])));
+            }
+            return;
+        }
+
+        if (!visited.Add(key))
+        {
+            return;
+        }
+
+        stack.Add(key);
+        inStack.Add(key);
+        if (childrenByParent.TryGetValue(key, out var children))
+        {
+            foreach (var child in children)
+            {
+                Visit(child);
+            }
+        }
+
+        inStack.Remove(key);
+        stack.RemoveAt(stack.Count - 1);
+    }
+
+    foreach (var key in childrenByParent.Keys.OrderBy(key => key, StringComparer.Ordinal))
+    {
+        Visit(key);
+    }
+
+    return cycles
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+}
+
+static IReadOnlyList<string> FindConflictingZabbixManagedKeys(
+    IReadOnlyList<PendingApplyCurrentPlan> pendingPlans)
+{
+    return pendingPlans
+        .Where(item => string.Equals(item.Plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase))
+        .GroupBy(item => ZabbixManagedServiceMapper.ManagedKey(item.Plan.Command.Target), StringComparer.Ordinal)
+        .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+        .Select(group => new
+        {
+            ManagedKey = group.Key,
+            Targets = group
+                .Select(item => item.Plan.Command.Target.ClassCode)
+                .Distinct(StringComparer.Ordinal)
+                .Take(5)
+                .ToArray()
+        })
+        .Where(group => group.Targets.Length > 1)
+        .Select(group => $"{group.ManagedKey}: {string.Join("; ", group.Targets)}")
+        .Take(10)
+        .ToArray();
+}
+
+static async Task<ApplyCurrentRulesClassResult> ApplyServiceTopologyAsync(
+    ApplyCurrentRulesRequest request,
+    CmdbuildClient cmdbuild,
+    KafkaJsonProducer producer,
+    HttpClient httpClient,
+    KafkaTopicsOptions topicOptions,
+    ConversionRulesOptions conversionRulesOptions,
+    IHostEnvironment environment,
+    PublishTargets publishTargets,
+    string operationId,
+    ApplyCurrentRulesProgressStore progress,
+    ApplyCurrentRulesResult result,
+    ConversionRulesDocument rules,
+    ICollection<PendingApplyCurrentPlan> pendingPlans,
+    ISet<string> operationDeduplicationKeys,
+    CancellationToken cancellationToken)
+{
+    var classResult = new ApplyCurrentRulesClassResult
+    {
+        SourceClass = "service_objects"
+    };
+
+    try
+    {
+        var buildTopologyWatch = Stopwatch.StartNew();
+        var plans = await BuildServiceTopologyCommandPlansAsync(
+            cmdbuild,
+            request,
+            rules,
+            conversionRulesOptions,
+            environment,
+            cancellationToken);
+        buildTopologyWatch.Stop();
+        result.Performance.ServiceTopologyBuildMs += buildTopologyWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.ServiceTopologyBuildMs += buildTopologyWatch.ElapsedMilliseconds);
+        classResult.Cards = plans.Count;
+        classResult.CommandsBuilt = plans.Count;
+        result.CommandsBuilt += plans.Count;
+        progress.AddCommandsBuilt(operationId, plans.Count);
+
+        foreach (var plan in plans)
+        {
+            TrackPendingZabbixPlan(
+                pendingPlans,
+                plan,
+                classResult,
+                result,
+                progress,
+                operationId,
+                serviceTopology: true);
+        }
+    }
+    catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+        && ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+    {
+        classResult.Error = ex.Message;
+        result.Errors.Add($"service_objects: {ex.Message}");
+        progress.AddError(operationId, $"service_objects: {ex.Message}");
+    }
+
+    return classResult;
+}
+
+static async Task<IReadOnlyList<AggregationCommandPlan>> BuildServiceTopologyCommandPlansAsync(
+    CmdbuildClient cmdbuild,
+    ApplyCurrentRulesRequest request,
+    ConversionRulesDocument rules,
+    ConversionRulesOptions conversionRulesOptions,
+    IHostEnvironment environment,
+    CancellationToken cancellationToken)
+{
+    var catalog = await cmdbuild.ListManagedLayerClassInstancesAsync(
+        request.CmdbuildPrefix,
+        "Service",
+        request.ServiceModelRoot,
+        item => IsManualServiceObjectClass(request.CmdbuildPrefix, item.Code),
+        cancellationToken);
+    var serviceObjects = catalog.Classes
+        .SelectMany(item => item.Cards.Select(card => new ServiceTopologyCard(item.ClassCode, card)))
+        .ToArray();
+    if (serviceObjects.Length == 0)
+    {
+        return [];
+    }
+
+    var serviceObjectKeys = serviceObjects
+        .Select(item => CardRefKey(item.ClassCode, item.Card.Id))
+        .ToHashSet(StringComparer.Ordinal);
+
+    var domains = await cmdbuild.ListDomainsAsync(request.CmdbuildPrefix, cancellationToken);
+    var domainByCode = domains
+        .GroupBy(domain => domain.Code, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+    var relationsCatalog = await cmdbuild.ListDomainRelationsAsync(
+        request.CmdbuildPrefix,
+        domain => ServiceTopologyDirection(request.CmdbuildPrefix, domain.Code) != ServiceTopologyRelationDirection.Skip,
+        cancellationToken);
+    var relationsByParent = BuildServiceTopologyRelations(
+        request.CmdbuildPrefix,
+        relationsCatalog.Relations,
+        domainByCode,
+        serviceObjectKeys);
+    var templateRelations = await LoadServiceObjectTemplateRelationsAsync(
+        conversionRulesOptions,
+        environment,
+        cancellationToken);
+    AddServiceObjectTemplateRelations(
+        relationsByParent,
+        templateRelations,
+        rules,
+        serviceObjectKeys);
+    NormalizeRelations(relationsByParent);
+
+    var plans = serviceObjects
+        .Select(item => BuildServiceTopologyCommandPlan(
+            item,
+            relationsByParent.TryGetValue(CardRefKey(item.ClassCode, item.Card.Id), out var relations)
+                ? relations
+                : []))
+        .ToArray();
+    return SortServiceTopologyPlans(plans);
+}
+
+static Dictionary<string, List<AggregationTargetRelation>> BuildServiceTopologyRelations(
+    string prefix,
+    IReadOnlyList<CmdbuildDomainRelationCatalogItem> relations,
+    IReadOnlyDictionary<string, CmdbuildDomainCatalogItem> domainByCode,
+    IReadOnlySet<string> serviceObjectKeys)
+{
+    var byParent = new Dictionary<string, List<AggregationTargetRelation>>(StringComparer.Ordinal);
+    foreach (var relation in relations)
+    {
+        if (!domainByCode.TryGetValue(relation.DomainCode, out var domain))
+        {
+            continue;
+        }
+
+        var sourceKey = CardRefKey(relation.SourceType, relation.SourceId);
+        var destinationKey = CardRefKey(relation.DestinationType, relation.DestinationId);
+        var direction = ServiceTopologyDirection(prefix, domain.Code);
+        if (direction == ServiceTopologyRelationDirection.Skip)
+        {
+            continue;
+        }
+
+        var parentClass = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.SourceType
+            : relation.DestinationType;
+        var parentId = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.SourceId
+            : relation.DestinationId;
+        var childClass = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.DestinationType
+            : relation.SourceType;
+        var childId = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.DestinationId
+            : relation.SourceId;
+        if (string.Equals(parentClass, childClass, StringComparison.Ordinal)
+            && string.Equals(parentId, childId, StringComparison.Ordinal))
+        {
+            continue;
+        }
+
+        var parentKey = CardRefKey(parentClass, parentId);
+        if (!serviceObjectKeys.Contains(parentKey))
+        {
+            continue;
+        }
+
+        if (!byParent.TryGetValue(parentKey, out var parentRelations))
+        {
+            parentRelations = [];
+            byParent[parentKey] = parentRelations;
+        }
+
+        parentRelations.Add(new AggregationTargetRelation
+        {
+            DomainCode = domain.Code,
+            TargetClassCode = childClass,
+            TargetLookup = childId
+        });
+    }
+
+    foreach (var pair in byParent)
+    {
+        byParent[pair.Key] = pair.Value
+            .DistinctBy(item => $"{item.DomainCode}\u001f{item.TargetClassCode}\u001f{item.TargetLookup}", StringComparer.Ordinal)
+            .OrderBy(item => item.TargetClassCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TargetLookup, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    return byParent;
+}
+
+static async Task<IReadOnlyList<ServiceObjectTemplateRelationIntent>> LoadServiceObjectTemplateRelationsAsync(
+    ConversionRulesOptions options,
+    IHostEnvironment environment,
+    CancellationToken cancellationToken)
+{
+    var path = ResolveServiceTemplatesPath(options, environment);
+    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+    {
+        return [];
+    }
+
+    await using var stream = File.OpenRead(path);
+    var document = await JsonSerializer.DeserializeAsync<ServiceTemplateRelationsDocument>(
+        stream,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web),
+        cancellationToken);
+    return document?.ServiceObjectTemplateRelations ?? [];
+}
+
+static string ResolveServiceTemplatesPath(ConversionRulesOptions options, IHostEnvironment environment)
+{
+    foreach (var candidate in ServiceTemplatePathCandidates(options, environment))
+    {
+        var fullPath = Path.GetFullPath(candidate);
+        if (File.Exists(fullPath))
+        {
+            return fullPath;
+        }
+    }
+
+    return "";
+}
+
+static IEnumerable<string> ServiceTemplatePathCandidates(ConversionRulesOptions options, IHostEnvironment environment)
+{
+    if (!string.IsNullOrWhiteSpace(options.ServiceTemplatesFilePath))
+    {
+        yield return options.ServiceTemplatesFilePath;
+    }
+
+    var rulePath = options.FilePath ?? "";
+    if (!string.IsNullOrWhiteSpace(rulePath))
+    {
+        var ruleDirectory = Path.GetDirectoryName(rulePath);
+        if (!string.IsNullOrWhiteSpace(ruleDirectory))
+        {
+            yield return Path.Combine(ruleDirectory, "service-templates.json");
+        }
+    }
+
+    foreach (var basePath in CandidateBasePaths(environment))
+    {
+        if (!string.IsNullOrWhiteSpace(options.ServiceTemplatesFilePath)
+            && !Path.IsPathRooted(options.ServiceTemplatesFilePath))
+        {
+            yield return Path.Combine(basePath, options.ServiceTemplatesFilePath);
+        }
+
+        yield return Path.Combine(basePath, "state/conversion-config/service-templates.json");
+        yield return Path.Combine(basePath, "rules/service-templates.json");
+    }
+}
+
+static IEnumerable<string> CandidateBasePaths(IHostEnvironment environment)
+{
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var start in new[] { environment.ContentRootPath, Environment.CurrentDirectory })
+    {
+        var directory = new DirectoryInfo(Path.GetFullPath(start));
+        while (directory is not null)
+        {
+            if (seen.Add(directory.FullName))
+            {
+                yield return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+    }
+}
+
+static void AddServiceObjectTemplateRelations(
+    Dictionary<string, List<AggregationTargetRelation>> relationsByParent,
+    IReadOnlyList<ServiceObjectTemplateRelationIntent> templateRelations,
+    ConversionRulesDocument rules,
+    IReadOnlySet<string> serviceObjectKeys)
+{
+    if (templateRelations.Count == 0)
+    {
+        return;
+    }
+
+    var generatedRules = rules.Rules
+        .Where(rule => rule.Enabled
+            && string.Equals(rule.Layer, "service", StringComparison.OrdinalIgnoreCase))
+        .Select(rule => new
+        {
+            Rule = rule,
+            TemplateId = FirstNonEmpty(rule.TemplateGeneration.TemplateId, rule.GeneratedFromTemplate),
+            ManagedKey = RuleTargetManagedKey(rule.Target)
+        })
+        .Where(item => !string.IsNullOrWhiteSpace(item.TemplateId)
+            && !string.IsNullOrWhiteSpace(item.Rule.Target.ClassCode)
+            && !string.IsNullOrWhiteSpace(item.ManagedKey))
+        .ToArray();
+
+    foreach (var relation in templateRelations)
+    {
+        if (!relation.TargetType.Equals("service_template", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(relation.SourceClassCode)
+            || string.IsNullOrWhiteSpace(relation.SourceCardId)
+            || string.IsNullOrWhiteSpace(relation.TargetTemplateId))
+        {
+            continue;
+        }
+
+        var parentKey = CardRefKey(relation.SourceClassCode, relation.SourceCardId);
+        if (!serviceObjectKeys.Contains(parentKey))
+        {
+            continue;
+        }
+
+        if (!relationsByParent.TryGetValue(parentKey, out var parentRelations))
+        {
+            parentRelations = [];
+            relationsByParent[parentKey] = parentRelations;
+        }
+
+        foreach (var target in generatedRules.Where(item =>
+            item.TemplateId.Equals(relation.TargetTemplateId, StringComparison.Ordinal)
+            && (string.IsNullOrWhiteSpace(relation.TargetClassCode)
+                || item.Rule.Target.ClassCode.Equals(relation.TargetClassCode, StringComparison.Ordinal))))
+        {
+            parentRelations.Add(new AggregationTargetRelation
+            {
+                DomainCode = FirstNonEmpty(relation.RelationType, relation.RelationKind, relation.RelationId),
+                TargetClassCode = target.Rule.Target.ClassCode,
+                TargetLookup = target.ManagedKey
+            });
+        }
+    }
+}
+
+static void NormalizeRelations(Dictionary<string, List<AggregationTargetRelation>> relationsByParent)
+{
+    foreach (var pair in relationsByParent.ToArray())
+    {
+        relationsByParent[pair.Key] = pair.Value
+            .Where(item => !string.IsNullOrWhiteSpace(item.TargetClassCode)
+                && !string.IsNullOrWhiteSpace(item.TargetLookup))
+            .DistinctBy(item => $"{item.DomainCode}\u001f{item.TargetClassCode}\u001f{item.TargetLookup}", StringComparer.Ordinal)
+            .OrderBy(item => item.TargetClassCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TargetLookup, StringComparer.Ordinal)
+            .ToList();
+    }
+}
+
+static string RuleTargetManagedKey(TargetObject target)
+{
+    if (!string.IsNullOrWhiteSpace(target.IdempotencyKey))
+    {
+        return target.IdempotencyKey;
+    }
+
+    if (!string.IsNullOrWhiteSpace(target.CardId) && !string.IsNullOrWhiteSpace(target.ClassCode))
+    {
+        return $"cmdbuild:{target.ClassCode}:{target.CardId}";
+    }
+
+    return string.IsNullOrWhiteSpace(target.ClassCode)
+        ? target.CardId
+        : $"{target.ClassCode}:{target.CardId}";
+}
+
+static string FirstNonEmpty(params string?[] values)
+{
+    foreach (var value in values)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value.Trim();
+        }
+    }
+
+    return "";
+}
+
+static AggregationCommandPlan BuildServiceTopologyCommandPlan(
+    ServiceTopologyCard item,
+    IReadOnlyList<AggregationTargetRelation> relations)
+{
+    var attributes = ServiceCardAttributes(item.Card);
+    var displayName = ServiceCardDisplayName(item.Card);
+    var command = new AggregationCommand
+    {
+        CommandId = $"service-topology-{item.ClassCode}-{item.Card.Id}-{Guid.NewGuid():N}",
+        CorrelationId = $"service-topology-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}",
+        SourceEventId = $"service-topology-{item.ClassCode}-{item.Card.Id}",
+        CommandType = AggregationCommandTypes.EnsureMembership,
+        Layer = "service",
+        RuleId = $"service-object-{item.ClassCode}-{item.Card.Id}",
+        RuleName = string.IsNullOrWhiteSpace(displayName)
+            ? $"Сервисный объект {item.ClassCode}/{item.Card.Id}"
+            : displayName,
+        EventType = "UPDATE",
+        Source = new AggregationSourceObject(),
+        Target = new AggregationTargetObject
+        {
+            ClassCode = item.ClassCode,
+            CardId = item.Card.Id,
+            CardDescription = displayName,
+            CreateInstance = false,
+            Attributes = attributes,
+            Relations = relations
+        }
+    };
+    var semanticKey = $"service-topology:{item.ClassCode}:{item.Card.Id}";
+    var semanticFingerprint = string.Join(
+        "\n",
+        semanticKey,
+        string.Join("|", relations.Select(relation => $"{relation.DomainCode}:{relation.TargetClassCode}:{relation.TargetLookup}")));
+    return new AggregationCommandPlan
+    {
+        Command = command,
+        SemanticKey = semanticKey,
+        SemanticFingerprint = semanticFingerprint
+    };
+}
+
+static IReadOnlyList<AggregationCommandPlan> SortServiceTopologyPlans(IReadOnlyList<AggregationCommandPlan> plans)
+{
+    var byKey = plans
+        .GroupBy(plan => CardRefKey(plan.Command.Target.ClassCode, plan.Command.Target.CardId), StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+    var depthCache = new Dictionary<string, int>(StringComparer.Ordinal);
+    return plans
+        .OrderBy(plan => ServiceTopologyDepth(plan, byKey, depthCache, []))
+        .ThenBy(plan => plan.Command.Target.CardDescription, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(plan => plan.Command.Target.CardId, StringComparer.Ordinal)
+        .ToArray();
+}
+
+static int ServiceTopologyDepth(
+    AggregationCommandPlan plan,
+    IReadOnlyDictionary<string, AggregationCommandPlan> byKey,
+    Dictionary<string, int> depthCache,
+    HashSet<string> visiting)
+{
+    var key = CardRefKey(plan.Command.Target.ClassCode, plan.Command.Target.CardId);
+    if (depthCache.TryGetValue(key, out var cached))
+    {
+        return cached;
+    }
+
+    if (!visiting.Add(key))
+    {
+        return 0;
+    }
+
+    var childDepth = 0;
+    foreach (var relation in plan.Command.Target.Relations)
+    {
+        var childKey = CardRefKey(relation.TargetClassCode, relation.TargetLookup);
+        if (byKey.TryGetValue(childKey, out var childPlan))
+        {
+            childDepth = Math.Max(childDepth, ServiceTopologyDepth(childPlan, byKey, depthCache, visiting) + 1);
+        }
+    }
+
+    visiting.Remove(key);
+    depthCache[key] = childDepth;
+    return childDepth;
+}
+
+static Dictionary<string, object?> ServiceCardAttributes(CmdbuildClassCardCatalogItem card)
+{
+    var attributes = card.Attributes
+        .Where(attribute => !string.IsNullOrWhiteSpace(attribute.Code))
+        .GroupBy(attribute => attribute.Code, StringComparer.Ordinal)
+        .ToDictionary(
+            group => group.Key,
+            group => (object?)group.Last().Value,
+            StringComparer.Ordinal);
+    if (!string.IsNullOrWhiteSpace(card.Description))
+    {
+        attributes.TryAdd("Description", card.Description);
+    }
+
+    return attributes;
+}
+
+static string ServiceCardDisplayName(CmdbuildClassCardCatalogItem card)
+{
+    foreach (var name in new[] { "zabbix_service_name", "zabbix_name", "monitoring_name", "name", "Name", "Description", "description", "Code", "code" })
+    {
+        var value = card.Attributes.FirstOrDefault(attribute =>
+            attribute.Code.Equals(name, StringComparison.OrdinalIgnoreCase))?.Value;
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value.Trim();
+        }
+    }
+
+    return string.IsNullOrWhiteSpace(card.Description) ? card.Id : card.Description.Trim();
+}
+
+static ServiceTopologyRelationDirection ServiceTopologyDirection(string prefix, string domainCode)
+{
+    var baseCode = RemoveManagedPrefix(prefix, domainCode);
+    if (baseCode.Contains("HasSla", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("SlaPolicy", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("SlaCalendar", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("RegularDowntime", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("PopulatedFrom", StringComparison.OrdinalIgnoreCase))
+    {
+        return ServiceTopologyRelationDirection.Skip;
+    }
+
+    if (baseCode.Contains("AggregatesTo", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("MemberOf", StringComparison.OrdinalIgnoreCase))
+    {
+        return ServiceTopologyRelationDirection.SourceChildDestinationParent;
+    }
+
+    if (baseCode.Contains("DependsOn", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("Uses", StringComparison.OrdinalIgnoreCase))
+    {
+        return ServiceTopologyRelationDirection.SourceParentDestinationChild;
+    }
+
+    return ServiceTopologyRelationDirection.Skip;
+}
+
+static bool IsManualServiceObjectClass(string prefix, string classCode)
+{
+    return RemoveManagedPrefix(prefix, classCode)
+        .Equals("ServicePlatformService", StringComparison.OrdinalIgnoreCase);
+}
+
+static string RemoveManagedPrefix(string prefix, string code)
+{
+    if (!string.IsNullOrWhiteSpace(prefix)
+        && code.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+    {
+        return code[prefix.Length..];
+    }
+
+    return code;
+}
+
+static string CardRefKey(string classCode, string cardId)
+{
+    return $"{classCode}\u001f{cardId}";
+}
+
 static void Increment(IDictionary<string, int> values, string key)
 {
     var normalizedKey = string.IsNullOrWhiteSpace(key) ? "unknown" : key.Trim();
@@ -436,7 +1563,8 @@ static PublishTargets ResolvePublishTargets(IReadOnlyList<string> targets)
 
     return new PublishTargets(
         Aggregation: normalized.Contains("aggregation") || normalized.Contains("cmdbuild"),
-        Zabbix: normalized.Contains("zabbix"));
+        Zabbix: normalized.Contains("zabbix"),
+        ZabbixDirect: normalized.Contains("zabbix-direct") || normalized.Contains("zabbix_direct"));
 }
 
 static IReadOnlyList<string> PublishTopicsForRequest(
@@ -460,6 +1588,11 @@ static IReadOnlyList<string> PublishTopicsForRequest(
                 result.Add(topic);
             }
         }
+    }
+
+    if (targets.ZabbixDirect)
+    {
+        result.Add("zabbix-direct");
     }
 
     return result
@@ -507,10 +1640,132 @@ static IReadOnlyList<string> PublishTopicsForCommand(
         result.Add(options.EffectiveZabbixApplyPlans(command.Layer));
     }
 
+    if (targets.ZabbixDirect)
+    {
+        result.Add("zabbix-direct");
+    }
+
     return result
         .Where(topic => !string.IsNullOrWhiteSpace(topic))
         .Distinct(StringComparer.Ordinal)
         .ToArray();
+}
+
+static async Task<IReadOnlyList<string>> ApplyZabbixGraphDirectAsync(
+    HttpClient client,
+    string? applyUrl,
+    string layer,
+    IReadOnlyList<AggregationCommand> commands,
+    CancellationToken cancellationToken)
+{
+    if (string.IsNullOrWhiteSpace(applyUrl))
+    {
+        throw new InvalidOperationException(
+            "Zabbix direct apply URL is not configured; set backend.zabbixCommandApplyUrl in monitoring-ui-api.");
+    }
+
+    client.Timeout = Timeout.InfiniteTimeSpan;
+    var graphApplyUrl = ResolveZabbixGraphApplyUrl(applyUrl);
+    using var request = new HttpRequestMessage(HttpMethod.Post, graphApplyUrl)
+    {
+        Content = new StringContent(
+            JsonSerializer.Serialize(new
+            {
+                layer,
+                commands,
+                dryRun = false
+            }),
+            Encoding.UTF8,
+            "application/json")
+    };
+    using var response = await client.SendAsync(request, cancellationToken);
+    var text = await response.Content.ReadAsStringAsync(cancellationToken);
+    if (!response.IsSuccessStatusCode)
+    {
+        throw new InvalidOperationException($"Zabbix direct graph apply failed: HTTP {(int)response.StatusCode}: {Trim(text)}");
+    }
+
+    if (!string.IsNullOrWhiteSpace(text))
+    {
+        using var document = JsonDocument.Parse(text);
+        var status = ReadJsonString(document.RootElement, "status");
+        var error = ReadJsonString(document.RootElement, "error");
+        var firstError = ReadFirstJsonString(document.RootElement, "errors");
+        if (string.Equals(status, "error", StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(error)
+            || !string.IsNullOrWhiteSpace(firstError))
+        {
+            var message = firstError
+                ?? error
+                ?? ReadJsonString(document.RootElement, "message")
+                ?? "Zabbix direct graph apply returned error status.";
+            throw new InvalidOperationException(message);
+        }
+    }
+
+    return ["zabbix-direct-graph"];
+}
+
+static string ResolveZabbixGraphApplyUrl(string applyUrl)
+{
+    var value = applyUrl.Trim();
+    if (value.EndsWith("/commands/apply-graph", StringComparison.OrdinalIgnoreCase))
+    {
+        return value;
+    }
+
+    const string singleEndpoint = "/commands/apply";
+    if (value.EndsWith(singleEndpoint, StringComparison.OrdinalIgnoreCase))
+    {
+        return value[..^singleEndpoint.Length] + "/commands/apply-graph";
+    }
+
+    return value.TrimEnd('/') + "/commands/apply-graph";
+}
+
+static string? ReadJsonString(JsonElement element, string propertyName)
+{
+    if (element.ValueKind != JsonValueKind.Object
+        || !element.TryGetProperty(propertyName, out var value))
+    {
+        return null;
+    }
+
+    return value.ValueKind == JsonValueKind.String
+        ? value.GetString()
+        : value.GetRawText();
+}
+
+static string? ReadFirstJsonString(JsonElement element, string propertyName)
+{
+    if (element.ValueKind != JsonValueKind.Object
+        || !element.TryGetProperty(propertyName, out var value)
+        || value.ValueKind != JsonValueKind.Array)
+    {
+        return null;
+    }
+
+    foreach (var item in value.EnumerateArray())
+    {
+        return item.ValueKind == JsonValueKind.String
+            ? item.GetString()
+            : item.GetRawText();
+    }
+
+    return null;
+}
+
+static string Trim(string value, int maxLength = 500)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return "";
+    }
+
+    var normalized = value.Trim();
+    return normalized.Length <= maxLength
+        ? normalized
+        : normalized[..maxLength];
 }
 
 static string CommandKafkaKey(AggregationCommand command)
@@ -554,7 +1809,7 @@ static bool ShouldSkipOperationDuplicate(
     PublishTargets targets,
     ISet<string> operationDeduplicationKeys)
 {
-    if (!targets.Zabbix || targets.Aggregation)
+    if ((!targets.Zabbix && !targets.ZabbixDirect) || targets.Aggregation)
     {
         return false;
     }
@@ -564,11 +1819,53 @@ static bool ShouldSkipOperationDuplicate(
 
 app.Run();
 
-public sealed record PublishTargets(bool Aggregation, bool Zabbix)
+public sealed record PublishTargets(bool Aggregation, bool Zabbix, bool ZabbixDirect = false)
 {
     public static PublishTargets All { get; } = new(Aggregation: true, Zabbix: true);
 
     public static PublishTargets AggregationOnly { get; } = new(Aggregation: true, Zabbix: false);
+}
+
+public enum ServiceTopologyRelationDirection
+{
+    Skip,
+    SourceParentDestinationChild,
+    SourceChildDestinationParent
+}
+
+public sealed record ServiceTopologyCard(string ClassCode, CmdbuildClassCardCatalogItem Card);
+
+public sealed record ServiceTemplateRelationsDocument
+{
+    [JsonPropertyName("serviceObjectTemplateRelations")]
+    public IReadOnlyList<ServiceObjectTemplateRelationIntent> ServiceObjectTemplateRelations { get; init; } = [];
+}
+
+public sealed record ServiceObjectTemplateRelationIntent
+{
+    [JsonPropertyName("relation_id")]
+    public string RelationId { get; init; } = "";
+
+    [JsonPropertyName("relation_kind")]
+    public string RelationKind { get; init; } = "";
+
+    [JsonPropertyName("relation_type")]
+    public string RelationType { get; init; } = "";
+
+    [JsonPropertyName("source_class_code")]
+    public string SourceClassCode { get; init; } = "";
+
+    [JsonPropertyName("source_card_id")]
+    public string SourceCardId { get; init; } = "";
+
+    [JsonPropertyName("target_type")]
+    public string TargetType { get; init; } = "";
+
+    [JsonPropertyName("target_template_id")]
+    public string TargetTemplateId { get; init; } = "";
+
+    [JsonPropertyName("target_class_code")]
+    public string TargetClassCode { get; init; } = "";
 }
 
 public sealed record ApplyCurrentRulesRequest
@@ -581,12 +1878,25 @@ public sealed record ApplyCurrentRulesRequest
 
     public IReadOnlyList<string> Targets { get; init; } = [];
 
+    public string CmdbuildPrefix { get; init; } = "";
+
+    public string ServiceModelRoot { get; init; } = "";
+
+    public string SuppressionModelRoot { get; init; } = "";
+
+    public string ZabbixCommandApplyUrl { get; init; } = "";
+
     public int MaxCardsPerClass { get; init; }
 
     public bool DryRun { get; init; }
 
     public string EventType { get; init; } = "UPDATE";
 }
+
+public sealed record PendingApplyCurrentPlan(
+    AggregationCommandPlan Plan,
+    ApplyCurrentRulesClassResult ClassResult,
+    bool ServiceTopology);
 
 public sealed class ApplyCurrentRulesResult
 {
@@ -598,21 +1908,29 @@ public sealed class ApplyCurrentRulesResult
 
     public IReadOnlyList<string> Topics { get; init; } = [];
 
+    public string ZabbixDeliveryMode { get; init; } = "";
+
     public int SourceClassCount { get; init; }
 
     public int RuleCount { get; init; }
 
     public int CardsScanned { get; set; }
 
+    public int ServiceObjectsScanned { get; set; }
+
     public int CommandsBuilt { get; set; }
 
     public int CommandsPublished { get; set; }
+
+    public int CommandsAppliedDirect { get; set; }
 
     public int CommandsSkippedAsDuplicates { get; set; }
 
     public Dictionary<string, int> CommandsByLayer { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<string, int> CommandsPublishedByTopic { get; } = new(StringComparer.Ordinal);
+
+    public ApplyCurrentRulesPerformance Performance { get; init; } = new();
 
     public ApplyCurrentRulesZabbixPlanSummary ZabbixPlan { get; } = new();
 
@@ -636,6 +1954,55 @@ public sealed class ApplyCurrentRulesClassResult
     public int CommandsSkippedAsDuplicates { get; set; }
 
     public string Error { get; set; } = "";
+}
+
+public sealed class ApplyCurrentRulesPerformance
+{
+    public long TotalMs { get; set; }
+
+    public long LoadRulesMs { get; set; }
+
+    public long ValidateRulesMs { get; set; }
+
+    public long LoadCardsMs { get; set; }
+
+    public long EnrichMs { get; set; }
+
+    public long BuildCommandsMs { get; set; }
+
+    public long PublishMs { get; set; }
+
+    public long DirectZabbixApplyMs { get; set; }
+
+    public int DirectZabbixApplyCalls { get; set; }
+
+    public long KafkaPublishMs { get; set; }
+
+    public int KafkaPublishCalls { get; set; }
+
+    public long ServiceTopologyBuildMs { get; set; }
+
+    public long ServiceTopologyPublishMs { get; set; }
+
+    public ApplyCurrentRulesPerformance Clone()
+    {
+        return new ApplyCurrentRulesPerformance
+        {
+            TotalMs = TotalMs,
+            LoadRulesMs = LoadRulesMs,
+            ValidateRulesMs = ValidateRulesMs,
+            LoadCardsMs = LoadCardsMs,
+            EnrichMs = EnrichMs,
+            BuildCommandsMs = BuildCommandsMs,
+            PublishMs = PublishMs,
+            DirectZabbixApplyMs = DirectZabbixApplyMs,
+            DirectZabbixApplyCalls = DirectZabbixApplyCalls,
+            KafkaPublishMs = KafkaPublishMs,
+            KafkaPublishCalls = KafkaPublishCalls,
+            ServiceTopologyBuildMs = ServiceTopologyBuildMs,
+            ServiceTopologyPublishMs = ServiceTopologyPublishMs
+        };
+    }
 }
 
 public sealed class ApplyCurrentRulesCommandSample
@@ -663,6 +2030,7 @@ public sealed class ApplyCurrentRulesProgressStore
 {
     private const int MaxErrors = 30;
     private readonly ConcurrentDictionary<string, ApplyCurrentRulesProgress> operations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> cancellations = new(StringComparer.OrdinalIgnoreCase);
 
     public string Start(string requestedOperationId, bool dryRun)
     {
@@ -679,8 +2047,38 @@ public sealed class ApplyCurrentRulesProgressStore
             UpdatedAtUtc = now
         };
         operations[operationId] = progress;
+        if (cancellations.TryRemove(operationId, out var previousCancellation))
+        {
+            previousCancellation.Dispose();
+        }
+
+        cancellations[operationId] = new CancellationTokenSource();
         TrimOldOperations();
         return operationId;
+    }
+
+    public CancellationTokenSource LinkCancellation(string operationId, CancellationToken requestCancellationToken)
+    {
+        return cancellations.TryGetValue(operationId, out var operationCancellation)
+            ? CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken, operationCancellation.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
+    }
+
+    public bool RequestCancel(string operationId)
+    {
+        if (!cancellations.TryGetValue(operationId, out var cancellation))
+        {
+            return false;
+        }
+
+        cancellation.Cancel();
+        Update(operationId, progress =>
+        {
+            progress.Status = "canceling";
+            progress.Stage = "cancel_requested";
+            progress.Message = "Запрошена отмена операции. Backend остановится на ближайшей безопасной точке.";
+        });
+        return true;
     }
 
     public ApplyCurrentRulesProgressSnapshot? Get(string operationId)
@@ -779,6 +2177,11 @@ public sealed class ApplyCurrentRulesProgressStore
         Update(operationId, progress => progress.CommandsSkippedAsDuplicates++);
     }
 
+    public void AddPerformance(string operationId, Action<ApplyCurrentRulesPerformance> updatePerformance)
+    {
+        Update(operationId, progress => updatePerformance(progress.Performance));
+    }
+
     public void CardProcessed(string operationId, string sourceClass, string cardId)
     {
         Update(operationId, progress =>
@@ -834,6 +2237,7 @@ public sealed class ApplyCurrentRulesProgressStore
             progress.FinishedAtUtc = DateTimeOffset.UtcNow;
             progress.Message = "Операция применения завершена.";
         });
+        DisposeCancellation(operationId);
     }
 
     public void Fail(string operationId, string stage, string error)
@@ -846,6 +2250,20 @@ public sealed class ApplyCurrentRulesProgressStore
             progress.FinishedAtUtc = DateTimeOffset.UtcNow;
             progress.Errors.Insert(0, error);
         });
+        DisposeCancellation(operationId);
+    }
+
+    public void Canceled(string operationId, string message)
+    {
+        Update(operationId, progress =>
+        {
+            progress.Status = "canceled";
+            progress.Stage = "canceled";
+            progress.Message = message;
+            progress.FinishedAtUtc = DateTimeOffset.UtcNow;
+            progress.Errors.Insert(0, message);
+        });
+        DisposeCancellation(operationId);
     }
 
     private void Update(string operationId, Action<ApplyCurrentRulesProgress> update)
@@ -875,6 +2293,15 @@ public sealed class ApplyCurrentRulesProgressStore
             .Take(Math.Max(0, operations.Count - maxOperations)))
         {
             operations.TryRemove(item.Key, out _);
+            DisposeCancellation(item.Key);
+        }
+    }
+
+    private void DisposeCancellation(string operationId)
+    {
+        if (cancellations.TryRemove(operationId, out var cancellation))
+        {
+            cancellation.Dispose();
         }
     }
 
@@ -942,6 +2369,8 @@ public sealed class ApplyCurrentRulesProgress
 
     public Dictionary<string, int> CommandsPublishedByTopic { get; } = new(StringComparer.Ordinal);
 
+    public ApplyCurrentRulesPerformance Performance { get; } = new();
+
     public ApplyCurrentRulesZabbixPlanSummary ZabbixPlan { get; } = new();
 
     public List<ApplyCurrentRulesClassProgress> CompletedClasses { get; } = [];
@@ -985,6 +2414,7 @@ public sealed class ApplyCurrentRulesProgress
             CurrentClassCardsProcessed = CurrentClassCardsProcessed,
             CurrentClassCardsRemaining = Math.Max(0, CurrentClassCardsTotal - CurrentClassCardsProcessed),
             CommandsPublishedByTopic = new Dictionary<string, int>(CommandsPublishedByTopic, StringComparer.Ordinal),
+            Performance = Performance.Clone(),
             ZabbixPlan = ZabbixPlan.ToSnapshot(),
             CompletedClasses = CompletedClasses.ToArray(),
             Errors = Errors.ToArray()
@@ -1044,6 +2474,8 @@ public sealed class ApplyCurrentRulesProgressSnapshot
 
     public Dictionary<string, int> CommandsPublishedByTopic { get; init; } = new(StringComparer.Ordinal);
 
+    public ApplyCurrentRulesPerformance Performance { get; init; } = new();
+
     public ApplyCurrentRulesZabbixPlanSnapshot ZabbixPlan { get; init; } = new();
 
     public IReadOnlyList<ApplyCurrentRulesClassProgress> CompletedClasses { get; init; } = [];
@@ -1071,6 +2503,7 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
     private const int MaxObjectSamples = 1000;
     private const int MaxValuesPerObject = 8;
     private readonly HashSet<string> objectKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> incomingManagedKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ApplyCurrentRulesZabbixObjectPlan> objects = new(StringComparer.Ordinal);
 
     public int ObjectCount { get; private set; }
@@ -1097,6 +2530,10 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
         }
 
         RelationCount += command.Target.Relations.Count;
+        foreach (var relation in command.Target.Relations)
+        {
+            AddIncomingManagedKey(relation);
+        }
 
         if (!objects.TryGetValue(objectKey, out var plannedObject))
         {
@@ -1105,11 +2542,15 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
                 return;
             }
 
+            var role = ZabbixManagedServiceMapper.ServiceRole(command, command.Layer);
             plannedObject = new ApplyCurrentRulesZabbixObjectPlan
             {
                 Action = command.CommandType,
                 ActionLabel = ActionLabel(command),
                 Layer = command.Layer,
+                ManagedKey = ZabbixManagedServiceMapper.ManagedKey(command.Target),
+                Role = role,
+                Visibility = ZabbixManagedServiceMapper.ServiceVisibility(command.Target.Attributes, role),
                 TargetClass = command.Target.ClassCode,
                 TargetKey = targetKey,
                 TargetCardId = command.Target.CardId,
@@ -1122,21 +2563,29 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
         plannedObject.CommandCount++;
         plannedObject.RelationCount += command.Target.Relations.Count;
-        plannedObject.SourceCount++;
-        if (string.IsNullOrWhiteSpace(command.Source.ZabbixHostId))
+        var hasSourceObject = !string.IsNullOrWhiteSpace(command.Source.ClassCode)
+            || !string.IsNullOrWhiteSpace(command.Source.CardId);
+        if (hasSourceObject)
         {
-            plannedObject.MissingHostBindingCount++;
-        }
-        else
-        {
-            plannedObject.HostBindingCount++;
-            plannedObject.ProblemTagCount += 1;
+            plannedObject.SourceCount++;
+            if (string.IsNullOrWhiteSpace(command.Source.ZabbixHostId))
+            {
+                plannedObject.MissingHostBindingCount++;
+            }
+            else
+            {
+                plannedObject.HostBindingCount++;
+                plannedObject.ProblemTagCount += 1;
+            }
         }
 
         AddLimited(plannedObject.RuleIds, command.RuleId, MaxValuesPerObject);
         AddLimited(plannedObject.RuleNames, command.RuleName, MaxValuesPerObject);
-        AddLimited(plannedObject.SourceObjects, SourceObjectLabel(command.Source), MaxValuesPerObject);
-        AddSourceBinding(plannedObject, command.Source);
+        if (hasSourceObject)
+        {
+            AddLimited(plannedObject.SourceObjects, SourceObjectLabel(command.Source), MaxValuesPerObject);
+            AddSourceBinding(plannedObject, command.Source);
+        }
         foreach (var relation in command.Target.Relations)
         {
             if (plannedObject.Relations.Count >= MaxValuesPerObject)
@@ -1155,14 +2604,91 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
 
     public ApplyCurrentRulesZabbixPlanSnapshot ToSnapshot()
     {
+        var rootServices = RootServices();
+        var orphanVisibleNodes = OrphanVisibleNodes();
         return new ApplyCurrentRulesZabbixPlanSnapshot
         {
             ObjectCount = ObjectCount,
             RelationCount = RelationCount,
             ObjectSamplesLimit = ObjectSamplesLimit,
             HasMoreObjects = HasMoreObjects,
-            Objects = Objects
+            Objects = Objects,
+            RootServiceCount = rootServices.Count,
+            RootServices = rootServices,
+            OrphanVisibleNodeCount = orphanVisibleNodes.Count,
+            OrphanVisibleNodes = orphanVisibleNodes
         };
+    }
+
+    public IReadOnlyList<ApplyCurrentRulesZabbixTopologyIssue> OrphanVisibleNodes()
+    {
+        var incoming = IncomingManagedKeys();
+        return objects.Values
+            .Where(item => IsVisibleNonRoot(item)
+                && !incoming.Contains(item.ManagedKey))
+            .OrderBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.ManagedKey, StringComparer.Ordinal)
+            .Select(item => new ApplyCurrentRulesZabbixTopologyIssue
+            {
+                ManagedKey = item.ManagedKey,
+                Name = item.TargetName,
+                ClassCode = item.TargetClass,
+                Role = item.Role,
+                Visibility = item.Visibility,
+                Message = "Видимый расчетный узел не имеет parent в desired graph и попадет в корень Zabbix Services."
+            })
+            .ToArray();
+    }
+
+    private IReadOnlyList<ApplyCurrentRulesZabbixTopologyIssue> RootServices()
+    {
+        return objects.Values
+            .Where(item => item.Role.Equals(ZabbixManagedServiceRoles.RootService, StringComparison.OrdinalIgnoreCase)
+                || item.Visibility.Equals(ZabbixManagedServiceVisibility.Root, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.ManagedKey, StringComparer.Ordinal)
+            .Select(item => new ApplyCurrentRulesZabbixTopologyIssue
+            {
+                ManagedKey = item.ManagedKey,
+                Name = item.TargetName,
+                ClassCode = item.TargetClass,
+                Role = item.Role,
+                Visibility = item.Visibility,
+                Message = "Root service desired graph."
+            })
+            .ToArray();
+    }
+
+    private HashSet<string> IncomingManagedKeys()
+    {
+        return new HashSet<string>(incomingManagedKeys, StringComparer.Ordinal);
+    }
+
+    private void AddIncomingManagedKey(AggregationTargetRelation relation)
+    {
+        if (!string.IsNullOrWhiteSpace(relation.TargetLookup))
+        {
+            incomingManagedKeys.Add(relation.TargetLookup);
+        }
+
+        if (!string.IsNullOrWhiteSpace(relation.TargetClassCode)
+            && !string.IsNullOrWhiteSpace(relation.TargetLookup))
+        {
+            incomingManagedKeys.Add($"cmdbuild:{relation.TargetClassCode}:{relation.TargetLookup}");
+        }
+    }
+
+    private static bool IsVisibleNonRoot(ApplyCurrentRulesZabbixObjectPlan item)
+    {
+        if (item.Visibility.Equals(ZabbixManagedServiceVisibility.Internal, StringComparison.OrdinalIgnoreCase)
+            || item.Role.Equals(ZabbixManagedServiceRoles.Internal, StringComparison.OrdinalIgnoreCase)
+            || item.Role.Equals(ZabbixManagedServiceRoles.SourceLeaf, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !item.Role.Equals(ZabbixManagedServiceRoles.RootService, StringComparison.OrdinalIgnoreCase)
+            && !item.Visibility.Equals(ZabbixManagedServiceVisibility.Root, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string TargetObjectKey(AggregationCommand command)
@@ -1305,7 +2831,30 @@ public sealed class ApplyCurrentRulesZabbixPlanSnapshot
 
     public bool HasMoreObjects { get; init; }
 
+    public int RootServiceCount { get; init; }
+
+    public IReadOnlyList<ApplyCurrentRulesZabbixTopologyIssue> RootServices { get; init; } = [];
+
+    public int OrphanVisibleNodeCount { get; init; }
+
+    public IReadOnlyList<ApplyCurrentRulesZabbixTopologyIssue> OrphanVisibleNodes { get; init; } = [];
+
     public IReadOnlyList<ApplyCurrentRulesZabbixObjectPlan> Objects { get; init; } = [];
+}
+
+public sealed class ApplyCurrentRulesZabbixTopologyIssue
+{
+    public string ManagedKey { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string ClassCode { get; init; } = "";
+
+    public string Role { get; init; } = "";
+
+    public string Visibility { get; init; } = "";
+
+    public string Message { get; init; } = "";
 }
 
 public sealed class ApplyCurrentRulesZabbixObjectPlan
@@ -1315,6 +2864,12 @@ public sealed class ApplyCurrentRulesZabbixObjectPlan
     public string ActionLabel { get; init; } = "";
 
     public string Layer { get; init; } = "";
+
+    public string ManagedKey { get; init; } = "";
+
+    public string Role { get; init; } = "";
+
+    public string Visibility { get; init; } = "";
 
     public string TargetClass { get; init; } = "";
 
@@ -1556,6 +3111,8 @@ public sealed class RuleEngineWorker(
     IOptions<ReadinessOptions> readinessOptions,
     IOptions<DebugOptions> debugOptions,
     ConversionRulesFileLoader loader,
+    IOptions<ConversionRulesOptions> conversionRulesOptions,
+    IHostEnvironment environment,
     ConversionRulesValidator validator,
     AggregationRuleEngine engine,
     SemanticCommandDeduplicator deduplicator,
@@ -1581,7 +3138,10 @@ public sealed class RuleEngineWorker(
         }
 
         var enrichedMessage = await EnrichSourceFieldsAsync(message, rules, cancellationToken);
-        var plans = engine.BuildCommandPlans(enrichedMessage, rules);
+        var plans = await AttachServiceParentManagedKeysAsync(
+            engine.BuildCommandPlans(enrichedMessage, rules),
+            rules,
+            cancellationToken);
         logger.LogDebugBasic(
             debugOptions,
             "rule engine processed event={EventId}, class={ClassCode}, card={CardId}, commands={CommandCount}",
@@ -1614,6 +3174,167 @@ public sealed class RuleEngineWorker(
                 cancellationToken);
             deduplicator.MarkPublished(plan);
         }
+    }
+
+    private async Task<IReadOnlyList<AggregationCommandPlan>> AttachServiceParentManagedKeysAsync(
+        IReadOnlyList<AggregationCommandPlan> plans,
+        ConversionRulesDocument rules,
+        CancellationToken cancellationToken)
+    {
+        if (!plans.Any(plan => string.Equals(plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase)))
+        {
+            return plans;
+        }
+
+        var templateRelations = await LoadServiceObjectTemplateRelationsForStreamingAsync(cancellationToken);
+        if (templateRelations.Count == 0)
+        {
+            return plans;
+        }
+
+        var templateIdByRuleId = rules.Rules
+            .Where(rule => !string.IsNullOrWhiteSpace(rule.RuleId))
+            .Select(rule => new
+            {
+                RuleId = rule.RuleId,
+                TemplateId = FirstNonEmpty(rule.TemplateGeneration.TemplateId, rule.GeneratedFromTemplate)
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.TemplateId))
+            .ToDictionary(item => item.RuleId, item => item.TemplateId, StringComparer.Ordinal);
+
+        return plans
+            .Select(plan => AttachServiceParentManagedKeys(plan, templateIdByRuleId, templateRelations))
+            .ToArray();
+    }
+
+    private async Task<IReadOnlyList<ServiceObjectTemplateRelationIntent>> LoadServiceObjectTemplateRelationsForStreamingAsync(
+        CancellationToken cancellationToken)
+    {
+        foreach (var candidate in ServiceTemplatePathCandidatesForStreaming())
+        {
+            var fullPath = Path.GetFullPath(candidate);
+            if (!File.Exists(fullPath))
+            {
+                continue;
+            }
+
+            await using var stream = File.OpenRead(fullPath);
+            var document = await JsonSerializer.DeserializeAsync<ServiceTemplateRelationsDocument>(
+                stream,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web),
+                cancellationToken);
+            return document?.ServiceObjectTemplateRelations ?? [];
+        }
+
+        return [];
+    }
+
+    private IEnumerable<string> ServiceTemplatePathCandidatesForStreaming()
+    {
+        var options = conversionRulesOptions.Value;
+        if (!string.IsNullOrWhiteSpace(options.ServiceTemplatesFilePath))
+        {
+            yield return options.ServiceTemplatesFilePath;
+        }
+
+        var rulePath = options.FilePath ?? "";
+        if (!string.IsNullOrWhiteSpace(rulePath))
+        {
+            var ruleDirectory = Path.GetDirectoryName(rulePath);
+            if (!string.IsNullOrWhiteSpace(ruleDirectory))
+            {
+                yield return Path.Combine(ruleDirectory, "service-templates.json");
+            }
+        }
+
+        foreach (var basePath in CandidateBasePathsForStreaming())
+        {
+            if (!string.IsNullOrWhiteSpace(options.ServiceTemplatesFilePath)
+                && !Path.IsPathRooted(options.ServiceTemplatesFilePath))
+            {
+                yield return Path.Combine(basePath, options.ServiceTemplatesFilePath);
+            }
+
+            yield return Path.Combine(basePath, "state/conversion-config/service-templates.json");
+            yield return Path.Combine(basePath, "rules/service-templates.json");
+        }
+    }
+
+    private IEnumerable<string> CandidateBasePathsForStreaming()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var start in new[] { environment.ContentRootPath, Environment.CurrentDirectory })
+        {
+            var directory = new DirectoryInfo(Path.GetFullPath(start));
+            while (directory is not null)
+            {
+                if (seen.Add(directory.FullName))
+                {
+                    yield return directory.FullName;
+                }
+
+                directory = directory.Parent;
+            }
+        }
+    }
+
+    private static AggregationCommandPlan AttachServiceParentManagedKeys(
+        AggregationCommandPlan plan,
+        IReadOnlyDictionary<string, string> templateIdByRuleId,
+        IReadOnlyList<ServiceObjectTemplateRelationIntent> templateRelations)
+    {
+        if (!string.Equals(plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase)
+            || !templateIdByRuleId.TryGetValue(plan.Command.RuleId, out var templateId)
+            || string.IsNullOrWhiteSpace(templateId))
+        {
+            return plan;
+        }
+
+        var parentKeys = templateRelations
+            .Where(relation => relation.TargetType.Equals("service_template", StringComparison.OrdinalIgnoreCase)
+                && relation.TargetTemplateId.Equals(templateId, StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(relation.SourceClassCode)
+                && !string.IsNullOrWhiteSpace(relation.SourceCardId)
+                && (string.IsNullOrWhiteSpace(relation.TargetClassCode)
+                    || relation.TargetClassCode.Equals(plan.Command.Target.ClassCode, StringComparison.Ordinal)))
+            .Select(relation => CardRefKeyForStreaming(relation.SourceClassCode, relation.SourceCardId))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (parentKeys.Length == 0)
+        {
+            return plan;
+        }
+
+        var target = plan.Command.Target with
+        {
+            ParentManagedKeys = plan.Command.Target.ParentManagedKeys
+                .Concat(parentKeys)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(key => key, StringComparer.Ordinal)
+                .ToArray()
+        };
+        return plan with { Command = plan.Command with { Target = target } };
+    }
+
+    private static string CardRefKeyForStreaming(string classCode, string cardId)
+    {
+        return string.IsNullOrWhiteSpace(classCode) || string.IsNullOrWhiteSpace(cardId)
+            ? ""
+            : $"cmdbuild:{classCode}:{cardId}";
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return "";
     }
 
     private static async Task PublishAggregationPlanAsync(

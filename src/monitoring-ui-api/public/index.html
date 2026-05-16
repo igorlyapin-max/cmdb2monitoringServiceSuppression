@@ -17,6 +17,7 @@
             <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Сервисный слой</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="serviceSchema">Схема</button>
+              <button class="nav-item" data-view="serviceObjects">Объекты сервиса</button>
               <button class="nav-item" data-view="serviceRulesEdit">Статические правила</button>
               <button class="nav-item" data-view="serviceTemplates">Шаблоны</button>
               <div class="nav-subgroup">
@@ -68,6 +69,8 @@
             <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Администрирование</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="generalSettings">Основные</button>
+              <button class="nav-item" data-view="microserviceSettings">Микросервисы</button>
+              <button class="nav-item" data-view="slaSettings">SLA</button>
             </div>
           </div>
           <button class="nav-item nav-top-item" data-view="help">Помощь</button>
@@ -195,6 +198,7 @@
           <div class="section-heading">
             <h2 id="schemaTitle">Сервисная схема</h2>
             <p id="schemaLead">Классы и домены для сервисного дерева Zabbix.</p>
+            <p class="help-text">Базовая схема универсальна и не создает домены с именами классов заказчика вроде <code>PopulatedFromVPNHUB</code>. Source membership рассчитывается правилами и командами микросервисов; customer-specific source-link домены допустимы только как отдельное инсталляционное расширение, а не как часть универсальной схемы.</p>
           </div>
           <div class="control-row">
             <label class="text-field">
@@ -211,8 +215,22 @@
             </label>
             <button id="buildPreviewButton" class="primary-button">Собрать предпросмотр</button>
             <button id="sendSelectedButton" class="secondary-button" type="button">Отправить выбранное в CMDBuild</button>
+            <button id="cmdbuildAuthToggleButton" class="secondary-button" type="button">CMDBuild доступ</button>
           </div>
-          <section class="entity-builder" aria-label="Добавить сущность">
+          <div id="cmdbuildAuthPanel" class="control-row hidden">
+            <label class="text-field">
+              <span>Пользователь CMDBuild</span>
+              <input id="cmdbuildUsernameInput" autocomplete="username">
+            </label>
+            <label class="text-field">
+              <span>Пароль CMDBuild</span>
+              <input id="cmdbuildPasswordInput" type="password" autocomplete="current-password">
+            </label>
+            <button id="cmdbuildAuthSaveButton" class="primary-button" type="button">Использовать в этой вкладке</button>
+            <button id="cmdbuildAuthClearButton" class="secondary-button" type="button">Сбросить</button>
+            <p id="cmdbuildAuthStatus" class="status-line"></p>
+          </div>
+          <section id="schemaEntityBuilder" class="entity-builder" aria-label="Добавить сущность">
             <label class="text-field">
               <span>Код сущности</span>
               <input id="entityCodeInput" placeholder="ApplicationCluster" autocomplete="off">
@@ -238,6 +256,70 @@
               <div id="plannedClassList" class="list"></div>
             </section>
           </div>
+        </section>
+
+        <section id="serviceObjectsView" class="view hidden">
+          <div class="section-heading">
+            <h2>Объекты сервиса</h2>
+            <p>Ручное создание и редактирование сервисов, SLA-календарей, SLA-политик и регулярных downtime без source-агрегации. Эти объекты сохраняются как карточки CMDBuild, а не в файле конфигурации правил; при открытии меню UI перечитывает их из CMDBuild и обновляет локальный кэш. Связи между этими объектами создаются и редактируются здесь; связи с агрегатами настраиваются в стандартном блоке управления связями.</p>
+          </div>
+          <section class="panel service-objects-panel">
+            <div class="rule-editor-grid">
+              <label class="select-field">
+                <span>Тип объекта</span>
+                <select id="serviceObjectType" data-service-object-type></select>
+              </label>
+              <label class="select-field">
+                <span>Существующий объект</span>
+                <select id="serviceObjectSelect" data-service-object-select></select>
+              </label>
+              <div class="rule-attribute-editor rule-editor-wide">
+                <span class="field-label">Атрибуты объекта</span>
+                <p class="selection-filter-help">Заполняются только атрибуты выбранного типа. Общие поля агрегации здесь скрыты, потому что эти объекты создаются вручную и не разворачиваются из source-карточек.</p>
+                <div id="serviceObjectAttributeList" class="rule-attribute-list"></div>
+              </div>
+            </div>
+            <div class="rule-editor-actions">
+              <button id="createServiceObjectButton" class="primary-button" type="button">Создать объект</button>
+              <button id="newServiceObjectButton" class="secondary-button" type="button">Новый объект</button>
+              <button id="refreshServiceObjectsButton" class="secondary-button" type="button">Обновить объекты</button>
+              <span id="serviceObjectStatus" class="status-line"></span>
+            </div>
+            <div id="serviceObjectList" class="entity-list"></div>
+          </section>
+          <section class="panel service-objects-panel">
+            <h2>Связи сервисных объектов</h2>
+            <p class="selection-filter-help">Используйте этот блок для связей ручного сервисного объекта с агрегатами сервисного слоя, шаблонами агрегатов, а также для связей сервис-SLA, SLA-календарь и SLA-downtime. Примеры: «Сервис рабочих мест -> Ноутбуки» с типом «Содержит», «Сервис рабочих мест -> шаблон Рабочие места (Сервис)» с типом «Сервис содержит агрегаты шаблона» и «Сервис рабочих мест -> Маршрутизаторы филиалов» с типом «Зависит от». Связи шаблон-шаблон, шаблон-правило и правило-правило остаются в «Сервисный слой -> Управление связями».</p>
+            <div class="rule-editor-grid">
+              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает из списков выбора и списка существующих связей сервисные агрегаты, созданные из шаблонов. Снимите галочку, чтобы вручную связать такие объекты.">
+                <input id="serviceObjectRelationFilterTemplateRules" data-service-object-relation-filter-template-rules type="checkbox" checked>
+                <span>Фильтровать правила и классы из шаблонов</span>
+              </label>
+              <label class="select-field rule-editor-wide">
+                <span>Существующая связь</span>
+                <select id="serviceObjectRelationSelect" data-service-object-relation-select></select>
+              </label>
+              <label class="select-field">
+                <span>Тип связи</span>
+                <select id="serviceObjectRelationKind" data-service-object-relation-kind></select>
+              </label>
+              <label class="select-field">
+                <span>Источник</span>
+                <select id="serviceObjectRelationSource" data-service-object-relation-source></select>
+              </label>
+              <label class="select-field">
+                <span>Цель</span>
+                <select id="serviceObjectRelationTarget" data-service-object-relation-target></select>
+              </label>
+            </div>
+            <div id="serviceObjectRelationHint" class="rule-attribute-note"></div>
+            <div class="rule-editor-actions">
+              <button id="createServiceObjectRelationButton" class="primary-button" type="button">Создать связь</button>
+              <button id="newServiceObjectRelationButton" class="secondary-button" type="button">Новая связь</button>
+              <button id="refreshServiceObjectRelationsButton" class="secondary-button" type="button">Обновить связи</button>
+              <span id="serviceObjectRelationStatus" class="status-line"></span>
+            </div>
+          </section>
         </section>
 
         <section id="serviceRulesViewOnlyView" class="view hidden" data-rules-preview-layer="service">
@@ -278,10 +360,21 @@
           <section class="panel rule-editor-panel" data-rule-editor-layer="service">
             <h2>Статические правила сервиса</h2>
             <div class="rule-editor-grid">
-              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает правила и целевые экземпляры, созданные из шаблонов. Снимите галочку, чтобы выбрать такой объект вручную.">
+              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает правила и целевые экземпляры, созданные из шаблонов, во всех списках формы, включая «Создать на основе...». Снимите галочку, чтобы выбрать их вручную.">
                 <input id="serviceRuleFilterTemplateRules" data-rule-filter-template-rules type="checkbox" checked>
                 <span>Фильтровать правила и классы из шаблонов</span>
               </label>
+              <div class="derive-copy-panel rule-editor-wide">
+                <span class="field-label">Создать на основе...</span>
+                <div class="derive-copy-row">
+                  <label class="select-field">
+                    <span>Источник</span>
+                    <select id="serviceRuleDeriveSource" data-derive-source="rule"></select>
+                  </label>
+                  <button class="secondary-button" type="button" id="serviceRuleDeriveButton" data-derive-create="rule">Создать черновик</button>
+                </div>
+                <div id="serviceRuleDerivePreview" class="derive-copy-preview"></div>
+              </div>
               <label class="select-field">
                 <span>Действие с правилом</span>
                 <select id="serviceRuleAction" data-rule-action>
@@ -368,10 +461,21 @@
           <section class="panel rule-editor-panel" data-rule-editor-layer="suppression">
             <h2>Статические правила подавления</h2>
             <div class="rule-editor-grid">
-              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает правила и целевые экземпляры, созданные из шаблонов. Снимите галочку, чтобы выбрать такой объект вручную.">
+              <label class="checkbox-field rule-editor-wide rule-template-filter" title="Скрывает правила и целевые экземпляры, созданные из шаблонов, во всех списках формы, включая «Создать на основе...». Снимите галочку, чтобы выбрать их вручную.">
                 <input id="suppressionRuleFilterTemplateRules" data-rule-filter-template-rules type="checkbox" checked>
                 <span>Фильтровать правила и классы из шаблонов</span>
               </label>
+              <div class="derive-copy-panel rule-editor-wide">
+                <span class="field-label">Создать на основе...</span>
+                <div class="derive-copy-row">
+                  <label class="select-field">
+                    <span>Источник</span>
+                    <select id="suppressionRuleDeriveSource" data-derive-source="rule"></select>
+                  </label>
+                  <button class="secondary-button" type="button" id="suppressionRuleDeriveButton" data-derive-create="rule">Создать черновик</button>
+                </div>
+                <div id="suppressionRuleDerivePreview" class="derive-copy-preview"></div>
+              </div>
               <label class="select-field">
                 <span>Действие с правилом</span>
                 <select id="suppressionRuleAction" data-rule-action>
@@ -428,6 +532,17 @@
                 <span>Шаблон</span>
                 <select id="serviceTemplateSelect" data-template-select></select>
               </label>
+              <div class="derive-copy-panel template-editor-wide">
+                <span class="field-label">Создать на основе...</span>
+                <div class="derive-copy-row">
+                  <label class="select-field">
+                    <span>Источник</span>
+                    <select id="serviceTemplateDeriveSource" data-derive-source="template"></select>
+                  </label>
+                  <button class="secondary-button" type="button" id="serviceTemplateDeriveButton" data-derive-create="template">Создать черновик</button>
+                </div>
+                <div id="serviceTemplateDerivePreview" class="derive-copy-preview"></div>
+              </div>
               <label class="text-field">
                 <span>ID шаблона</span>
                 <input id="serviceTemplateId" autocomplete="off" title="Стабильный ID шаблона. После сохранения не редактируется.">
@@ -565,8 +680,8 @@
               <label class="select-field template-delete-mode">
                 <span>Удаление шаблона</span>
                 <select id="serviceTemplateDeleteMode" data-template-delete-mode>
-                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
                   <option value="delete_rules_and_objects">Удалить созданные правила и объекты</option>
+                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
                 </select>
               </label>
               <button id="serviceTemplateDeleteButton" class="secondary-button" type="button" data-template-delete>Удалить шаблон</button>
@@ -586,6 +701,17 @@
                 <span>Шаблон</span>
                 <select id="suppressionTemplateSelect" data-template-select></select>
               </label>
+              <div class="derive-copy-panel template-editor-wide">
+                <span class="field-label">Создать на основе...</span>
+                <div class="derive-copy-row">
+                  <label class="select-field">
+                    <span>Источник</span>
+                    <select id="suppressionTemplateDeriveSource" data-derive-source="template"></select>
+                  </label>
+                  <button class="secondary-button" type="button" id="suppressionTemplateDeriveButton" data-derive-create="template">Создать черновик</button>
+                </div>
+                <div id="suppressionTemplateDerivePreview" class="derive-copy-preview"></div>
+              </div>
               <label class="text-field">
                 <span>ID шаблона</span>
                 <input id="suppressionTemplateId" autocomplete="off" title="Стабильный ID шаблона. После сохранения не редактируется.">
@@ -723,8 +849,8 @@
               <label class="select-field template-delete-mode">
                 <span>Удаление шаблона</span>
                 <select id="suppressionTemplateDeleteMode" data-template-delete-mode>
-                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
                   <option value="delete_rules_and_objects">Удалить созданные правила и объекты</option>
+                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
                 </select>
               </label>
               <button id="suppressionTemplateDeleteButton" class="secondary-button" type="button" data-template-delete>Удалить шаблон</button>
@@ -842,17 +968,26 @@
         <section id="serviceZabbixApplyView" class="view hidden" data-zabbix-apply-layer="service">
           <div class="section-heading">
             <h2>Применить сервисную модель в Zabbix</h2>
-            <p>Проверка и публикация команд сервисного слоя в отдельный Zabbix-топик. Контур сервиса имеет собственный dry-run, статус, счетчики, ошибки, source membership, problem tags и reconcile-сводку.</p>
+            <p>Проверка и публикация команд сервисного слоя в Zabbix. Если в UI настроен прямой endpoint <code>zabbixconfig2api /commands/apply</code>, кнопка применяет команды сразу; иначе команды отправляются в отдельный Zabbix-топик. Этот шаг создает дерево Zabbix Services и связи parents/children, включая ручные сервисные объекты и их CMDBuild-связи с агрегатами; выполняйте его до публикации SLA.</p>
           </div>
           <section class="panel">
             <div class="sync-grid" data-zabbix-apply-summary></div>
             <div class="sync-actions">
-              <button class="secondary-button" type="button" data-zabbix-apply-refresh>Обновить статус Zabbix</button>
-              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Dry-run сервиса</button>
-              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать сервис в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-refresh>Проверить фактическое состояние Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Проверить граф сервиса</button>
+              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать граф сервиса в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-cancel>Отменить операцию</button>
+              <button id="zabbixSlaDryRunButton" class="secondary-button" type="button">Dry-run SLA</button>
+              <button id="zabbixSlaPublishButton" class="primary-button" type="button">Опубликовать SLA в Zabbix</button>
             </div>
             <p class="status-line" data-zabbix-apply-status></p>
             <div class="preview-list" data-zabbix-apply-list></div>
+            <div class="rule-summary">
+              <span class="structure-mark">SLA после сервисной модели</span>
+              <span>Публикация SLA выполняется здесь после публикации сервисного дерева. Она проверяет, что сервисы уже существуют в Zabbix Services с parents/children, затем обновляет SLA-теги и Zabbix SLA; настройки SLA остаются в <strong>Администрирование -> SLA</strong>.</span>
+            </div>
+            <p id="zabbixSlaPublicationStatus" class="status-line"></p>
+            <div id="zabbixSlaPublicationPlanList" class="preview-list"></div>
           </section>
         </section>
 
@@ -864,9 +999,10 @@
           <section class="panel">
             <div class="sync-grid" data-zabbix-apply-summary></div>
             <div class="sync-actions">
-              <button class="secondary-button" type="button" data-zabbix-apply-refresh>Обновить статус Zabbix</button>
-              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Dry-run membership подавления</button>
-              <button class="primary-button" type="button" data-zabbix-apply-publish>Обновить membership подавления</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-refresh>Проверить фактическое состояние Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Проверить граф подавления</button>
+              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать граф подавления в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-cancel>Отменить операцию</button>
             </div>
             <p class="status-line" data-zabbix-apply-status></p>
           </section>
@@ -897,6 +1033,7 @@
           <div class="section-heading">
             <h2>Создать/обновить правила по шаблонам и связям</h2>
             <p>Материализация шаблонов и управляемых связей в обычные правила автонаполнения. Эта операция не создает карточки в CMDBuild и не переобрабатывает существующие карточки-источники: после сохранения и перечитывания конфигурации нужны новые webhooks или отдельная повторная обработка/backfill.</p>
+            <p>Здесь же выполняется сопровождение удаленных шаблонов: зачистка отвязанных правил и ручное применение <code>templateDeletionPlans</code> кнопкой <strong>Применить планы удаления в CMDBuild</strong>. Сохранение конфигурации в папку само по себе карточки не удаляет.</p>
           </div>
           <section class="panel">
             <div class="sync-grid">
@@ -952,6 +1089,22 @@
                   <li><strong>Зависит от</strong> выбирайте для жесткой технической зависимости: <code>Сервис города</code> зависит от <code>Маршрутизаторов ядра</code> или <code>Сетевой зоны доступа</code>. Если цель справа недоступна, источник слева должен считаться затронутым.</li>
                   <li><strong>Влияет на</strong> выбирайте для слабой причинно-следственной связи, которую нужно видеть в анализе влияния, но не трактовать как жесткую зависимость: перегрузка сетевой зоны влияет на пул рабочих мест, но не всегда означает полную недоступность.</li>
                 </ul>
+                <h3>Пример: рабочее место филиала</h3>
+                <p>Для цепочки лучше задавать связи от бизнес/потребляющего объекта к технической причине:</p>
+                <p><code>Сервис рабочих мест</code> -> <code>Ноутбуки</code>: тип связи <strong>Содержит</strong>.</p>
+                <p><code>Сервис рабочих мест</code> -> <code>Маршрутизаторы филиалов</code>: тип связи <strong>Зависит от</strong>.</p>
+                <p><code>Маршрутизаторы филиалов</code> -> <code>ВПН хаб</code>: тип связи <strong>Зависит от</strong>.</p>
+                <p><code>ВПН хаб</code> -> <code>Маршрутизаторы ядра</code>: тип связи <strong>Зависит от</strong>.</p>
+                <p>Итоговая логика: <code>Сервис рабочих мест</code> содержит <code>Ноутбуки</code> и зависит от цепочки <code>Маршрутизаторы филиалов</code> -> <code>ВПН хаб</code> -> <code>Маршрутизаторы ядра</code>.</p>
+                <p>Если нужен более детальный уровень, можно задать <code>Ноутбуки</code> -> <code>Маршрутизаторы филиалов</code> как <strong>Зависит от</strong>. Тогда сервис рабочих мест содержит ноутбуки, а доступность ноутбуков объясняется сетевой цепочкой: сервис пострадал не напрямую от маршрутизатора, а через конкретный слой рабочих мест.</p>
+                <p><code>Рабочее место филиал / City14</code> -> <code>Рабочие места / City14</code>: тип связи <strong>Содержит</strong>. Филиальный сервис включает парк рабочих мест как составную часть. Это не техническая причина отказа, а иерархия/состав сервиса.</p>
+                <p><code>Рабочие места / City14</code> -> <code>Маршрутизаторы филиала / City14</code>: тип связи <strong>Зависит от</strong>. Рабочие места считаются доступными только если доступна локальная сеть/маршрутизаторы филиала.</p>
+                <p><code>Маршрутизаторы филиала / City14</code> -> <code>ВПН филиалов</code>: тип связи <strong>Зависит от</strong>. Филиальная сеть зависит от VPN-уровня для связи с центральной инфраструктурой.</p>
+                <p><code>ВПН филиалов</code> -> <code>Маршрутизаторы ядра</code>: тип связи <strong>Зависит от</strong>. VPN-уровень зависит от ядра/центральной маршрутизации.</p>
+                <p><code>Рабочие места / City14</code> -> <code>ПО/платформенный сервис</code>, если рабочие места используют приложение, VDI, AD, DNS, DHCP и т.п.: тип связи <strong>Использует</strong>. Это функциональная зависимость от сервиса, который нужен рабочим местам, но не является физической частью филиала.</p>
+                <p><code>Маршрутизаторы филиала / City14</code> -> <code>Канал связи</code> или <code>Провайдерский сервис</code>, если такой объект заведен отдельно: тип связи <strong>Использует</strong>. Маршрутизаторная зона использует внешний транспорт/канал, но канал не содержится внутри маршрутизаторов.</p>
+                <p><code>Рабочее место филиал / City14</code> -> <code>SLA policy</code>: тип связи <strong>Имеет SLA</strong> / <code>has_sla_policy</code>. SLA задается на бизнес- или сервисный агрегат, а не на каждый ноутбук.</p>
+                <p>Короткое правило выбора: <strong>Содержит</strong> используем для состава; <strong>Зависит от</strong> - для причины недоступности; <strong>Использует</strong> - для внешней функциональной опоры, которая не является составной частью объекта слева.</p>
                 <h3>Бизнес-цепочка подавления</h3>
                 <p><code>Зона подавления филиала</code> -> <code>Сетевая зона доступа</code> -> <code>Хосты или рабочие места филиала</code>.</p>
                 <ul>
@@ -1055,6 +1208,17 @@
                 <span>Не показывать связи шаблонов</span>
               </label>
             </div>
+            <div class="derive-copy-panel relation-editor-wide">
+              <span class="field-label">Создать на основе...</span>
+              <div class="derive-copy-row">
+                <label class="select-field">
+                  <span>Источник</span>
+                  <select id="relationDeriveSource" data-derive-source="relation"></select>
+                </label>
+                <button class="secondary-button" type="button" id="relationDeriveButton" data-derive-create="relation">Создать черновик связи</button>
+              </div>
+              <div id="relationDerivePreview" class="derive-copy-preview"></div>
+            </div>
             <div class="relation-editor-grid">
               <label class="select-field">
                 <span id="relationSourceLabel">Источник</span>
@@ -1150,6 +1314,9 @@
                 <li>JS-проверки CMDBuild сохраняются в поле <code>validationRules</code> самих атрибутов, а не отдельными объектами схемы.</li>
                 <li><code>threshold</code> и <code>sla_target</code> задаются процентами от 0 до 100; запятая и точка должны нормализоваться перед отправкой в Zabbix.</li>
                 <li>Связи зависимости между конкретными service-классами строятся через матрицу доменов <code>service_depends_on</code>; <code>member_of</code> и <code>aggregates_to</code> остаются для состава и агрегации.</li>
+                <li><code>ServiceSlaPolicy</code> хранит авторитетную SLA-политику в CMDBuild и связывается с сервисными объектами через <code>has_sla_policy</code>. Если явной связи нет, применяется fallback из <code>ZabbixSla:DefaultPolicyKey</code>.</li>
+                <li><code>ServiceSlaCalendar</code> хранит переиспользуемые календари SLA и связывается с политикой через <code>has_sla_calendar</code>. В календаре семь полей дней недели: <code>monday_hours</code> ... <code>sunday_hours</code>, формат значения <code>HH:mm-HH:mm</code>, например <code>09:00-18:00</code>; пустой день выключен. Если связи <code>has_sla_calendar</code> нет, календарь считается ручным/внешним. Поле <code>ServiceSlaPolicy.calendar</code> остается только как legacy/внешний код.</li>
+                <li><code>ServiceSlaDowntime</code> хранит регулярные окна исключения SLA и связывается с политикой через <code>has_regular_downtime</code>. Ручные разовые downtime в Zabbix сохраняются, если их имя не начинается с managed-префикса <code>ZabbixSla:ManagedExcludedDowntimePrefix</code>.</li>
               </ul>
             </section>
 
@@ -1186,7 +1353,7 @@
                 <li>В suppression по умолчанию <code>Apply:CreateSuppressionServices=false</code>: source leaf, problem tags и отдельное дерево Services не создаются; publish обновляет только membership для aggregate triggers и trigger dependencies.</li>
                 <li>Если <code>zabbix_main_hostid</code> пустой, карточка считается неготовой: dry-run покажет отсутствующую привязку, publish уберет прежнее активное membership этой карточки и оставит ее в pending-диагностике до следующего UPDATE с hostid.</li>
                 <li>Сервисный слой строит модель влияния в Zabbix Services. Реальное штатное каскадное подавление строится публикацией aggregate triggers и <code>trigger dependencies</code>; разовое подавление активных событий в UI не используется.</li>
-                <li>Для сайзинга trigger dependencies leaf/source trigger-ы должны подавляться только ближайшей suppression-группой. Причины между группами разворачиваются транзитивно в выражениях aggregate trigger на N уровней, где N задается в конфигурации <code>zabbixconfig2api</code>. UI только показывает эффективное значение из статуса сервиса, чтобы ручной dry-run/apply и автоматический reconcile не расходились. При N=2 городская группа видит прямую upstream-группу и следующую причину выше; при N=3 добавляется еще один уровень. Aggregate trigger группы становится PROBLEM, если отказали свои source-hosts по <code>aggregation_type</code> или если upstream-группа в пределах N уже в PROBLEM. Selector состояния группы и selector dependency-покрытия разделены: первый выбирает triggers для формулы calculated item, второй — leaf/source triggers, на которые ставятся dependencies. В деталях dependencies показывается причина состояния: <code>свои source-hosts</code>, <code>upstream</code> или оба варианта, а также unsupported aggregate items с текстом ошибки Zabbix, если формула calculated item не принята.</li>
+                <li>Для сайзинга trigger dependencies leaf/source trigger-ы должны подавляться только ближайшей suppression-группой. Причины между группами разворачиваются транзитивно в выражениях aggregate trigger на N уровней, где N задается в конфигурации <code>zabbixconfig2api</code>. UI читает это значение из настроек микросервиса; если администратор изменил N в UI, но еще не нажал <strong>Применить настройки UI</strong>, ручной dry-run/apply зависимостей использует выбранное значение как одноразовый override, а автоматический reconcile продолжает брать сохраненную настройку микросервиса. При N=2 городская группа видит прямую upstream-группу и следующую причину выше; при N=3 добавляется еще один уровень. Aggregate trigger группы становится PROBLEM, если отказали свои source-hosts по <code>aggregation_type</code> или если upstream-группа в пределах N уже в PROBLEM. Selector состояния группы и selector dependency-покрытия разделены: первый выбирает triggers для формулы calculated item, второй — leaf/source triggers, на которые ставятся dependencies. В деталях dependencies показывается причина состояния: <code>свои source-hosts</code>, <code>upstream</code> или оба варианта, а также unsupported aggregate items с текстом ошибки Zabbix, если формула calculated item не принята.</li>
               </ul>
             </section>
 
@@ -1250,9 +1417,24 @@
                 <li><strong>Шаблон-шаблон</strong> используют, когда оба конца связи создаются шаблонами. Например <code>Рабочие места по городам</code> связываются с <code>Сетевая зона по городам</code> по переменной <code>city</code>. Блоки отбора слева и справа только ограничивают, какие сгенерированные правила участвуют; сама пара связи определяется сопоставлением переменных.</li>
                 <li><strong>Шаблон-правило</strong> используют, когда один конец создается шаблоном, а второй уже существует как конкретное правило. Направление задается полями <strong>Источник</strong> и <strong>Назначение</strong>: <code>шаблон -> правило</code> означает, что сгенерированные правила шаблона будут ссылаться на правило; <code>правило -> шаблон</code> означает, что правило будет ссылаться на совпавшие сгенерированные правила шаблона. Фильтр применяется к той стороне, где выбран шаблон.</li>
                 <li><strong>Правило-правило</strong> используют для единичной жесткой зависимости без шаблона: конкретное правило <code>WAN Core</code> зависит от конкретного правила <code>Internet Edge</code>. Такая связь однозначная. Галочка <strong>Не показывать связи шаблонов</strong> по умолчанию скрывает производные связи правило-правило, которые появились после применения связей шаблон-шаблон или шаблон-правило.</li>
+                <li><strong>Пример "Сервис рабочих мест":</strong> связи лучше задавать от бизнес/потребляющего объекта к технической причине. <code>Сервис рабочих мест</code> -> <code>Ноутбуки</code> задавайте как <strong>Содержит</strong>; <code>Сервис рабочих мест</code> -> <code>Маршрутизаторы филиалов</code>, <code>Маршрутизаторы филиалов</code> -> <code>ВПН хаб</code>, <code>ВПН хаб</code> -> <code>Маршрутизаторы ядра</code> задавайте как <strong>Зависит от</strong>. Итог: сервис рабочих мест содержит ноутбуки и зависит от цепочки <code>Маршрутизаторы филиалов</code> -> <code>ВПН хаб</code> -> <code>Маршрутизаторы ядра</code>. Если нужен более детальный уровень, задайте <code>Ноутбуки</code> -> <code>Маршрутизаторы филиалов</code> как <strong>Зависит от</strong>: тогда сервис пострадал не напрямую от маршрутизатора, а через конкретный слой рабочих мест.</li>
+                <li><strong>Пример "Рабочее место филиал":</strong> <code>Рабочее место филиал / City14</code> -> <code>Рабочие места / City14</code> задавайте как <strong>Содержит</strong>; <code>Рабочие места / City14</code> -> <code>Маршрутизаторы филиала / City14</code>, <code>Маршрутизаторы филиала / City14</code> -> <code>ВПН филиалов</code>, <code>ВПН филиалов</code> -> <code>Маршрутизаторы ядра</code> задавайте как <strong>Зависит от</strong>; связи к AD, DNS, DHCP, VDI, приложению, каналу связи или провайдерскому сервису задавайте как <strong>Использует</strong>, если это внешняя функциональная опора, а не состав объекта.</li>
+                <li>Короткое правило выбора: <strong>Содержит</strong> - состав сервиса; <strong>Зависит от</strong> - причина недоступности, где отказ цели справа затрагивает источник слева; <strong>Использует</strong> - внешний сервис или ресурс, который нужен объекту слева, но не входит в его состав.</li>
                 <li>Точное сопоставление переменных: шаблон <code>Рабочие места</code> имеет <code>vars.city = ${source.locationFloorBuildingCity}</code>, шаблон <code>Сетевая зона</code> имеет <code>vars.city</code>. В связи выбираются переменная источника <code>city</code>, переменная цели <code>city</code>, оба regexp пустые. Результат: <code>Рабочие места City04 -> Сетевая зона City04</code>, <code>Рабочие места City15 -> Сетевая зона City15</code>.</li>
                 <li>Regexp для разных форматов: шаблон рабочих мест имеет <code>vars.hostnamePrefix = w04-ntb-001</code>, шаблон сетевой зоны имеет <code>vars.cityName = City04</code>. Regex источника <code>(?i)^w([0-9]{2})-.*</code> дает <code>04</code>; regex цели <code>(?i)^City([0-9]{2})$</code> тоже дает <code>04</code>. Результаты regexp сравниваются, поэтому связь создается: <code>04 = 04</code>.</li>
                 <li>Если один regexp не совпал, например <code>srv-core-01</code>, связь не создается. Если источник дал <code>77</code>, но среди целевых сгенерированных правил нет результата <code>77</code>, запись должна попасть в диагностику как несопоставленная.</li>
+              </ul>
+            </section>
+
+            <section class="panel help-panel">
+              <h2>Создать на основе...</h2>
+              <ul class="help-list">
+                <li>В редакторах <strong>Статические правила</strong>, <strong>Шаблоны</strong> и <strong>Управление связями</strong> можно создать новый черновик на основе уже существующего объекта из сервисного слоя или каскадного подавления.</li>
+                <li>Копирование не является живым наследованием: после создания черновика дальнейшие изменения исходного шаблона, правила или связи не меняют новую запись. UI сохраняет только служебный след <code>derived_from</code>, чтобы аудит понимал, откуда взят черновик.</li>
+                <li>Перед созданием черновика блок показывает diff: что будет скопировано, что будет заменено при переходе service/suppression, какие поля не переносятся и что нужно проверить вручную.</li>
+                <li>При копировании между слоями UI пытается сопоставить целевой класс по паре сервисного и suppression-класса, например <code>C2M_ServiceNetworkAccessZone</code> -> <code>C2M_SuppressionNetworkAccessZone</code>. Если целевого класса нет или он не выбирается в текущем слое, поле остается пустым и его нужно выбрать вручную.</li>
+                <li>Связи шаблона или правила не копируются вместе с самим шаблоном/правилом. Для них используйте отдельное <strong>Создать на основе...</strong> в меню <strong>Управление связями</strong>, чтобы явно проверить направление, тип связи и regexp-сопоставление.</li>
+                <li>Создание черновика не сохраняет конфигурацию. Для шаблона нажмите <strong>Сохранить шаблон</strong>, для статического правила <strong>Применить</strong>, для связи <strong>Добавить связь</strong>, затем выполните обычное применение шаблонов/связей и сохранение конфигурации в папку.</li>
               </ul>
             </section>
 
@@ -1324,6 +1506,7 @@
         <section id="generalSettingsView" class="view hidden">
           <div class="section-heading">
             <h2>Основные</h2>
+            <p>Локальные настройки интерфейса. Они применяются сразу в текущей вкладке и сохраняются в браузерное хранилище только кнопкой «Сохранить настройки».</p>
           </div>
           <section class="panel">
             <div class="settings-list">
@@ -1337,67 +1520,13 @@
                 </select>
               </label>
               <label class="select-field settings-field">
-                <span class="normal-case-label">Глубина транзитивных связей групп подавления N</span>
-                <select id="transitiveGroupDependencyDepthSelect" disabled title="Эффективное значение берется из zabbixconfig2api">
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
+                <span class="normal-case-label">Режим удаления шаблона по умолчанию</span>
+                <select id="templateDeleteModeDefaultSelect">
+                  <option value="delete_rules_and_objects">Удалить созданные правила и объекты</option>
+                  <option value="detach_rules_keep_objects">Отвязать правила и сохранить объекты</option>
                 </select>
               </label>
-              <p class="settings-help">Значение N зачитывается из настроек микросервиса <code>zabbixconfig2api</code>: <code>ZabbixTriggerDependencies:TransitiveGroupDependencyDepth</code>. UI показывает эффективное значение из статуса сервиса и не отправляет локальный override. Параметр применяется при ручном dry-run/apply зависимостей и при автоматическом reconcile trigger dependencies, но не меняет потоковую обработку webhook/Kafka, правила конвертации и создание membership. Изменить можно в <code>src/zabbixconfig2api/appsettings.json</code>: <code>"ZabbixTriggerDependencies": { "TransitiveGroupDependencyDepth": 2 }</code>. После изменения перечитайте конфигурацию или перезапустите <code>zabbixconfig2api</code>. Рекомендуемое значение N=2. Leaf/source-хосты не получают полную матрицу dependencies на все верхние причины: их trigger-ы зависят только от ближайшей suppression-группы. Upstream-причины передаются между агрегатными suppression-группами через выражения aggregate trigger.</p>
-              <p id="transitiveGroupDependencyDepthStatus" class="status-line"></p>
-              <div class="settings-list">
-                <h3>Selector состояния suppression-группы</h3>
-                <label class="text-field settings-field wide-settings-field">
-                  <span class="normal-case-label">AggregateStateTriggerIncludeTags</span>
-                  <input id="aggregateStateTriggerIncludeTagsInput" readonly>
-                </label>
-                <label class="text-field settings-field wide-settings-field">
-                  <span class="normal-case-label">AggregateStateTriggerExcludeTags</span>
-                  <input id="aggregateStateTriggerExcludeTagsInput" readonly>
-                </label>
-                <label class="text-field settings-field wide-settings-field">
-                  <span class="normal-case-label">AggregateStateTriggerIncludeNameRegex</span>
-                  <input id="aggregateStateTriggerIncludeNameRegexInput" readonly>
-                </label>
-                <label class="text-field settings-field wide-settings-field">
-                  <span class="normal-case-label">AggregateStateTriggerExcludeNameRegex</span>
-                  <input id="aggregateStateTriggerExcludeNameRegexInput" readonly>
-                </label>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">AggregateStateTriggerMinPriority</span>
-                  <input id="aggregateStateTriggerMinPriorityInput" readonly>
-                </label>
-                <p class="settings-help">Read-only значения зачитываются из <code>zabbixconfig2api</code>, раздел <code>ZabbixTriggerDependencies</code>. Эти настройки определяют, какие trigger expressions source-host попадут в calculated item suppression-группы. Selector dependency-покрытия настраивается отдельно и может оставаться шире.</p>
-              </div>
-              <div class="settings-list">
-                <h3>Лимиты запросов Zabbix API</h3>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">Zabbix:RequestTimeoutMs</span>
-                  <input id="zabbixRequestTimeoutMsInput" readonly>
-                </label>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">ZabbixTriggerDependencies:TriggerGetBatchSize</span>
-                  <input id="triggerGetBatchSizeInput" readonly>
-                </label>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">ZabbixTriggerDependencies:MaxSourceHostsPerAggregate</span>
-                  <input id="maxSourceHostsPerAggregateInput" readonly>
-                </label>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">ZabbixTriggerDependencies:MaxAggregateFormulaLength</span>
-                  <input id="maxAggregateFormulaLengthInput" readonly>
-                </label>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">ZabbixTriggerDependencies:MaxDependenciesPerRun</span>
-                  <input id="maxDependenciesPerRunInput" readonly>
-                </label>
-                <label class="text-field settings-field">
-                  <span class="normal-case-label">ZabbixTriggerDependencies:SampleLimit</span>
-                  <input id="triggerDependencySampleLimitInput" readonly>
-                </label>
-                <p class="settings-help">Таймаут ограничивает один JSON-RPC запрос к Zabbix. Размер пачки определяет, сколько hostid/triggerid уходит в один <code>trigger.get</code> при dry-run/apply зависимостей. Лимиты aggregate formula блокируют слишком крупные suppression-группы до публикации calculated item и trigger expression. При timeout уменьшайте <code>TriggerGetBatchSize</code> или увеличивайте <code>Zabbix:RequestTimeoutMs</code>; при превышении aggregate-лимитов сужайте шаблон/source filters, разбивайте группу или уменьшайте N. Все значения меняются в <code>src/zabbixconfig2api/appsettings.json</code>; UI показывает эффективные значения и не отправляет override.</p>
-              </div>
+              <p class="settings-help">Этот режим подставляется в редакторы шаблонов сервиса и подавления при выборе/создании шаблона. Значение по умолчанию: <strong>Удалить созданные правила и объекты</strong>. Удаление шаблона в этом режиме сразу убирает generated-правила из конфигурации и создает <code>templateDeletionPlans</code>; фактическое удаление CMDBuild-карточек выполняется отдельной кнопкой <strong>Применить планы удаления в CMDBuild</strong> в меню «Создать/обновить правила по шаблонам и связям».</p>
               <label class="text-field settings-field">
                 <span class="normal-case-label">Атрибут готовности Zabbix-хоста</span>
                 <input id="zabbixHostIdAttributeInput" value="zabbix_main_hostid" readonly>
@@ -1413,6 +1542,129 @@
                 <button id="loadGeneralSettingsButton" class="secondary-button" type="button">Загрузить настройки</button>
               </div>
               <p id="generalSettingsStatus" class="status-line"></p>
+            </div>
+          </section>
+        </section>
+
+        <section id="microserviceSettingsView" class="view hidden">
+          <div class="section-heading">
+            <h2>Микросервисы</h2>
+            <p>Настройки, которые UI читает из конфигурации микросервисов и применяет через их штатный reload.</p>
+          </div>
+          <section class="panel">
+            <div class="settings-list">
+              <label class="select-field settings-field">
+                <span class="normal-case-label">Глубина транзитивных связей групп подавления N</span>
+                <select id="transitiveGroupDependencyDepthSelect" title="Настройка будет записана в zabbixconfig2api через кнопку Применить настройки UI">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </label>
+              <p class="settings-help">Поля ниже являются настройками микросервиса <code>zabbixconfig2api</code>. UI читает их из файла конфигурации микросервиса и применяет через эту панель: кнопка <strong>Применить настройки UI</strong> записывает allowlist параметров в <code>src/zabbixconfig2api/appsettings.json</code> и вызывает штатный reload микросервиса по Bearer token. Основной параметр глубины хранится как <code>ZabbixTriggerDependencies:TransitiveGroupDependencyDepth</code>. Если N изменен в UI, но еще не применен, ручной dry-run/apply зависимостей использует выбранное значение как одноразовый override; автоматический reconcile берет сохраненное значение микросервиса до применения настроек. Значение N не меняет потоковую обработку webhook/Kafka, правила конвертации и создание membership. Рекомендуемое значение N=2. Leaf/source-хосты не получают полную матрицу dependencies на все верхние причины: их trigger-ы зависят только от ближайшей suppression-группы. Upstream-причины передаются между агрегатными suppression-группами через выражения aggregate trigger.</p>
+              <p id="transitiveGroupDependencyDepthStatus" class="status-line"></p>
+              <div class="settings-list">
+                <h3>Selector состояния suppression-группы</h3>
+                <label class="text-field settings-field wide-settings-field">
+                  <span class="normal-case-label">AggregateStateTriggerIncludeTags</span>
+                  <input id="aggregateStateTriggerIncludeTagsInput">
+                </label>
+                <label class="text-field settings-field wide-settings-field">
+                  <span class="normal-case-label">AggregateStateTriggerExcludeTags</span>
+                  <input id="aggregateStateTriggerExcludeTagsInput">
+                </label>
+                <label class="text-field settings-field wide-settings-field">
+                  <span class="normal-case-label">AggregateStateTriggerIncludeNameRegex</span>
+                  <input id="aggregateStateTriggerIncludeNameRegexInput">
+                </label>
+                <label class="text-field settings-field wide-settings-field">
+                  <span class="normal-case-label">AggregateStateTriggerExcludeNameRegex</span>
+                  <input id="aggregateStateTriggerExcludeNameRegexInput">
+                </label>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">AggregateStateTriggerMinPriority</span>
+                  <input id="aggregateStateTriggerMinPriorityInput">
+                </label>
+                <p class="settings-help">Эти настройки определяют, какие trigger expressions source-host попадут в calculated item suppression-группы. Теги вводятся через запятую в формате <code>tag=value</code> или <code>tag</code>. Selector dependency-покрытия настраивается отдельно и может оставаться шире.</p>
+              </div>
+              <div class="settings-list">
+                <h3>Лимиты запросов Zabbix API</h3>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">Zabbix:RequestTimeoutMs</span>
+                  <input id="zabbixRequestTimeoutMsInput">
+                </label>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">ZabbixTriggerDependencies:TriggerGetBatchSize</span>
+                  <input id="triggerGetBatchSizeInput">
+                </label>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">ZabbixTriggerDependencies:MaxSourceHostsPerAggregate</span>
+                  <input id="maxSourceHostsPerAggregateInput">
+                </label>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">ZabbixTriggerDependencies:MaxAggregateFormulaLength</span>
+                  <input id="maxAggregateFormulaLengthInput">
+                </label>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">ZabbixTriggerDependencies:MaxDependenciesPerRun</span>
+                  <input id="maxDependenciesPerRunInput">
+                </label>
+                <label class="text-field settings-field">
+                  <span class="normal-case-label">ZabbixTriggerDependencies:SampleLimit</span>
+                  <input id="triggerDependencySampleLimitInput">
+                </label>
+                <p class="settings-help">Таймаут ограничивает один JSON-RPC запрос к Zabbix. Размер пачки определяет, сколько hostid/triggerid уходит в один <code>trigger.get</code> при dry-run/apply зависимостей. Лимиты aggregate formula блокируют слишком крупные suppression-группы до публикации calculated item и trigger expression. При timeout уменьшайте <code>TriggerGetBatchSize</code> или увеличивайте <code>Zabbix:RequestTimeoutMs</code>; при превышении aggregate-лимитов сужайте шаблон/source filters, разбивайте группу или уменьшайте N. Значения применяются к <code>zabbixconfig2api</code> через эту панель.</p>
+              </div>
+              <div class="sync-actions settings-actions">
+                <button id="refreshZabbixGeneralSettingsButton" class="secondary-button" type="button">Обновить из zabbixconfig2api</button>
+                <button id="applyZabbixGeneralSettingsButton" class="primary-button" type="button">Применить настройки UI</button>
+              </div>
+              <p id="microserviceSettingsStatus" class="status-line"></p>
+            </div>
+          </section>
+        </section>
+
+        <section id="slaSettingsView" class="view hidden">
+          <div class="section-heading">
+            <h2>SLA</h2>
+            <p>Настройки SLA и регулярных excluded downtime в Zabbix. Запуск публикации находится в сервисном слое рядом с публикацией сервисной модели.</p>
+          </div>
+          <section class="panel">
+            <div id="zabbixSlaSummary" class="sync-grid"></div>
+            <div class="settings-list">
+              <label class="select-field settings-field">
+                <span class="normal-case-label">ZabbixSla:Enabled</span>
+                <select id="zabbixSlaEnabledInput">
+                  <option value="true">включено</option>
+                  <option value="false">выключено</option>
+                </select>
+              </label>
+              <label class="text-field settings-field wide-settings-field">
+                <span class="normal-case-label">ZabbixSla:DefaultPolicyKey</span>
+                <input id="zabbixSlaDefaultPolicyKeyInput">
+              </label>
+              <label class="text-field settings-field">
+                <span class="normal-case-label">ZabbixSla:DowntimePublicationHorizonMonths</span>
+                <input id="zabbixSlaHorizonMonthsInput">
+              </label>
+              <label class="text-field settings-field wide-settings-field">
+                <span class="normal-case-label">ZabbixSla:ManagedExcludedDowntimePrefix</span>
+                <input id="zabbixSlaManagedPrefixInput">
+              </label>
+              <label class="text-field settings-field">
+                <span class="normal-case-label">ZabbixSla:SampleLimit</span>
+                <input id="zabbixSlaSampleLimitInput">
+              </label>
+              <label class="text-field settings-field">
+                <span class="normal-case-label">Zabbix:RequestTimeoutMs</span>
+                <input id="zabbixSlaTimeoutInput" readonly>
+              </label>
+              <p class="settings-help">Эти значения являются настройками микросервиса <code>zabbixconfig2api</code>, раздел <code>ZabbixSla</code>. UI читает их из файла конфигурации микросервиса и применяет через эту панель: кнопка <strong>Применить настройки UI</strong> записывает allowlist параметров в <code>src/zabbixconfig2api/appsettings.json</code> и вызывает штатный reload микросервиса по Bearer token. <code>DefaultPolicyKey</code> используется, когда сервисный объект не связан с конкретной <code>ServiceSlaPolicy</code>. Календарь SLA задается отдельным объектом <code>ServiceSlaCalendar</code>, связанным с политикой через <code>has_sla_calendar</code>; в нем семь полей дней недели с форматом <code>HH:mm-HH:mm</code>. Если связи нет, календарь считается 24x7. <code>DowntimePublicationHorizonMonths</code> задает, на сколько месяцев вперед разворачиваются регулярные окна <code>ServiceSlaDowntime</code>. <code>ManagedExcludedDowntimePrefix</code> отделяет managed excluded downtime от ручных разовых downtime в Zabbix: при публикации система заменяет только окна с этим префиксом и сохраняет остальные. <strong>Публикация SLA перенесена в Сервисный слой -> Применить в Zabbix</strong>: сначала опубликуйте граф сервиса, затем выполните dry-run/apply SLA кнопками, расположенными после <strong>Опубликовать граф сервиса в Zabbix</strong>. Отдельные пустые service-узлы из SLA-панели не создаются.</p>
+              <div class="sync-actions settings-actions">
+                <button id="zabbixSlaRefreshButton" class="secondary-button" type="button">Обновить настройки SLA</button>
+                <button id="zabbixSlaApplyButton" class="primary-button" type="button">Применить настройки UI</button>
+              </div>
+              <p id="zabbixSlaStatus" class="status-line"></p>
             </div>
           </section>
         </section>
@@ -1618,7 +1870,7 @@
         <section id="relationsGraphView" class="view hidden">
           <div class="section-heading">
             <h2>Визуализация графа связей</h2>
-            <p>Офлайн-граф текущей модели: узлы только шаблоны правил и ручные правила; сгенерированные правила свернуты в счетчики, ожидаемые объекты и онлайн-сверку.</p>
+            <p>Офлайн-граф текущей модели: шаблоны правил, ручные правила и сервисные CMDBuild-объекты. Сгенерированные правила свернуты в счетчики, ожидаемые объекты и онлайн-сверку; ручные связи сервисов, SLA-политик, календарей и downtime показываются как отдельные ребра.</p>
           </div>
           <section class="panel relation-graph-panel">
             <div class="relation-graph-controls">

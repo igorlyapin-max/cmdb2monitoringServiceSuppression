@@ -5,11 +5,15 @@ using System.Text.Json.Serialization;
 using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
 namespace Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 
-public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<CmdbuildOptions> options)
+public sealed class CmdbuildClient(
+    HttpClient httpClient,
+    IOptionsMonitor<CmdbuildOptions> options,
+    IHttpContextAccessor httpContextAccessor)
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -34,10 +38,6 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(selection);
 
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
-
         var items = new List<CmdbuildSchemaApplyItemResult>();
         var selectedClassCodes = ExpandSelectedClasses(schema, selection);
         var selectedDomainCodes = selection.Domains
@@ -47,68 +47,90 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         var selectedClasses = OrderClassesForApply(schema.Classes
             .Where(classDefinition => selectedClassCodes.Contains(classDefinition.Code))
             .ToArray());
+        var selectedLookups = schema.Lookups
+            .Where(lookup => selectedLookupCodes.Contains(lookup.Code))
+            .ToArray();
+        var selectedDomains = schema.Domains
+            .Concat(schema.SuggestedDomains)
+            .Where(domain => selectedDomainCodes.Contains(domain.Code))
+            .ToArray();
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        var operationTimeout = SchemaApplyOperationTimeout(CurrentOptions().RequestTimeoutMs, selectedClasses, selectedLookups, selectedDomains);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(operationTimeout);
+
         var selectedClassCodeSet = selectedClasses
             .Select(classDefinition => classDefinition.Code)
             .ToHashSet(StringComparer.Ordinal);
-        var existingClasses = selectedClasses.Count > 0
-            ? await ListAllClassesAsync(endpoint, timeout.Token)
-            : [];
-        var resolvedClassCodes = ResolveSelectedModelRootClasses(selectedClasses, existingClasses, items);
-        if (items.Any(item => !item.Success))
+        try
         {
-            return ApplyResult(items);
-        }
-
-        foreach (var lookup in schema.Lookups.Where(lookup => selectedLookupCodes.Contains(lookup.Code)))
-        {
-            await ApplyLookupAsync(endpoint, lookup, items, timeout.Token);
-        }
-
-        var classAvailableByCode = new Dictionary<string, bool>(StringComparer.Ordinal);
-        foreach (var classDefinition in selectedClasses)
-        {
-            if (!string.IsNullOrWhiteSpace(classDefinition.ParentClassCode)
-                && selectedClassCodeSet.Contains(classDefinition.ParentClassCode)
-                && classAvailableByCode.TryGetValue(classDefinition.ParentClassCode, out var parentAvailable)
-                && !parentAvailable)
+            var existingClasses = selectedClasses.Count > 0
+                ? await ListAllClassesAsync(endpoint, timeout.Token)
+                : [];
+            var resolvedClassCodes = ResolveSelectedModelRootClasses(selectedClasses, existingClasses, items);
+            if (items.Any(item => !item.Success))
             {
-                items.Add(Failed(
-                    "class",
-                    classDefinition.Code,
-                    $"Parent class '{classDefinition.ParentClassCode}' was not created or found successfully; dependent class was not sent to CMDBuild."));
-                classAvailableByCode[classDefinition.Code] = false;
-                continue;
+                return ApplyResult(items);
             }
 
-            var resolvedCode = ResolveClassCode(classDefinition.Code, resolvedClassCodes);
-            if (!string.Equals(resolvedCode, classDefinition.Code, StringComparison.Ordinal))
+            foreach (var lookup in selectedLookups)
             {
-                items.Add(Skipped(
-                    "class",
-                    classDefinition.Code,
-                    $"Model root superclass already exists as '{resolvedCode}' with the same display name."));
-                classAvailableByCode[classDefinition.Code] = true;
-                continue;
+                await ApplyLookupAsync(endpoint, lookup, items, timeout.Token);
             }
 
-            var expectedParent = ResolveExpectedParent(classDefinition, resolvedClassCodes);
-            classAvailableByCode[classDefinition.Code] = await ApplyClassAsync(endpoint, classDefinition, expectedParent, items, timeout.Token);
+            var classAvailableByCode = new Dictionary<string, bool>(StringComparer.Ordinal);
+            foreach (var classDefinition in selectedClasses)
+            {
+                if (!string.IsNullOrWhiteSpace(classDefinition.ParentClassCode)
+                    && selectedClassCodeSet.Contains(classDefinition.ParentClassCode)
+                    && classAvailableByCode.TryGetValue(classDefinition.ParentClassCode, out var parentAvailable)
+                    && !parentAvailable)
+                {
+                    items.Add(Failed(
+                        "class",
+                        classDefinition.Code,
+                        $"Parent class '{classDefinition.ParentClassCode}' was not created or found successfully; dependent class was not sent to CMDBuild."));
+                    classAvailableByCode[classDefinition.Code] = false;
+                    continue;
+                }
+
+                var resolvedCode = ResolveClassCode(classDefinition.Code, resolvedClassCodes);
+                if (!string.Equals(resolvedCode, classDefinition.Code, StringComparison.Ordinal))
+                {
+                    items.Add(Skipped(
+                        "class",
+                        classDefinition.Code,
+                        $"Model root superclass already exists as '{resolvedCode}' with the same display name."));
+                    classAvailableByCode[classDefinition.Code] = true;
+                    continue;
+                }
+
+                var expectedParent = ResolveExpectedParent(classDefinition, resolvedClassCodes);
+                classAvailableByCode[classDefinition.Code] = await ApplyClassAsync(endpoint, classDefinition, expectedParent, items, timeout.Token);
+            }
+
+            foreach (var domain in selectedDomains)
+            {
+                if (ClassDependencyFailed(domain.SourceClassCode, selectedClassCodeSet, classAvailableByCode)
+                    || ClassDependencyFailed(domain.TargetClassCode, selectedClassCodeSet, classAvailableByCode))
+                {
+                    items.Add(Failed(
+                        "domain",
+                        domain.Code,
+                        "Source or target class was not created or found successfully; domain was not sent to CMDBuild."));
+                    continue;
+                }
+
+                await ApplyDomainAsync(endpoint, domain, items, timeout.Token);
+            }
         }
-
-        var allDomains = schema.Domains.Concat(schema.SuggestedDomains);
-        foreach (var domain in allDomains.Where(domain => selectedDomainCodes.Contains(domain.Code)))
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            if (ClassDependencyFailed(domain.SourceClassCode, selectedClassCodeSet, classAvailableByCode)
-                || ClassDependencyFailed(domain.TargetClassCode, selectedClassCodeSet, classAvailableByCode))
-            {
-                items.Add(Failed(
-                    "domain",
-                    domain.Code,
-                    "Source or target class was not created or found successfully; domain was not sent to CMDBuild."));
-                continue;
-            }
-
-            await ApplyDomainAsync(endpoint, domain, items, timeout.Token);
+            throw new TimeoutException(
+                $"CMDBuild schema apply exceeded operation timeout {FormatDuration(operationTimeout)}. "
+                + $"The run includes {selectedClasses.Count} classes, {selectedDomains.Length} domains and {selectedLookups.Length} lookups. "
+                + "Apply a smaller selection or increase CMDBuild RequestTimeoutMs for schema operations.",
+                ex);
         }
 
         return ApplyResult(items);
@@ -124,6 +146,28 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             Skipped = items.Count(item => item.Action == "skipped"),
             Failed = items.Count(item => !item.Success)
         };
+    }
+
+    private static TimeSpan SchemaApplyOperationTimeout(
+        int requestTimeoutMs,
+        IReadOnlyCollection<CmdbuildClassDefinition> selectedClasses,
+        IReadOnlyCollection<CmdbuildLookupDefinition> selectedLookups,
+        IReadOnlyCollection<CmdbuildDomainDefinition> selectedDomains)
+    {
+        var safeRequestTimeoutMs = Math.Max(1000, requestTimeoutMs);
+        var estimatedCmdbuildCalls = 1
+            + selectedLookups.Sum(lookup => 2 + lookup.Values.Count)
+            + selectedClasses.Sum(classDefinition => 2 + (classDefinition.Attributes.Count * 2))
+            + selectedDomains.Sum(domain => 2 + (domain.Attributes.Count * 2));
+        var estimatedMs = (long)safeRequestTimeoutMs * Math.Clamp(estimatedCmdbuildCalls, 1, 180);
+        return TimeSpan.FromMilliseconds(Math.Clamp(estimatedMs, 120_000L, 1_800_000L));
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        return duration.TotalMinutes >= 1
+            ? $"{duration.TotalMinutes:0.#} minutes"
+            : $"{duration.TotalSeconds:0.#} seconds";
     }
 
     private static HashSet<string> ExpandSelectedClasses(
@@ -654,6 +698,33 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string lookupCode,
         CancellationToken cancellationToken)
     {
+        var values = await ListLookupValuesCatalogAsync(endpoint, lookupCode, cancellationToken);
+        return values
+            .Select(item => item.Code)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    public async Task<CmdbuildLookupValueCatalogResult> ListLookupValuesCatalogAsync(
+        string lookupCode,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        return new CmdbuildLookupValueCatalogResult
+        {
+            LookupCode = lookupCode,
+            Values = await ListLookupValuesCatalogAsync(endpoint, lookupCode, timeout.Token)
+        };
+    }
+
+    private async Task<IReadOnlyList<CmdbuildLookupValueCatalogItem>> ListLookupValuesCatalogAsync(
+        string endpoint,
+        string lookupCode,
+        CancellationToken cancellationToken)
+    {
         using var request = AuthorizedRequest(HttpMethod.Get, $"{endpoint}/lookup_types/{Uri.EscapeDataString(lookupCode)}/values?limit=1000");
         using var response = await httpClient.SendAsync(request, cancellationToken);
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -669,10 +740,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         }
 
         return data.EnumerateArray()
-            .Select(item => ReadString(item, "code"))
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .Select(code => code!)
-            .ToHashSet(StringComparer.Ordinal);
+            .Select(ReadLookupValueCatalogItem)
+            .Where(item => !string.IsNullOrWhiteSpace(item.Code))
+            .ToArray();
     }
 
     private async Task<bool> ResourceExistsAsync(string requestUri, CancellationToken cancellationToken)
@@ -817,9 +887,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             throw new InvalidOperationException("CMDBuild class code is required.");
         }
 
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         using var request = AuthorizedRequest(
             HttpMethod.Post,
@@ -871,6 +941,222 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         };
     }
 
+    public async Task<CmdbuildCreatedCardResult> UpdateClassCardAsync(
+        string classCode,
+        string cardId,
+        IReadOnlyDictionary<string, JsonElement> values,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(classCode))
+        {
+            throw new InvalidOperationException("CMDBuild class code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(cardId))
+        {
+            throw new InvalidOperationException("CMDBuild card id is required.");
+        }
+
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        using var request = AuthorizedRequest(
+            HttpMethod.Put,
+            $"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards/{Uri.EscapeDataString(cardId)}");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(values ?? new Dictionary<string, JsonElement>(), JsonOptions),
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await httpClient.SendAsync(request, timeout.Token);
+        var text = await response.Content.ReadAsStringAsync(timeout.Token);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new CmdbuildCreatedCardResult
+            {
+                ClassCode = classCode,
+                Id = cardId,
+                Description = "",
+                Values = values ?? new Dictionary<string, JsonElement>()
+            };
+        }
+
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind == JsonValueKind.Object
+            && document.RootElement.TryGetProperty("success", out var success)
+            && success.ValueKind == JsonValueKind.False)
+        {
+            throw new InvalidOperationException(Trim(text));
+        }
+
+        var data = TryReadDataObject(document.RootElement, out var dataObject)
+            ? dataObject
+            : document.RootElement;
+
+        return new CmdbuildCreatedCardResult
+        {
+            ClassCode = classCode,
+            Id = ReadRaw(data, "_id") ?? ReadRaw(data, "id") ?? cardId,
+            Description = ReadString(data, "_description")
+                ?? ReadString(data, "Description")
+                ?? ReadString(data, "description")
+                ?? "",
+            Values = values ?? new Dictionary<string, JsonElement>()
+        };
+    }
+
+    public async Task<CmdbuildDeleteCardResult> DeleteClassCardAsync(
+        string classCode,
+        string cardId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(classCode))
+        {
+            throw new InvalidOperationException("CMDBuild class code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(cardId))
+        {
+            throw new InvalidOperationException("CMDBuild card id is required.");
+        }
+
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        using var request = AuthorizedRequest(
+            HttpMethod.Delete,
+            $"{endpoint}/classes/{Uri.EscapeDataString(classCode)}/cards/{Uri.EscapeDataString(cardId)}");
+        using var response = await httpClient.SendAsync(request, timeout.Token);
+        var text = await response.Content.ReadAsStringAsync(timeout.Token);
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        return new CmdbuildDeleteCardResult
+        {
+            ClassCode = classCode,
+            Id = cardId,
+            Action = response.StatusCode == System.Net.HttpStatusCode.NotFound ? "skipped" : "deleted",
+            Message = response.StatusCode == System.Net.HttpStatusCode.NotFound ? "card was not found" : ""
+        };
+    }
+
+    public async Task<CmdbuildRelationApplyResult> CreateDomainRelationAsync(
+        string domainCode,
+        CmdbuildCreateRelationRequest relation,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(domainCode))
+        {
+            throw new InvalidOperationException("CMDBuild domain code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(relation.SourceClassCode)
+            || string.IsNullOrWhiteSpace(relation.SourceCardId)
+            || string.IsNullOrWhiteSpace(relation.DestinationClassCode)
+            || string.IsNullOrWhiteSpace(relation.DestinationCardId))
+        {
+            throw new InvalidOperationException("CMDBuild relation source and destination cards are required.");
+        }
+
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        var domain = await ReadDomainAsync(endpoint, domainCode, timeout.Token)
+            ?? throw new InvalidOperationException($"CMDBuild domain {domainCode} was not found.");
+        var sourceClassCode = relation.SourceClassCode.Trim();
+        var destinationClassCode = relation.DestinationClassCode.Trim();
+        var sourceCardId = relation.SourceCardId.Trim();
+        var destinationCardId = relation.DestinationCardId.Trim();
+
+        string sourceType;
+        string sourceId;
+        string destinationType;
+        string destinationId;
+        if (domain.SourceClassCode.Equals(sourceClassCode, StringComparison.Ordinal)
+            && domain.TargetClassCode.Equals(destinationClassCode, StringComparison.Ordinal))
+        {
+            sourceType = sourceClassCode;
+            sourceId = sourceCardId;
+            destinationType = destinationClassCode;
+            destinationId = destinationCardId;
+        }
+        else if (domain.SourceClassCode.Equals(destinationClassCode, StringComparison.Ordinal)
+            && domain.TargetClassCode.Equals(sourceClassCode, StringComparison.Ordinal))
+        {
+            sourceType = destinationClassCode;
+            sourceId = destinationCardId;
+            destinationType = sourceClassCode;
+            destinationId = sourceCardId;
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"CMDBuild domain {domain.Code} does not match relation classes {sourceClassCode} -> {destinationClassCode}.");
+        }
+
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["_type"] = domain.Code,
+            ["_sourceType"] = sourceType,
+            ["_sourceId"] = sourceId,
+            ["_destinationType"] = destinationType,
+            ["_destinationId"] = destinationId
+        };
+        foreach (var attribute in relation.Attributes)
+        {
+            payload[attribute.Key] = attribute.Value;
+        }
+        payload.TryAdd("is_active", true);
+
+        return await CreateDomainRelationAsync(endpoint, domain.Code, payload, timeout.Token);
+    }
+
+    public async Task<CmdbuildRelationApplyResult> DeleteDomainRelationAsync(
+        string domainCode,
+        string relationId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(domainCode))
+        {
+            throw new InvalidOperationException("CMDBuild domain code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(relationId))
+        {
+            throw new InvalidOperationException("CMDBuild relation id is required.");
+        }
+
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        using var request = AuthorizedRequest(
+            HttpMethod.Delete,
+            $"{endpoint}/domains/{Uri.EscapeDataString(domainCode)}/relations/{Uri.EscapeDataString(relationId)}");
+        using var response = await httpClient.SendAsync(request, timeout.Token);
+        var text = await response.Content.ReadAsStringAsync(timeout.Token);
+        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+        }
+
+        return new CmdbuildRelationApplyResult(
+            domainCode,
+            relationId,
+            response.StatusCode == System.Net.HttpStatusCode.NotFound ? "skipped" : "deleted",
+            response.StatusCode == System.Net.HttpStatusCode.NotFound ? "relation was not found" : "");
+    }
+
     public async Task<CmdbuildAggregationApplyResult> ApplyAggregationCommandAsync(
         AggregationCommand command,
         CancellationToken cancellationToken)
@@ -904,9 +1190,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             throw new InvalidOperationException("Aggregation command source class/card id are required.");
         }
 
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var values = ManagedTargetValues(command);
         var targetCardId = await ResolveTargetCardIdAsync(endpoint, command, values, timeout.Token);
@@ -1096,9 +1382,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             throw new InvalidOperationException("Aggregation command source class/card id are required.");
         }
 
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var values = ManagedTargetValues(command);
         var targetCardId = await ResolveTargetCardIdAsync(endpoint, command, values, timeout.Token);
@@ -1659,9 +1945,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
 
     public async Task<IReadOnlyList<CmdbuildClassSchemaCatalogItem>> ListClassSchemasAsync(CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var classes = await ListAllClassesAsync(endpoint, timeout.Token);
         var result = new List<CmdbuildClassSchemaCatalogItem>();
@@ -1687,9 +1973,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string? prefix,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         using var request = AuthorizedGet($"{endpoint}/domains?limit=1000");
         using var response = await httpClient.SendAsync(request, timeout.Token);
@@ -1731,13 +2017,21 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string? prefix,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        return await ListDomainRelationsAsync(prefix, includeDomain: null, cancellationToken);
+    }
+
+    public async Task<CmdbuildDomainRelationCatalogResult> ListDomainRelationsAsync(
+        string? prefix,
+        Func<CmdbuildDomainCatalogItem, bool>? includeDomain,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var domains = await ListDomainsAsync(prefix, timeout.Token);
         var relations = new List<CmdbuildDomainRelationCatalogItem>();
-        foreach (var domain in domains)
+        foreach (var domain in domains.Where(domain => includeDomain?.Invoke(domain) ?? true))
         {
             relations.AddRange(await ListDomainRelationsAsync(endpoint, domain, timeout.Token));
         }
@@ -1801,13 +2095,43 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string? suppressionRootPath,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var classes = new List<CmdbuildClassInstanceCatalogItem>();
         await AddManagedLayerInstancesAsync(endpoint, classes, "Service", prefix, serviceRootPath, timeout.Token);
         await AddManagedLayerInstancesAsync(endpoint, classes, "Suppression", prefix, suppressionRootPath, timeout.Token);
+
+        return new CmdbuildManagedInstanceCatalogResult
+        {
+            Classes = classes
+                .OrderBy(item => item.Layer, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.ClassCode, StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+        };
+    }
+
+    public async Task<CmdbuildManagedInstanceCatalogResult> ListManagedLayerClassInstancesAsync(
+        string? prefix,
+        string layer,
+        string? rootPath,
+        Func<CmdbuildClassCatalogItem, bool>? includeClass,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        var classes = new List<CmdbuildClassInstanceCatalogItem>();
+        await AddManagedLayerInstancesAsync(
+            endpoint,
+            classes,
+            layer,
+            prefix,
+            rootPath,
+            timeout.Token,
+            includeClass);
 
         return new CmdbuildManagedInstanceCatalogResult
         {
@@ -1823,9 +2147,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string? layer,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var allClasses = await ListAllClassesAsync(endpoint, timeout.Token);
         var classItem = allClasses.FirstOrDefault(item =>
@@ -1862,9 +2186,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             return "";
         }
 
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var segments = cmdbPath
             .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -1966,7 +2290,8 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string layer,
         string? prefix,
         string? rootPath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CmdbuildClassCatalogItem, bool>? includeClass = null)
     {
         var catalog = await ListClassesAsync(
             rootPath,
@@ -1978,7 +2303,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             includePrototypes: false,
             cancellationToken);
 
-        foreach (var classItem in catalog.Classes.Where(item => !item.Prototype))
+        foreach (var classItem in catalog.Classes
+            .Where(item => !item.Prototype)
+            .Where(item => includeClass?.Invoke(item) ?? true))
         {
             var attributes = await ListClassAttributeCatalogAsync(endpoint, classItem.Code, cancellationToken);
             var cards = await ListClassCardsAsync(endpoint, layer, classItem, attributes, cancellationToken);
@@ -2003,6 +2330,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
     {
         const int pageSize = 1000;
         var cards = new List<CmdbuildClassCardCatalogItem>();
+        var lookupValuesByType = await ListLookupValueCatalogByTypeAsync(endpoint, attributes, cancellationToken);
         var offset = 0;
         int? total = null;
 
@@ -2026,7 +2354,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
             var pageCount = 0;
             foreach (var card in data.EnumerateArray())
             {
-                cards.Add(ReadCardCatalogItem(layer, classItem, attributes, card));
+                cards.Add(ReadCardCatalogItem(layer, classItem, attributes, lookupValuesByType, card));
                 pageCount++;
             }
 
@@ -2040,6 +2368,39 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         return cards;
     }
 
+    private async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, CmdbuildLookupValueCatalogItem>>> ListLookupValueCatalogByTypeAsync(
+        string endpoint,
+        IReadOnlyList<CmdbuildAttributeCatalogItem> attributes,
+        CancellationToken cancellationToken)
+    {
+        var lookupTypes = attributes
+            .Select(attribute => attribute.LookupTypeCode)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (lookupTypes.Length == 0)
+        {
+            return new Dictionary<string, IReadOnlyDictionary<string, CmdbuildLookupValueCatalogItem>>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var result = new Dictionary<string, IReadOnlyDictionary<string, CmdbuildLookupValueCatalogItem>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var lookupType in lookupTypes)
+        {
+            var values = await ListLookupValuesCatalogAsync(endpoint, lookupType, cancellationToken);
+            var byToken = new Dictionary<string, CmdbuildLookupValueCatalogItem>(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in values)
+            {
+                AddLookupValueToken(byToken, value.Id, value);
+                AddLookupValueToken(byToken, value.Code, value);
+                AddLookupValueToken(byToken, value.Description, value);
+            }
+
+            result[lookupType] = byToken;
+        }
+
+        return result;
+    }
+
     public async Task<CmdbuildClassCatalogResult> ListClassesAsync(string? rootPath, CancellationToken cancellationToken)
     {
         return await ListClassesAsync(rootPath, managedFilter: null, includePrototypes: false, cancellationToken);
@@ -2051,9 +2412,9 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         bool includePrototypes,
         CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
         var allClasses = await ListAllClassesAsync(endpoint, timeout.Token);
         var normalizedRootPath = NormalizeRootPath(rootPath);
@@ -2618,7 +2979,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
 
     public async Task<IntegrationCheckResult> CheckConnectionAsync(CancellationToken cancellationToken)
     {
-        var endpoint = options.CurrentValue.BaseUrl.TrimEnd('/');
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
         if (string.IsNullOrWhiteSpace(endpoint))
         {
             return Failed(endpoint, "CMDBuild base URL is not configured.");
@@ -2627,7 +2988,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
 
             using var request = AuthorizedGet($"{endpoint}/classes?limit=1");
             using var response = await httpClient.SendAsync(request, timeout.Token);
@@ -2676,9 +3037,57 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         return request;
     }
 
+    private CmdbuildOptions CurrentOptions()
+    {
+        var configured = options.CurrentValue;
+        var request = httpContextAccessor.HttpContext?.Request;
+        if (request is null)
+        {
+            return configured;
+        }
+
+        var baseUrl = HeaderValue(request, "x-cmdb2monitoring-cmdbuild-base-url");
+        var authMode = HeaderValue(request, "x-cmdb2monitoring-cmdbuild-auth-mode");
+        var username = HeaderValue(request, "x-cmdb2monitoring-cmdbuild-username");
+        var password = HeaderValue(request, "x-cmdb2monitoring-cmdbuild-password");
+        var apiToken = HeaderValue(request, "x-cmdb2monitoring-cmdbuild-api-token");
+        var timeoutText = HeaderValue(request, "x-cmdb2monitoring-cmdbuild-timeout-ms");
+        if (string.IsNullOrWhiteSpace(baseUrl)
+            && string.IsNullOrWhiteSpace(authMode)
+            && string.IsNullOrWhiteSpace(username)
+            && string.IsNullOrWhiteSpace(password)
+            && string.IsNullOrWhiteSpace(apiToken)
+            && string.IsNullOrWhiteSpace(timeoutText))
+        {
+            return configured;
+        }
+
+        return new CmdbuildOptions
+        {
+            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? configured.BaseUrl : baseUrl,
+            AuthMode = string.IsNullOrWhiteSpace(authMode)
+                ? !string.IsNullOrWhiteSpace(apiToken) ? "Token" : configured.AuthMode
+                : authMode,
+            Username = string.IsNullOrWhiteSpace(username) ? configured.Username : username,
+            Password = string.IsNullOrWhiteSpace(password) ? configured.Password : password,
+            ApiToken = string.IsNullOrWhiteSpace(apiToken) ? configured.ApiToken : apiToken,
+            RequestTimeoutMs = int.TryParse(timeoutText, out var timeoutMs) && timeoutMs > 0
+                ? timeoutMs
+                : configured.RequestTimeoutMs
+        };
+    }
+
+    private static string HeaderValue(HttpRequest request, string name)
+    {
+        return request.Headers.TryGetValue(name, out var values)
+            ? values.ToString().Trim()
+            : "";
+    }
+
     private void ApplyAuthorization(HttpRequestMessage request)
     {
-        var authMode = options.CurrentValue.AuthMode;
+        var currentOptions = CurrentOptions();
+        var authMode = currentOptions.AuthMode;
         if (authMode.Equals("None", StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -2686,25 +3095,25 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
 
         if (authMode.Equals("Token", StringComparison.OrdinalIgnoreCase)
             || (authMode.Equals("IndeedPam", StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken)))
+                && !string.IsNullOrWhiteSpace(currentOptions.ApiToken)))
         {
-            if (string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))
+            if (string.IsNullOrWhiteSpace(currentOptions.ApiToken))
             {
                 throw new InvalidOperationException("CMDBuild API token is required for Token auth mode.");
             }
 
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.CurrentValue.ApiToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", currentOptions.ApiToken);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(options.CurrentValue.Username) || string.IsNullOrWhiteSpace(options.CurrentValue.Password))
+        if (string.IsNullOrWhiteSpace(currentOptions.Username) || string.IsNullOrWhiteSpace(currentOptions.Password))
         {
             throw new InvalidOperationException("CMDBuild username/password are required for Login auth mode.");
         }
 
         request.Headers.Authorization = new AuthenticationHeaderValue(
             "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.CurrentValue.Username}:{options.CurrentValue.Password}")));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{currentOptions.Username}:{currentOptions.Password}")));
     }
 
     private static CmdbuildClassCatalogItem? ReadClassCatalogItem(JsonElement item)
@@ -2808,6 +3217,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         string layer,
         CmdbuildClassCatalogItem classItem,
         IReadOnlyList<CmdbuildAttributeCatalogItem> attributes,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, CmdbuildLookupValueCatalogItem>> lookupValuesByType,
         JsonElement item)
     {
         var id = ReadRaw(item, "_id") ?? "";
@@ -2824,7 +3234,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         foreach (var attribute in attributes)
         {
             seen.Add(attribute.Code);
-            values.Add(ReadCardAttributeValue(item, attribute));
+            values.Add(ReadCardAttributeValue(item, attribute, lookupValuesByType));
         }
 
         if (item.ValueKind == JsonValueKind.Object)
@@ -2846,7 +3256,7 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
                         Type = "",
                         Active = true
                     };
-                values.Add(ReadCardAttributeValue(item, attribute));
+                values.Add(ReadCardAttributeValue(item, attribute, lookupValuesByType));
             }
         }
 
@@ -2860,7 +3270,10 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
         };
     }
 
-    private static CmdbuildCardAttributeValue ReadCardAttributeValue(JsonElement item, CmdbuildAttributeCatalogItem attribute)
+    private static CmdbuildCardAttributeValue ReadCardAttributeValue(
+        JsonElement item,
+        CmdbuildAttributeCatalogItem attribute,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, CmdbuildLookupValueCatalogItem>> lookupValuesByType)
     {
         if (item.ValueKind != JsonValueKind.Object
             || !item.TryGetProperty(attribute.Code, out var value)
@@ -2872,20 +3285,101 @@ public sealed class CmdbuildClient(HttpClient httpClient, IOptionsMonitor<Cmdbui
                 Name = attribute.Name,
                 Description = attribute.Description,
                 Type = attribute.Type,
+                LookupTypeCode = attribute.LookupTypeCode,
                 ValueKind = "null",
-                Value = null
+                Value = null,
+                RawValue = null
             };
         }
 
+        var rawValue = ReadCardValue(value);
+        var resolvedLookup = ResolveLookupAttributeValue(value, rawValue, attribute, lookupValuesByType);
         return new CmdbuildCardAttributeValue
         {
             Code = attribute.Code,
             Name = attribute.Name,
             Description = attribute.Description,
             Type = attribute.Type,
+            LookupTypeCode = attribute.LookupTypeCode,
             ValueKind = value.ValueKind.ToString().ToLowerInvariant(),
-            Value = ReadCardValue(value)
+            Value = resolvedLookup?.Code ?? rawValue,
+            RawValue = rawValue,
+            LookupLabel = resolvedLookup?.Description ?? ""
         };
+    }
+
+    private static CmdbuildLookupValueCatalogItem? ResolveLookupAttributeValue(
+        JsonElement value,
+        string? rawValue,
+        CmdbuildAttributeCatalogItem attribute,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, CmdbuildLookupValueCatalogItem>> lookupValuesByType)
+    {
+        if (string.IsNullOrWhiteSpace(attribute.LookupTypeCode)
+            || !lookupValuesByType.TryGetValue(attribute.LookupTypeCode, out var values))
+        {
+            return null;
+        }
+
+        foreach (var candidate in LookupValueCandidates(value, rawValue))
+        {
+            if (values.TryGetValue(candidate, out var lookupValue))
+            {
+                return lookupValue;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> LookupValueCandidates(JsonElement value, string? rawValue)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var propertyName in new[] { "code", "_code", "name", "value", "_id", "id", "description", "_description_translation" })
+            {
+                var candidate = ReadRaw(value, propertyName) ?? ReadString(value, propertyName);
+                if (!string.IsNullOrWhiteSpace(candidate))
+                {
+                    yield return candidate.Trim().Trim('"');
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(rawValue))
+        {
+            yield return rawValue.Trim().Trim('"');
+        }
+    }
+
+    private static CmdbuildLookupValueCatalogItem ReadLookupValueCatalogItem(JsonElement item)
+    {
+        var code = ReadString(item, "code")
+            ?? ReadString(item, "name")
+            ?? ReadRaw(item, "_id")
+            ?? "";
+        return new CmdbuildLookupValueCatalogItem
+        {
+            Id = ReadRaw(item, "_id") ?? ReadRaw(item, "id") ?? code,
+            Code = code,
+            Description = ReadString(item, "description")
+                ?? ReadString(item, "_description_translation")
+                ?? code,
+            Active = ReadBool(item, "active", defaultValue: true),
+            Index = ReadInt(item, "index") ?? 0
+        };
+    }
+
+    private static void AddLookupValueToken(
+        Dictionary<string, CmdbuildLookupValueCatalogItem> values,
+        string? token,
+        CmdbuildLookupValueCatalogItem value)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return;
+        }
+
+        values.TryAdd(token.Trim().Trim('"'), value);
     }
 
     private static string? ReadCardValue(JsonElement value)
@@ -3246,6 +3740,20 @@ public sealed record CmdbuildCreateCardRequest
         new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 }
 
+public sealed record CmdbuildCreateRelationRequest
+{
+    public string SourceClassCode { get; init; } = "";
+
+    public string SourceCardId { get; init; } = "";
+
+    public string DestinationClassCode { get; init; } = "";
+
+    public string DestinationCardId { get; init; } = "";
+
+    public IReadOnlyDictionary<string, JsonElement> Attributes { get; init; } =
+        new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+}
+
 public sealed record CmdbuildCreatedCardResult
 {
     public required string ClassCode { get; init; }
@@ -3256,6 +3764,17 @@ public sealed record CmdbuildCreatedCardResult
 
     public IReadOnlyDictionary<string, JsonElement> Values { get; init; } =
         new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+}
+
+public sealed record CmdbuildDeleteCardResult
+{
+    public required string ClassCode { get; init; }
+
+    public required string Id { get; init; }
+
+    public required string Action { get; init; }
+
+    public string Message { get; init; } = "";
 }
 
 public sealed record CmdbuildAggregationApplyResult
@@ -3301,9 +3820,35 @@ public sealed record CmdbuildCardAttributeValue
 
     public string Type { get; init; } = "";
 
+    public string LookupTypeCode { get; init; } = "";
+
     public string ValueKind { get; init; } = "";
 
     public string? Value { get; init; }
+
+    public string? RawValue { get; init; }
+
+    public string LookupLabel { get; init; } = "";
+}
+
+public sealed record CmdbuildLookupValueCatalogResult
+{
+    public required string LookupCode { get; init; }
+
+    public required IReadOnlyList<CmdbuildLookupValueCatalogItem> Values { get; init; }
+}
+
+public sealed record CmdbuildLookupValueCatalogItem
+{
+    public string Id { get; init; } = "";
+
+    public string Code { get; init; } = "";
+
+    public string Description { get; init; } = "";
+
+    public bool Active { get; init; }
+
+    public int Index { get; init; }
 }
 
 internal sealed record CmdbuildMenuClassList(bool RootFound, IReadOnlyList<CmdbuildMenuClassItem> Classes);

@@ -13,14 +13,14 @@ echo "== run monitoring UI regression checks =="
 node "$repo_root/tests/ui-regressions.mjs"
 
 echo "== build shared diagnostic contracts =="
-"$repo_root/scripts/dotnet" build "$repo_root/tests/sharedcontracts/sharedcontracts.csproj" -v minimal /p:NuGetAudit=false
+"$repo_root/scripts/dotnet" build "$repo_root/tests/sharedcontracts/sharedcontracts.csproj" -v minimal /p:NuGetAudit=false -m:1
 
 echo "== run shared diagnostic contracts =="
 "$repo_root/scripts/dotnet" run --no-build --project "$repo_root/tests/sharedcontracts/sharedcontracts.csproj"
 
 if [[ "${LIVE:-0}" == "1" ]]; then
   echo "== build live integration checks =="
-  "$repo_root/scripts/dotnet" build "$repo_root/tests/integrationchecks/integrationchecks.csproj" -v minimal /p:NuGetAudit=false
+  "$repo_root/scripts/dotnet" build "$repo_root/tests/integrationchecks/integrationchecks.csproj" -v minimal /p:NuGetAudit=false -m:1
 
   echo "== run live integration checks =="
   "$repo_root/scripts/dotnet" run --no-build --project "$repo_root/tests/integrationchecks/integrationchecks.csproj"

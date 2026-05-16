@@ -1,4 +1,7 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -10,9 +13,19 @@ namespace Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOptions> options)
 {
     public const int DefaultTriggerGetBatchSize = 25;
+    private static readonly ConcurrentDictionary<string, string> LoginTokenCache = new(StringComparer.Ordinal);
+    private static readonly AsyncLocal<ZabbixApiCallStats?> CurrentCallStats = new();
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private string? loginToken;
     private int requestId = 10;
+
+    public static ZabbixApiCallStatsScope BeginApiCallStatsScope()
+    {
+        var previous = CurrentCallStats.Value;
+        var scope = new ZabbixApiCallStatsScope(previous);
+        CurrentCallStats.Value = scope.Stats;
+        return scope;
+    }
 
     public async Task<IntegrationCheckResult> CheckConnectionAsync(CancellationToken cancellationToken)
     {
@@ -45,6 +58,91 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         }
     }
 
+    public async Task<ZabbixSlaInfo?> FindSlaByNameAsync(
+        string name,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("slaid", "name", "period", "slo", "timezone", "status", "description"),
+            ["selectServiceTags"] = "extend",
+            ["selectSchedule"] = "extend",
+            ["selectExcludedDowntimes"] = "extend",
+            ["filter"] = new JsonObject
+            {
+                ["name"] = new JsonArray(name)
+            },
+            ["limit"] = 2
+        };
+
+        var response = await SendZabbixMethodAsync("sla.get", parameters, cancellationToken);
+        var slas = ReadResultArray(response, "sla.get")
+            .OfType<JsonObject>()
+            .Select(ReadSla)
+            .Where(sla => !string.IsNullOrWhiteSpace(sla.SlaId))
+            .ToArray();
+
+        return slas.Length switch
+        {
+            0 => null,
+            1 => slas[0],
+            _ => throw new InvalidOperationException(
+                $"Zabbix contains duplicated SLA named '{name}': {string.Join(", ", slas.Select(sla => sla.SlaId))}.")
+        };
+    }
+
+    public async Task<ZabbixSlaApplyResult> ApplySlaAsync(
+        ZabbixSlaDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(definition.Name))
+        {
+            throw new InvalidOperationException("Zabbix SLA name is empty.");
+        }
+
+        if (definition.ServiceTags.Count == 0)
+        {
+            throw new InvalidOperationException($"Zabbix SLA '{definition.Name}' has no service_tags.");
+        }
+
+        if (definition.Schedule.Count == 0)
+        {
+            throw new InvalidOperationException($"Zabbix SLA '{definition.Name}' has no schedule.");
+        }
+
+        var existing = await FindSlaByNameAsync(definition.Name, cancellationToken);
+        var excludedDowntimes = MergeExcludedDowntimes(definition, existing);
+        var payload = BuildSlaPayload(definition, excludedDowntimes);
+        string action;
+        string slaId;
+        if (existing is null)
+        {
+            var create = await SendZabbixMethodAsync("sla.create", payload, cancellationToken);
+            slaId = ReadFirstId(create, "slaids", "sla.create");
+            action = "created";
+        }
+        else
+        {
+            slaId = existing.SlaId;
+            payload["slaid"] = slaId;
+            await SendZabbixMethodAsync("sla.update", payload, cancellationToken);
+            action = "updated";
+        }
+
+        return new ZabbixSlaApplyResult
+        {
+            SlaId = slaId,
+            Action = action,
+            ManagedExcludedDowntimes = definition.ExcludedDowntimes.Count,
+            PreservedManualExcludedDowntimes = excludedDowntimes.Count - definition.ExcludedDowntimes.Count
+        };
+    }
+
     public async Task<ZabbixManagedServiceApplyResult> ApplyManagedServiceAsync(
         ZabbixManagedServiceDefinition definition,
         CancellationToken cancellationToken)
@@ -62,6 +160,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         var existing = await FindManagedServiceByKeyAsync(definition.Layer, definition.ManagedKey, cancellationToken);
         var warnings = new List<string>();
         var childIds = new List<string>();
+        var parentIds = new List<string>();
 
         foreach (var relation in definition.Relations)
         {
@@ -88,6 +187,26 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             childIds.Add(child.ServiceId);
         }
 
+        foreach (var managedKey in definition.ParentManagedKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal))
+        {
+            var parent = await FindManagedServiceByKeyAsync(definition.Layer, managedKey, cancellationToken);
+            if (parent is null)
+            {
+                warnings.Add($"Parent managed service не найден: {managedKey}.");
+                continue;
+            }
+
+            if (existing is not null && string.Equals(existing.ServiceId, parent.ServiceId, StringComparison.Ordinal))
+            {
+                warnings.Add($"Parent managed service {managedKey}: пропущена самоссылка на serviceid {parent.ServiceId}.");
+                continue;
+            }
+
+            parentIds.Add(parent.ServiceId);
+        }
+
         foreach (var managedKey in definition.ChildManagedKeys)
         {
             var child = await FindManagedServiceByKeyAsync(definition.Layer, managedKey, cancellationToken);
@@ -109,20 +228,129 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         childIds = childIds
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        var replaceChildren = warnings.Count == 0;
+        parentIds = parentIds
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var expectedChildCount = definition.Relations.Count + definition.ChildManagedKeys.Count;
+        var expectedParentCount = definition.ParentManagedKeys.Count;
+        var replaceChildren = warnings.Count == 0 || childIds.Count > 0 || expectedChildCount == 0;
+        var replaceParents = expectedParentCount > 0 && (warnings.Count == 0 || parentIds.Count > 0);
         var serviceId = existing is null
-            ? await CreateManagedServiceAsync(definition, childIds, replaceChildren, cancellationToken)
-            : await UpdateManagedServiceAsync(existing.ServiceId, definition, childIds, replaceChildren, cancellationToken);
+            ? await CreateManagedServiceAsync(definition, childIds, replaceChildren, parentIds, replaceParents, cancellationToken)
+            : await UpdateManagedServiceAsync(existing.ServiceId, definition, childIds, replaceChildren, parentIds, replaceParents, cancellationToken);
 
         return new ZabbixManagedServiceApplyResult
         {
             Success = true,
             Action = existing is null ? "created" : "updated",
             ServiceId = serviceId,
-            RelationsApplied = replaceChildren ? childIds.Count : 0,
-            RelationsDeferred = replaceChildren ? 0 : warnings.Count,
+            RelationsApplied = (replaceChildren ? childIds.Count : 0) + (replaceParents ? parentIds.Count : 0),
+            RelationsDeferred = warnings.Count,
             ProblemTagsApplied = definition.ProblemTags.Count,
             Warnings = warnings
+        };
+    }
+
+    public async Task<ZabbixManagedServiceApplyResult> ApplyManagedServiceNodeAsync(
+        ZabbixManagedServiceDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(definition.ManagedKey))
+        {
+            throw new InvalidOperationException("Zabbix managed service key is empty.");
+        }
+
+        if (string.IsNullOrWhiteSpace(definition.Name))
+        {
+            throw new InvalidOperationException($"Zabbix managed service name is empty for key '{definition.ManagedKey}'.");
+        }
+
+        var existing = await FindManagedServiceByKeyAsync(definition.Layer, definition.ManagedKey, cancellationToken);
+        var warnings = new List<string>();
+        var parentIds = new List<string>();
+        foreach (var managedKey in definition.ParentManagedKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal))
+        {
+            var parent = await FindManagedServiceByKeyAsync(definition.Layer, managedKey, cancellationToken);
+            if (parent is null)
+            {
+                warnings.Add($"Parent managed service не найден: {managedKey}.");
+                continue;
+            }
+
+            if (existing is not null && string.Equals(existing.ServiceId, parent.ServiceId, StringComparison.Ordinal))
+            {
+                warnings.Add($"Parent managed service {managedKey}: пропущена самоссылка на serviceid {parent.ServiceId}.");
+                continue;
+            }
+
+            parentIds.Add(parent.ServiceId);
+        }
+
+        parentIds = parentIds
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var expectedParentCount = definition.ParentManagedKeys.Count;
+        var replaceParents = warnings.Count == 0 || parentIds.Count > 0 || expectedParentCount == 0;
+        var serviceId = existing is null
+            ? await CreateManagedServiceAsync(definition, [], false, parentIds, replaceParents, cancellationToken)
+            : await UpdateManagedServiceAsync(existing.ServiceId, definition, [], false, parentIds, replaceParents, cancellationToken);
+
+        return new ZabbixManagedServiceApplyResult
+        {
+            Success = true,
+            Action = existing is null ? "created" : "updated",
+            ServiceId = serviceId,
+            RelationsApplied = replaceParents ? parentIds.Count : 0,
+            RelationsDeferred = warnings.Count,
+            ProblemTagsApplied = definition.ProblemTags.Count,
+            Warnings = warnings
+        };
+    }
+
+    public async Task<ZabbixManagedServiceApplyResult> ApplyManagedServiceTagsAsync(
+        ZabbixManagedServiceDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(definition.ManagedKey))
+        {
+            throw new InvalidOperationException("Zabbix managed service key is empty.");
+        }
+
+        var existing = await FindManagedServiceByKeyAsync(
+            definition.Layer,
+            definition.ManagedKey,
+            cancellationToken);
+        if (existing is null)
+        {
+            throw new InvalidOperationException(
+                $"Managed Zabbix Service for key '{definition.ManagedKey}' was not found. Publish the service topology first.");
+        }
+
+        var replaceTagKeys = new HashSet<string>(definition.Tags.Keys, StringComparer.Ordinal);
+        var tags = existing.Tags
+            .Where(tag => !replaceTagKeys.Contains(tag.Key))
+            .ToDictionary(tag => tag.Key, tag => tag.Value, StringComparer.Ordinal);
+        foreach (var tag in definition.Tags)
+        {
+            if (!string.IsNullOrWhiteSpace(tag.Value))
+            {
+                tags[tag.Key] = tag.Value;
+            }
+        }
+
+        var payload = new JsonObject
+        {
+            ["serviceid"] = existing.ServiceId,
+            ["tags"] = ServiceTags(tags)
+        };
+        await SendZabbixMethodAsync("service.update", payload, cancellationToken);
+        return new ZabbixManagedServiceApplyResult
+        {
+            Success = true,
+            Action = "tagged",
+            ServiceId = existing.ServiceId
         };
     }
 
@@ -339,6 +567,78 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             cancellationToken);
 
         return SingleManagedServiceOrDefault(services, $"key '{managedKey}'");
+    }
+
+    public async Task<IReadOnlyList<ZabbixServiceInfo>> ListManagedServicesByLayerAsync(
+        string layer,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(layer))
+        {
+            return [];
+        }
+
+        return await GetServicesByTagsAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [ZabbixManagedServiceTags.Managed] = "true",
+                [ZabbixManagedServiceTags.Layer] = layer
+            },
+            cancellationToken,
+            Math.Clamp(limit, 1, 10000));
+    }
+
+    public async Task<ZabbixManagedServiceDeleteResult> DeleteManagedServiceByKeyAsync(
+        string layer,
+        string managedKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(managedKey))
+        {
+            return new ZabbixManagedServiceDeleteResult
+            {
+                ManagedKey = managedKey,
+                Action = "skipped",
+                Message = "managed key is empty"
+            };
+        }
+
+        var service = await FindManagedServiceByKeyAsync(layer, managedKey, cancellationToken);
+        if (service is null)
+        {
+            return new ZabbixManagedServiceDeleteResult
+            {
+                ManagedKey = managedKey,
+                Action = "skipped",
+                Message = "managed service not found"
+            };
+        }
+
+        if (service.Tags.TryGetValue(ZabbixManagedServiceTags.SourceLeaf, out var sourceLeaf)
+            && sourceLeaf.Equals("true", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ZabbixManagedServiceDeleteResult
+            {
+                ManagedKey = managedKey,
+                ServiceId = service.ServiceId,
+                Name = service.Name,
+                Action = "skipped",
+                Message = "source leaf managed service is not deleted by stale cleanup"
+            };
+        }
+
+        await SendZabbixMethodAsync(
+            "service.delete",
+            new JsonArray(service.ServiceId),
+            cancellationToken);
+        return new ZabbixManagedServiceDeleteResult
+        {
+            ManagedKey = managedKey,
+            ServiceId = service.ServiceId,
+            Name = service.Name,
+            Action = "deleted"
+        };
     }
 
     public async Task<IReadOnlyList<ZabbixSuppressionAggregateItemInfo>> GetSuppressionAggregateItemsAsync(
@@ -630,12 +930,18 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         ZabbixManagedServiceDefinition definition,
         IReadOnlyList<string> childIds,
         bool includeChildren,
+        IReadOnlyList<string> parentIds,
+        bool includeParents,
         CancellationToken cancellationToken)
     {
         var service = BuildServicePayload(definition);
         if (includeChildren)
         {
             service["children"] = ServiceReferences(childIds);
+        }
+        if (includeParents)
+        {
+            service["parents"] = ServiceReferences(parentIds);
         }
 
         var response = await SendZabbixMethodAsync("service.create", service, cancellationToken);
@@ -647,6 +953,8 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         ZabbixManagedServiceDefinition definition,
         IReadOnlyList<string> childIds,
         bool includeChildren,
+        IReadOnlyList<string> parentIds,
+        bool includeParents,
         CancellationToken cancellationToken)
     {
         var service = BuildServicePayload(definition);
@@ -655,6 +963,10 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         {
             service["children"] = ServiceReferences(childIds);
         }
+        if (includeParents)
+        {
+            service["parents"] = ServiceReferences(parentIds);
+        }
 
         var response = await SendZabbixMethodAsync("service.update", service, cancellationToken);
         return ReadServiceId(response, "service.update");
@@ -662,7 +974,8 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
     private async Task<IReadOnlyList<ZabbixServiceInfo>> GetServicesByTagsAsync(
         IReadOnlyDictionary<string, string> tags,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int limit = 2)
     {
         var parameters = new JsonObject
         {
@@ -672,7 +985,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             ["selectParents"] = new JsonArray("serviceid", "name"),
             ["evaltype"] = 0,
             ["tags"] = TagFilters(tags),
-            ["limit"] = 2
+            ["limit"] = limit
         };
 
         var response = await SendZabbixMethodAsync("service.get", parameters, cancellationToken);
@@ -755,7 +1068,19 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
                 && string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken)))
         {
-            loginToken ??= await LoginAsync(cancellationToken);
+            var cacheKey = LoginCacheKey();
+            if (string.IsNullOrWhiteSpace(loginToken)
+                && LoginTokenCache.TryGetValue(cacheKey, out var cachedToken))
+            {
+                loginToken = cachedToken;
+            }
+
+            if (string.IsNullOrWhiteSpace(loginToken))
+            {
+                loginToken = await LoginAsync(cancellationToken);
+                LoginTokenCache[cacheKey] = loginToken;
+            }
+
             return;
         }
 
@@ -814,13 +1139,52 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             await EnsureAuthenticatedAsync(cancellationToken);
         }
 
-        return await SendJsonRpcAsync(new JsonObject
+        var payload = new JsonObject
         {
             ["jsonrpc"] = "2.0",
             ["method"] = method,
             ["params"] = parameters,
             ["id"] = Interlocked.Increment(ref requestId)
-        }, authenticated, cancellationToken);
+        };
+
+        try
+        {
+            return await SendJsonRpcAsync(payload, authenticated, cancellationToken);
+        }
+        catch (InvalidOperationException ex) when (authenticated && CanRetryAfterAuthenticationError(ex))
+        {
+            LoginTokenCache.TryRemove(LoginCacheKey(), out _);
+            loginToken = null;
+            await EnsureAuthenticatedAsync(cancellationToken);
+            return await SendJsonRpcAsync(payload, authenticated, cancellationToken);
+        }
+    }
+
+    private string LoginCacheKey()
+    {
+        var current = options.CurrentValue;
+        return string.Join(
+            "\u001f",
+            current.ApiEndpoint.Trim(),
+            current.AuthMode.Trim(),
+            current.User.Trim());
+    }
+
+    private bool CanRetryAfterAuthenticationError(InvalidOperationException ex)
+    {
+        if (!(string.Equals(options.CurrentValue.AuthMode, "Login", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(options.CurrentValue.AuthMode, "LoginOrToken", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))))
+        {
+            return false;
+        }
+
+        var message = ex.Message;
+        return message.Contains("not authorized", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("not authorised", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("session", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("auth", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<JsonObject> SendJsonRpcAsync(
@@ -828,39 +1192,156 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         bool authenticated,
         CancellationToken cancellationToken)
     {
+        var method = payload.TryGetPropertyValue("method", out var methodNode)
+            ? methodNode?.GetValue<string>() ?? "unknown"
+            : "unknown";
+        var callWatch = Stopwatch.StartNew();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromMilliseconds(options.CurrentValue.RequestTimeoutMs));
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, options.CurrentValue.ApiEndpoint)
+        try
         {
-            Content = new StringContent(payload.ToJsonString(JsonOptions), Encoding.UTF8, "application/json")
-        };
+            using var request = new HttpRequestMessage(HttpMethod.Post, options.CurrentValue.ApiEndpoint)
+            {
+                Content = new StringContent(payload.ToJsonString(JsonOptions), Encoding.UTF8, "application/json")
+            };
 
-        if (authenticated)
+            if (authenticated)
+            {
+                var token = string.Equals(options.CurrentValue.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
+                    || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))
+                    ? options.CurrentValue.ApiToken
+                    : loginToken;
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+
+            using var response = await httpClient.SendAsync(request, timeout.Token);
+            var text = await response.Content.ReadAsStringAsync(timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+            }
+
+            var node = JsonNode.Parse(text)?.AsObject()
+                ?? throw new JsonException("Zabbix response is not a JSON object.");
+            if (node.ContainsKey("error"))
+            {
+                throw new InvalidOperationException(ReadError(node) ?? Trim(text));
+            }
+
+            return node;
+        }
+        finally
         {
-            var token = string.Equals(options.CurrentValue.AuthMode, "Token", StringComparison.OrdinalIgnoreCase)
-                || (string.Equals(options.CurrentValue.AuthMode, "IndeedPam", StringComparison.OrdinalIgnoreCase)
-                    && !string.IsNullOrWhiteSpace(options.CurrentValue.ApiToken))
-                ? options.CurrentValue.ApiToken
-                : loginToken;
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            callWatch.Stop();
+            CurrentCallStats.Value?.Record(method, callWatch.Elapsed);
+        }
+    }
+
+    public sealed class ZabbixApiCallStatsScope : IDisposable
+    {
+        private readonly ZabbixApiCallStats? previous;
+        private bool disposed;
+
+        internal ZabbixApiCallStatsScope(ZabbixApiCallStats? previous)
+        {
+            this.previous = previous;
+            Stats = new ZabbixApiCallStats();
         }
 
-        using var response = await httpClient.SendAsync(request, timeout.Token);
-        var text = await response.Content.ReadAsStringAsync(timeout.Token);
-        if (!response.IsSuccessStatusCode)
+        public ZabbixApiCallStats Stats { get; }
+
+        public void Dispose()
         {
-            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Trim(text)}");
+            if (disposed)
+            {
+                return;
+            }
+
+            CurrentCallStats.Value = previous;
+            disposed = true;
+        }
+    }
+
+    public sealed class ZabbixApiCallStats
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<string, ZabbixApiMethodStats> methods = new(StringComparer.Ordinal);
+        private int callCount;
+        private long elapsedMs;
+
+        public int CallCount
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return callCount;
+                }
+            }
         }
 
-        var node = JsonNode.Parse(text)?.AsObject()
-            ?? throw new JsonException("Zabbix response is not a JSON object.");
-        if (node.ContainsKey("error"))
+        public long ElapsedMs
         {
-            throw new InvalidOperationException(ReadError(node) ?? Trim(text));
+            get
+            {
+                lock (gate)
+                {
+                    return elapsedMs;
+                }
+            }
         }
 
-        return node;
+        internal void Record(string method, TimeSpan elapsed)
+        {
+            method = string.IsNullOrWhiteSpace(method) ? "unknown" : method;
+            lock (gate)
+            {
+                callCount++;
+                elapsedMs += (long)Math.Round(elapsed.TotalMilliseconds);
+                if (!methods.TryGetValue(method, out var stats))
+                {
+                    stats = new ZabbixApiMethodStats();
+                    methods[method] = stats;
+                }
+
+                stats.Count++;
+                stats.ElapsedMs += (long)Math.Round(elapsed.TotalMilliseconds);
+            }
+        }
+
+        public IReadOnlyDictionary<string, ZabbixApiMethodStatsSnapshot> SnapshotByMethod()
+        {
+            lock (gate)
+            {
+                return methods
+                    .OrderByDescending(pair => pair.Value.ElapsedMs)
+                    .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+                    .ToDictionary(
+                        pair => pair.Key,
+                        pair => new ZabbixApiMethodStatsSnapshot
+                        {
+                            Count = pair.Value.Count,
+                            ElapsedMs = pair.Value.ElapsedMs
+                        },
+                        StringComparer.Ordinal);
+            }
+        }
+    }
+
+    private sealed class ZabbixApiMethodStats
+    {
+        public int Count { get; set; }
+
+        public long ElapsedMs { get; set; }
+    }
+
+    public sealed class ZabbixApiMethodStatsSnapshot
+    {
+        public int Count { get; init; }
+
+        public long ElapsedMs { get; init; }
     }
 
     private static string? ReadError(JsonObject response)
@@ -923,6 +1404,48 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         return service;
     }
 
+    private static JsonObject BuildSlaPayload(
+        ZabbixSlaDefinition definition,
+        IReadOnlyList<ZabbixSlaExcludedDowntime> excludedDowntimes)
+    {
+        return new JsonObject
+        {
+            ["name"] = definition.Name,
+            ["period"] = definition.Period,
+            ["slo"] = decimal.Round(definition.Slo, 4).ToString(CultureInfo.InvariantCulture),
+            ["effective_date"] = definition.EffectiveDate,
+            ["timezone"] = definition.Timezone,
+            ["status"] = definition.Status,
+            ["description"] = definition.Description,
+            ["service_tags"] = SlaServiceTags(definition.ServiceTags),
+            ["schedule"] = SlaSchedule(definition.Schedule),
+            ["excluded_downtimes"] = SlaExcludedDowntimes(excludedDowntimes)
+        };
+    }
+
+    private static IReadOnlyList<ZabbixSlaExcludedDowntime> MergeExcludedDowntimes(
+        ZabbixSlaDefinition definition,
+        ZabbixSlaInfo? existing)
+    {
+        if (existing is null || existing.ExcludedDowntimes.Count == 0)
+        {
+            return definition.ExcludedDowntimes;
+        }
+
+        var prefix = definition.ManagedExcludedDowntimePrefix;
+        var manual = existing.ExcludedDowntimes
+            .Where(downtime => string.IsNullOrWhiteSpace(prefix)
+                || !downtime.Name.StartsWith(prefix, StringComparison.Ordinal))
+            .ToArray();
+        return manual
+            .Concat(definition.ExcludedDowntimes)
+            .GroupBy(downtime => $"{downtime.Name}\u001f{downtime.PeriodFrom}\u001f{downtime.PeriodTo}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(downtime => downtime.PeriodFrom)
+            .ThenBy(downtime => downtime.Name, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     private static JsonArray ServiceTags(IReadOnlyDictionary<string, string> tags)
     {
         var result = new JsonArray();
@@ -932,6 +1455,53 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             {
                 ["tag"] = tag.Key,
                 ["value"] = tag.Value
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray SlaServiceTags(IReadOnlyList<ZabbixSlaServiceTag> tags)
+    {
+        var result = new JsonArray();
+        foreach (var tag in tags.OrderBy(pair => pair.Tag, StringComparer.Ordinal).ThenBy(pair => pair.Value, StringComparer.Ordinal))
+        {
+            result.Add(new JsonObject
+            {
+                ["tag"] = tag.Tag,
+                ["operator"] = tag.Operator,
+                ["value"] = tag.Value
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray SlaSchedule(IReadOnlyList<ZabbixSlaSchedulePeriod> schedule)
+    {
+        var result = new JsonArray();
+        foreach (var period in schedule.OrderBy(item => item.PeriodFrom))
+        {
+            result.Add(new JsonObject
+            {
+                ["period_from"] = period.PeriodFrom,
+                ["period_to"] = period.PeriodTo
+            });
+        }
+
+        return result;
+    }
+
+    private static JsonArray SlaExcludedDowntimes(IReadOnlyList<ZabbixSlaExcludedDowntime> downtimes)
+    {
+        var result = new JsonArray();
+        foreach (var downtime in downtimes.OrderBy(item => item.PeriodFrom).ThenBy(item => item.Name, StringComparer.Ordinal))
+        {
+            result.Add(new JsonObject
+            {
+                ["name"] = downtime.Name,
+                ["period_from"] = downtime.PeriodFrom,
+                ["period_to"] = downtime.PeriodTo
             });
         }
 
@@ -1092,6 +1662,22 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         };
     }
 
+    private static ZabbixSlaInfo ReadSla(JsonObject sla)
+    {
+        return new ZabbixSlaInfo
+        {
+            SlaId = JsonString(sla["slaid"]),
+            Name = JsonString(sla["name"]),
+            Slo = JsonDecimal(sla["slo"]),
+            Period = JsonInt(sla["period"]),
+            Timezone = JsonString(sla["timezone"]),
+            Status = JsonInt(sla["status"]),
+            ServiceTags = ReadSlaServiceTags(sla["service_tags"] as JsonArray),
+            Schedule = ReadSlaSchedule(sla["schedule"] as JsonArray),
+            ExcludedDowntimes = ReadSlaExcludedDowntimes(sla["excluded_downtimes"] as JsonArray)
+        };
+    }
+
     private static ZabbixTriggerInfo ReadTrigger(JsonObject trigger)
     {
         return new ZabbixTriggerInfo
@@ -1155,6 +1741,56 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             .OfType<JsonObject>()
             .Select(item => new ZabbixServiceTag(JsonString(item["tag"]), JsonString(item["value"])))
             .Where(tag => !string.IsNullOrWhiteSpace(tag.Tag))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ZabbixSlaServiceTag> ReadSlaServiceTags(JsonArray? tags)
+    {
+        if (tags is null)
+        {
+            return [];
+        }
+
+        return tags
+            .OfType<JsonObject>()
+            .Select(item => new ZabbixSlaServiceTag(
+                JsonString(item["tag"]),
+                JsonString(item["value"]),
+                JsonInt(item["operator"])))
+            .Where(tag => !string.IsNullOrWhiteSpace(tag.Tag))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ZabbixSlaSchedulePeriod> ReadSlaSchedule(JsonArray? schedule)
+    {
+        if (schedule is null)
+        {
+            return [];
+        }
+
+        return schedule
+            .OfType<JsonObject>()
+            .Select(item => new ZabbixSlaSchedulePeriod(
+                JsonInt(item["period_from"]),
+                JsonInt(item["period_to"])))
+            .Where(period => period.PeriodTo > period.PeriodFrom)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ZabbixSlaExcludedDowntime> ReadSlaExcludedDowntimes(JsonArray? downtimes)
+    {
+        if (downtimes is null)
+        {
+            return [];
+        }
+
+        return downtimes
+            .OfType<JsonObject>()
+            .Select(item => new ZabbixSlaExcludedDowntime(
+                JsonString(item["name"]),
+                JsonLong(item["period_from"]),
+                JsonLong(item["period_to"])))
+            .Where(downtime => !string.IsNullOrWhiteSpace(downtime.Name) && downtime.PeriodTo > downtime.PeriodFrom)
             .ToArray();
     }
 
@@ -1257,6 +1893,63 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         catch (InvalidOperationException)
         {
             return node.ToJsonString(JsonOptions).Trim('"');
+        }
+    }
+
+    private static int JsonInt(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return node.GetValue<int>();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+        {
+            return int.TryParse(JsonString(node), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : 0;
+        }
+    }
+
+    private static long JsonLong(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return node.GetValue<long>();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+        {
+            return long.TryParse(JsonString(node), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : 0;
+        }
+    }
+
+    private static decimal JsonDecimal(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return node.GetValue<decimal>();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+        {
+            return decimal.TryParse(JsonString(node), NumberStyles.Number, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : 0;
         }
     }
 

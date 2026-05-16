@@ -1,5 +1,6 @@
 {
   "layer": "shared",
   "templates": [],
-  "templateVersions": []
+  "templateVersions": [],
+  "serviceObjectTemplateRelations": []
 }

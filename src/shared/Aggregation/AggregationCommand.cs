@@ -95,6 +95,9 @@ public sealed record AggregationTargetObject
 
     [JsonPropertyName("relations")]
     public IReadOnlyList<AggregationTargetRelation> Relations { get; init; } = [];
+
+    [JsonPropertyName("parent_managed_keys")]
+    public IReadOnlyList<string> ParentManagedKeys { get; init; } = [];
 }
 
 public sealed record AggregationTargetRelation

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading.Channels;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -41,10 +42,23 @@ builder.Services.AddOptions<ZabbixTriggerDependenciesOptions>()
     .Validate(HasAggregateStateSelector, "ZabbixTriggerDependencies aggregate state selector must define include tags or include name regex; use AggregateStateTriggerIncludeNameRegex=.* to explicitly select all.")
     .Validate(HasValidTriggerSelectorRegex, "ZabbixTriggerDependencies trigger selector regex is invalid.")
     .ValidateOnStart();
+builder.Services.AddOptions<ZabbixSlaOptions>()
+    .Bind(builder.Configuration.GetSection(ZabbixSlaOptions.SectionName))
+    .Validate(options => options.DowntimePublicationHorizonMonths is >= 1 and <= 24, "ZabbixSla:DowntimePublicationHorizonMonths must be between 1 and 24.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.ManagedExcludedDowntimePrefix), "ZabbixSla:ManagedExcludedDowntimePrefix is required.")
+    .Validate(options => options.SampleLimit > 0, "ZabbixSla:SampleLimit must be greater than zero.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbuildPrefix), "ZabbixSla:CmdbuildPrefix is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.DefaultTimezone), "ZabbixSla:DefaultTimezone is required.")
+    .ValidateOnStart();
 builder.Services.AddOptions<ZabbixOptions>()
     .Bind(builder.Configuration.GetSection(ZabbixOptions.SectionName))
     .Validate(options => options.HasValidAuthMode(), "Zabbix auth mode is invalid.")
     .Validate(options => options.RequestTimeoutMs > 0, "Zabbix request timeout must be greater than zero.")
+    .ValidateOnStart();
+builder.Services.AddOptions<CmdbuildOptions>()
+    .Bind(builder.Configuration.GetSection(CmdbuildOptions.SectionName))
+    .Validate(options => options.HasValidAuthMode(), "CMDBuild auth mode is invalid.")
+    .Validate(options => options.RequestTimeoutMs > 0, "CMDBuild request timeout must be greater than zero.")
     .ValidateOnStart();
 builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
@@ -52,8 +66,11 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveZabbixApplyPlans("suppression")), "Zabbix suppression apply topic is required.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<ZabbixClient>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddHttpClient<CmdbuildClient>();
 builder.Services.AddTransient<ZabbixAggregationApplier>();
 builder.Services.AddTransient<ZabbixTriggerDependencyApplier>();
+builder.Services.AddTransient<ZabbixSlaPublisher>();
 builder.Services.AddSingleton<ZabbixApplyStateStore>();
 builder.Services.AddSingleton<ZabbixTriggerDependencyReconcileScheduler>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<ZabbixTriggerDependencyReconcileScheduler>());
@@ -123,6 +140,150 @@ app.MapGet("/apply/status/{layer}", (
     return Results.Ok(state.LayerSnapshot(normalizedLayer, topicOptions.Value, applyOptions.CurrentValue));
 });
 
+app.MapPost("/apply/state/stale-report", async (
+    ZabbixStateStaleReportRequest? request,
+    ZabbixApplyStateStore state,
+    ZabbixClient zabbix,
+    CancellationToken cancellationToken) =>
+{
+    var layer = ZabbixApplyPlanner.NormalizeLayer(request?.Layer ?? "");
+    if (string.IsNullOrWhiteSpace(layer))
+    {
+        return Results.BadRequest(new { error = "layer must be service or suppression" });
+    }
+
+    var desiredKeys = NormalizeManagedKeys(request?.DesiredManagedKeys);
+    var sampleLimit = Math.Clamp(request?.SampleLimit ?? 100, 1, 1000);
+    var report = state.StaleMembershipTargets(layer, desiredKeys, sampleLimit);
+    var zabbixServices = Array.Empty<ZabbixManagedServiceSnapshot>();
+    var zabbixStaleServices = Array.Empty<ZabbixManagedServiceSnapshot>();
+    string? zabbixError = null;
+    if (request?.IncludeZabbixServices == true)
+    {
+        try
+        {
+            zabbixServices = (await zabbix.ListManagedServicesByLayerAsync(
+                    layer,
+                    Math.Clamp(request.ZabbixServiceLimit <= 0 ? 2000 : request.ZabbixServiceLimit, 1, 10000),
+                    cancellationToken))
+                .Select(ToManagedServiceSnapshot)
+                .ToArray();
+            zabbixStaleServices = zabbixServices
+                .Where(item => !string.IsNullOrWhiteSpace(item.ManagedKey)
+                    && !item.SourceLeaf.Equals("true", StringComparison.OrdinalIgnoreCase)
+                    && !desiredKeys.Contains(item.ManagedKey))
+                .ToArray();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            zabbixError = ex.Message;
+        }
+    }
+
+    return Results.Ok(new
+    {
+        layer,
+        desiredManagedKeyCount = desiredKeys.Count,
+        state = report,
+        zabbix = new
+        {
+            enabled = request?.IncludeZabbixServices == true,
+            error = zabbixError,
+            managedServiceCount = zabbixServices.Length,
+            staleServiceCount = zabbixStaleServices.Length,
+            staleServices = zabbixStaleServices.Take(sampleLimit).ToArray(),
+            orphanSourceLeafCount = zabbixServices.Count(item =>
+                item.SourceLeaf.Equals("true", StringComparison.OrdinalIgnoreCase)
+                && item.ParentCount == 0),
+            orphanSourceLeafServices = zabbixServices
+                .Where(item =>
+                    item.SourceLeaf.Equals("true", StringComparison.OrdinalIgnoreCase)
+                    && item.ParentCount == 0)
+                .Take(sampleLimit)
+                .ToArray(),
+            rootNonRootManagedServiceCount = zabbixServices.Count(item =>
+                item.ParentCount == 0
+                && !item.EffectiveRole.Equals(ZabbixManagedServiceRoles.RootService, StringComparison.OrdinalIgnoreCase)
+                && !item.EffectiveVisibility.Equals(ZabbixManagedServiceVisibility.Internal, StringComparison.OrdinalIgnoreCase)),
+            rootNonRootManagedServices = zabbixServices
+                .Where(item =>
+                    item.ParentCount == 0
+                    && !item.EffectiveRole.Equals(ZabbixManagedServiceRoles.RootService, StringComparison.OrdinalIgnoreCase)
+                    && !item.EffectiveVisibility.Equals(ZabbixManagedServiceVisibility.Internal, StringComparison.OrdinalIgnoreCase))
+                .Take(sampleLimit)
+                .ToArray()
+        }
+    });
+});
+
+app.MapPost("/apply/state/cleanup", (
+    ZabbixStateCleanupRequest? request,
+    ZabbixApplyStateStore state) =>
+{
+    var layer = ZabbixApplyPlanner.NormalizeLayer(request?.Layer ?? "");
+    if (string.IsNullOrWhiteSpace(layer))
+    {
+        return Results.BadRequest(new { error = "layer must be service or suppression" });
+    }
+
+    var keys = NormalizeManagedKeys(request?.ManagedKeys);
+    if (keys.Count == 0)
+    {
+        return Results.BadRequest(new { error = "managedKeys must contain at least one key" });
+    }
+
+    return Results.Ok(state.CleanupMembershipTargets(layer, keys, request?.DryRun == true));
+});
+
+app.MapPost("/apply/state/delete-zabbix-services", async (
+    ZabbixStaleZabbixDeleteRequest? request,
+    ZabbixClient zabbix,
+    CancellationToken cancellationToken) =>
+{
+    var layer = ZabbixApplyPlanner.NormalizeLayer(request?.Layer ?? "");
+    if (string.IsNullOrWhiteSpace(layer))
+    {
+        return Results.BadRequest(new { error = "layer must be service or suppression" });
+    }
+
+    var keys = NormalizeManagedKeys(request?.ManagedKeys);
+    if (keys.Count == 0)
+    {
+        return Results.BadRequest(new { error = "managedKeys must contain at least one key" });
+    }
+
+    var results = new List<ZabbixManagedServiceDeleteResult>();
+    var errors = new List<string>();
+    foreach (var key in keys.OrderBy(item => item, StringComparer.Ordinal))
+    {
+        try
+        {
+            results.Add(await zabbix.DeleteManagedServiceByKeyAsync(layer, key, cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            errors.Add($"{key}: {ex.Message}");
+            results.Add(new ZabbixManagedServiceDeleteResult
+            {
+                ManagedKey = key,
+                Action = "failed",
+                Message = ex.Message
+            });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        layer,
+        requested = keys.Count,
+        deleted = results.Count(item => item.Action.Equals("deleted", StringComparison.OrdinalIgnoreCase)),
+        skipped = results.Count(item => item.Action.Equals("skipped", StringComparison.OrdinalIgnoreCase)),
+        failed = results.Count(item => item.Action.Equals("failed", StringComparison.OrdinalIgnoreCase)),
+        results,
+        errors
+    });
+});
+
 app.MapGet("/dependencies/suppression/status", (
     ZabbixApplyStateStore state,
     IOptionsMonitor<ZabbixTriggerDependenciesOptions> options,
@@ -131,18 +292,60 @@ app.MapGet("/dependencies/suppression/status", (
     return Results.Ok(state.TriggerDependencySnapshot("suppression", options.CurrentValue, zabbixOptions.CurrentValue));
 });
 
+app.MapGet("/sla/status", (
+    IOptionsMonitor<ZabbixSlaOptions> options,
+    IOptionsMonitor<ZabbixOptions> zabbixOptions,
+    IOptionsMonitor<CmdbuildOptions> cmdbuildOptions) =>
+{
+    var currentOptions = options.CurrentValue;
+    var currentZabbixOptions = zabbixOptions.CurrentValue;
+    var currentCmdbuildOptions = cmdbuildOptions.CurrentValue;
+    return Results.Ok(new
+    {
+        enabled = currentOptions.Enabled,
+        defaultPolicyKey = currentOptions.DefaultPolicyKey,
+        downtimePublicationHorizonMonths = currentOptions.DowntimePublicationHorizonMonths,
+        managedExcludedDowntimePrefix = currentOptions.ManagedExcludedDowntimePrefix,
+        cmdbuildPrefix = currentOptions.CmdbuildPrefix,
+        serviceRootPath = currentOptions.ServiceRootPath,
+        defaultReportingPeriod = currentOptions.DefaultReportingPeriod,
+        defaultTimezone = currentOptions.DefaultTimezone,
+        sampleLimit = currentOptions.SampleLimit,
+        zabbixRequestTimeoutMs = currentZabbixOptions.RequestTimeoutMs,
+        cmdbuildRequestTimeoutMs = currentCmdbuildOptions.RequestTimeoutMs,
+        zabbixApiConfigured = !string.IsNullOrWhiteSpace(currentZabbixOptions.ApiEndpoint),
+        cmdbuildApiConfigured = !string.IsNullOrWhiteSpace(currentCmdbuildOptions.BaseUrl)
+    });
+});
+
+app.MapPost("/sla/service/dry-run", async (
+    ZabbixSlaPublisher publisher,
+    CancellationToken cancellationToken) =>
+{
+    return Results.Ok(await publisher.RunAsync(dryRun: true, cancellationToken));
+});
+
+app.MapPost("/sla/service/apply", async (
+    ZabbixSlaPublisher publisher,
+    CancellationToken cancellationToken) =>
+{
+    return Results.Ok(await publisher.RunAsync(dryRun: false, cancellationToken));
+});
+
 app.MapPost("/dependencies/suppression/dry-run", async (
+    ZabbixTriggerDependencyRunRequest? request,
     ZabbixTriggerDependencyApplier applier,
     CancellationToken cancellationToken) =>
 {
-    return Results.Ok(await applier.RunAsync(dryRun: true, cancellationToken));
+    return Results.Ok(await applier.RunAsync(dryRun: true, request, cancellationToken));
 });
 
 app.MapPost("/dependencies/suppression/apply", async (
+    ZabbixTriggerDependencyRunRequest? request,
     ZabbixTriggerDependencyApplier applier,
     CancellationToken cancellationToken) =>
 {
-    return Results.Ok(await applier.RunAsync(dryRun: false, cancellationToken));
+    return Results.Ok(await applier.RunAsync(dryRun: false, request, cancellationToken));
 });
 
 app.MapPost("/commands/apply/dry-run", (
@@ -168,7 +371,116 @@ app.MapPost("/commands/apply/dry-run", (
     });
 });
 
+app.MapPost("/commands/apply-graph/dry-run", async (
+    ZabbixGraphApplyRequest request,
+    IOptionsMonitor<ApplyOptions> options,
+    ZabbixApplyStateStore state,
+    ZabbixAggregationApplier applier,
+    CancellationToken cancellationToken) =>
+{
+    var layer = ZabbixApplyPlanner.NormalizeLayer(FirstNonEmpty(request.Layer, request.Commands.FirstOrDefault()?.Layer));
+    if (string.IsNullOrWhiteSpace(layer))
+    {
+        return Results.BadRequest(new { error = "layer must be service or suppression" });
+    }
+
+    var result = await applier.ApplyGraphAsync(
+        request.Commands,
+        layer,
+        "http-direct-graph",
+        options.CurrentValue,
+        forceDryRun: true,
+        cancellationToken);
+    foreach (var commandResult in result.CommandResults)
+    {
+        state.Record(commandResult);
+    }
+
+    return Results.Ok(result);
+});
+
+app.MapPost("/commands/apply-graph", async (
+    ZabbixGraphApplyRequest request,
+    IOptionsMonitor<ApplyOptions> options,
+    ZabbixApplyStateStore state,
+    ZabbixAggregationApplier applier,
+    CancellationToken cancellationToken) =>
+{
+    var layer = ZabbixApplyPlanner.NormalizeLayer(FirstNonEmpty(request.Layer, request.Commands.FirstOrDefault()?.Layer));
+    if (string.IsNullOrWhiteSpace(layer))
+    {
+        return Results.BadRequest(new { error = "layer must be service or suppression" });
+    }
+
+    var result = await applier.ApplyGraphAsync(
+        request.Commands,
+        layer,
+        "http-direct-graph",
+        options.CurrentValue,
+        request.DryRun,
+        cancellationToken);
+    foreach (var commandResult in result.CommandResults)
+    {
+        state.Record(commandResult);
+    }
+
+    return string.Equals(result.Status, "error", StringComparison.OrdinalIgnoreCase)
+        || result.Errors.Count > 0
+        ? Results.Problem(
+            title: "Zabbix graph was not applied.",
+            detail: result.Errors.FirstOrDefault() ?? result.Message,
+            extensions: new Dictionary<string, object?> { ["result"] = result },
+            statusCode: StatusCodes.Status502BadGateway)
+        : Results.Ok(result);
+});
+
+app.MapPost("/commands/apply", async (
+    AggregationCommand command,
+    IOptionsMonitor<ApplyOptions> options,
+    ZabbixApplyStateStore state,
+    ZabbixAggregationApplier applier,
+    CancellationToken cancellationToken) =>
+{
+    var layer = ZabbixApplyPlanner.NormalizeLayer(command.Layer);
+    if (string.IsNullOrWhiteSpace(layer))
+    {
+        return Results.BadRequest(new { error = "command.layer must be service or suppression" });
+    }
+
+    ZabbixCommandApplyResult result;
+    if (string.Equals(options.CurrentValue.Mode, "dry-run", StringComparison.OrdinalIgnoreCase))
+    {
+        result = ZabbixApplyPlanner.Plan(command, layer, topic: "http-direct", options.CurrentValue, forceDryRun: true);
+    }
+    else
+    {
+        result = await applier.ApplyAsync(command, layer, "http-direct", options.CurrentValue, cancellationToken);
+    }
+
+    state.Record(result);
+    return string.Equals(result.Status, "error", StringComparison.OrdinalIgnoreCase)
+        ? Results.Problem(
+            title: "Zabbix command was not applied.",
+            detail: string.IsNullOrWhiteSpace(result.Error) ? result.Message : result.Error,
+            extensions: new Dictionary<string, object?> { ["result"] = result },
+            statusCode: StatusCodes.Status502BadGateway)
+        : Results.Ok(result);
+});
+
 app.Run();
+
+static string FirstNonEmpty(params string?[] values)
+{
+    foreach (var value in values)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value.Trim();
+        }
+    }
+
+    return "";
+}
 
 static bool HasAggregateStateSelector(ZabbixTriggerDependenciesOptions options)
 {
@@ -200,6 +512,78 @@ static bool IsValidRegex(string pattern)
     {
         return false;
     }
+}
+
+static HashSet<string> NormalizeManagedKeys(IEnumerable<string>? values)
+{
+    return (values ?? [])
+        .Select(value => (value ?? "").Trim())
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .ToHashSet(StringComparer.Ordinal);
+}
+
+static ZabbixManagedServiceSnapshot ToManagedServiceSnapshot(ZabbixServiceInfo service)
+{
+    var tags = service.Tags ?? new Dictionary<string, string>(StringComparer.Ordinal);
+    return new ZabbixManagedServiceSnapshot
+    {
+        ServiceId = service.ServiceId,
+        Name = service.Name,
+        ManagedKey = tags.GetValueOrDefault(ZabbixManagedServiceTags.Key) ?? "",
+        ClassCode = tags.GetValueOrDefault(ZabbixManagedServiceTags.Class) ?? "",
+        CardId = tags.GetValueOrDefault(ZabbixManagedServiceTags.CardId) ?? "",
+        RuleId = tags.GetValueOrDefault(ZabbixManagedServiceTags.RuleId) ?? "",
+        RuleName = tags.GetValueOrDefault(ZabbixManagedServiceTags.RuleName) ?? "",
+        SourceLeaf = tags.GetValueOrDefault(ZabbixManagedServiceTags.SourceLeaf) ?? "",
+        Role = tags.GetValueOrDefault(ZabbixManagedServiceTags.Role) ?? "",
+        Visibility = tags.GetValueOrDefault(ZabbixManagedServiceTags.Visibility) ?? "",
+        EffectiveRole = EffectiveManagedRole(
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.Role) ?? "",
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.Visibility) ?? "",
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.SourceLeaf) ?? "",
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.Class) ?? "").Role,
+        EffectiveVisibility = EffectiveManagedRole(
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.Role) ?? "",
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.Visibility) ?? "",
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.SourceLeaf) ?? "",
+            tags.GetValueOrDefault(ZabbixManagedServiceTags.Class) ?? "").Visibility,
+        AggregateKind = tags.GetValueOrDefault(ZabbixManagedServiceTags.AggregateKind) ?? "",
+        ParentCount = service.Parents.Count,
+        ChildCount = service.Children.Count
+    };
+}
+
+static (string Role, string Visibility) EffectiveManagedRole(
+    string role,
+    string visibility,
+    string sourceLeaf,
+    string classCode)
+{
+    string effectiveRole;
+    if (!string.IsNullOrWhiteSpace(role))
+    {
+        effectiveRole = role;
+    }
+    else if (sourceLeaf.Equals("true", StringComparison.OrdinalIgnoreCase))
+    {
+        effectiveRole = ZabbixManagedServiceRoles.SourceLeaf;
+    }
+    else
+    {
+        effectiveRole = classCode.EndsWith("ServicePlatformService", StringComparison.OrdinalIgnoreCase)
+            ? ZabbixManagedServiceRoles.RootService
+            : ZabbixManagedServiceRoles.Aggregate;
+    }
+
+    var effectiveVisibility = !string.IsNullOrWhiteSpace(visibility)
+        ? visibility
+        : effectiveRole switch
+    {
+        ZabbixManagedServiceRoles.RootService => ZabbixManagedServiceVisibility.Root,
+        ZabbixManagedServiceRoles.SourceLeaf or ZabbixManagedServiceRoles.Internal => ZabbixManagedServiceVisibility.Internal,
+        _ => ZabbixManagedServiceVisibility.Child
+    };
+    return (effectiveRole, effectiveVisibility);
 }
 
 public sealed class ZabbixServiceAggregationCommandWorker(
@@ -555,6 +939,123 @@ public static class ZabbixApplyPlanner
     }
 }
 
+public sealed class ZabbixStateStaleReportRequest
+{
+    public string Layer { get; init; } = "";
+
+    public List<string> DesiredManagedKeys { get; init; } = [];
+
+    public bool IncludeZabbixServices { get; init; }
+
+    public int ZabbixServiceLimit { get; init; } = 2000;
+
+    public int SampleLimit { get; init; } = 100;
+}
+
+public sealed class ZabbixStateCleanupRequest
+{
+    public string Layer { get; init; } = "";
+
+    public List<string> ManagedKeys { get; init; } = [];
+
+    public bool DryRun { get; init; }
+}
+
+public sealed class ZabbixStaleZabbixDeleteRequest
+{
+    public string Layer { get; init; } = "";
+
+    public List<string> ManagedKeys { get; init; } = [];
+}
+
+public sealed class ZabbixManagedServiceSnapshot
+{
+    public string ServiceId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string ManagedKey { get; init; } = "";
+
+    public string ClassCode { get; init; } = "";
+
+    public string CardId { get; init; } = "";
+
+    public string RuleId { get; init; } = "";
+
+    public string RuleName { get; init; } = "";
+
+    public string SourceLeaf { get; init; } = "";
+
+    public string Role { get; init; } = "";
+
+    public string Visibility { get; init; } = "";
+
+    public string EffectiveRole { get; init; } = "";
+
+    public string EffectiveVisibility { get; init; } = "";
+
+    public string AggregateKind { get; init; } = "";
+
+    public int ParentCount { get; init; }
+
+    public int ChildCount { get; init; }
+}
+
+public sealed class ZabbixStateStaleMembershipReport
+{
+    public string Layer { get; init; } = "";
+
+    public int MembershipTargetCount { get; init; }
+
+    public int StaleTargetCount { get; init; }
+
+    public IReadOnlyList<string> StaleTargetKeys { get; init; } = [];
+
+    public IReadOnlyList<ZabbixTargetMembershipSummary> StaleTargets { get; init; } = [];
+}
+
+public sealed class ZabbixTargetMembershipSummary
+{
+    public string Layer { get; init; } = "";
+
+    public string TargetManagedKey { get; init; } = "";
+
+    public string TargetClass { get; init; } = "";
+
+    public string TargetCardId { get; init; } = "";
+
+    public string TargetName { get; init; } = "";
+
+    public string AggregationType { get; init; } = "";
+
+    public string Threshold { get; init; } = "";
+
+    public string N { get; init; } = "";
+
+    public int SourceCount { get; init; }
+
+    public int HostBindingCount { get; init; }
+
+    public int PendingSourceCount { get; init; }
+}
+
+public sealed class ZabbixStateCleanupResult
+{
+    public string Layer { get; init; } = "";
+
+    public bool DryRun { get; init; }
+
+    public int Requested { get; init; }
+
+    public int Matched { get; init; }
+
+    public int Removed { get; init; }
+
+    public IReadOnlyList<ZabbixTargetMembershipSnapshot> Targets { get; init; } = [];
+
+    public IReadOnlyList<string> MissingKeys { get; init; } = [];
+}
+
 public sealed class ZabbixApplyStateStore
 {
     private static readonly JsonSerializerOptions StateJsonOptions = new(JsonSerializerDefaults.Web)
@@ -722,6 +1223,8 @@ public sealed class ZabbixApplyStateStore
             status.LastTargetClass = result.TargetClass;
             status.LastTargetKey = result.TargetKey;
             status.LastMembership = result.Membership;
+            status.LastPerformance = result.Performance;
+            status.Performance.Add(result.Performance);
             status.CommandsReceived++;
             status.Reconcile.Add(result.Reconcile);
             if (string.Equals(result.Status, "dry-run", StringComparison.OrdinalIgnoreCase))
@@ -827,6 +1330,8 @@ public sealed class ZabbixApplyStateStore
                 pendingManualCommands = status.PendingManualCommands,
                 errorCommands = status.ErrorCommands,
                 reconcile = status.Reconcile,
+                performance = status.Performance,
+                lastPerformance = status.LastPerformance,
                 membership = status.LastMembership,
                 membershipTargets = MembershipSnapshots(layer),
                 errors = status.Errors.ToArray(),
@@ -845,6 +1350,95 @@ public sealed class ZabbixApplyStateStore
                 .ThenBy(item => item.TargetManagedKey, StringComparer.Ordinal)
                 .Select(item => item.ToSnapshot())
                 .ToArray();
+        }
+    }
+
+    public ZabbixStateStaleMembershipReport StaleMembershipTargets(
+        string layer,
+        IReadOnlySet<string> desiredManagedKeys,
+        int sampleLimit)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        if (string.IsNullOrWhiteSpace(normalizedLayer))
+        {
+            return new ZabbixStateStaleMembershipReport { Layer = layer };
+        }
+
+        lock (membershipLock)
+        {
+            var layerMemberships = memberships.Values
+                .Where(item => item.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.TargetManagedKey, StringComparer.Ordinal)
+                .ToArray();
+            var staleTargets = layerMemberships
+                .Where(item => !string.IsNullOrWhiteSpace(item.TargetManagedKey)
+                    && !desiredManagedKeys.Contains(item.TargetManagedKey))
+                .ToArray();
+            return new ZabbixStateStaleMembershipReport
+            {
+                Layer = normalizedLayer,
+                MembershipTargetCount = layerMemberships.Length,
+                StaleTargetCount = staleTargets.Length,
+                StaleTargetKeys = staleTargets
+                    .Select(item => item.TargetManagedKey)
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .ToArray(),
+                StaleTargets = staleTargets
+                    .Take(Math.Max(1, sampleLimit))
+                    .Select(ToMembershipSummary)
+                    .ToArray()
+            };
+        }
+    }
+
+    public ZabbixStateCleanupResult CleanupMembershipTargets(
+        string layer,
+        IReadOnlySet<string> managedKeys,
+        bool dryRun)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        if (string.IsNullOrWhiteSpace(normalizedLayer))
+        {
+            return new ZabbixStateCleanupResult { Layer = layer, DryRun = dryRun };
+        }
+
+        lock (membershipLock)
+        {
+            var targets = new List<ZabbixTargetMembershipSnapshot>();
+            var missingKeys = new List<string>();
+            var removed = 0;
+            foreach (var managedKey in managedKeys.OrderBy(item => item, StringComparer.Ordinal))
+            {
+                var key = MembershipKey(normalizedLayer, managedKey);
+                if (!memberships.TryGetValue(key, out var membership))
+                {
+                    missingKeys.Add(managedKey);
+                    continue;
+                }
+
+                targets.Add(membership.ToSnapshot());
+                if (!dryRun && memberships.TryRemove(key, out _))
+                {
+                    removed++;
+                }
+            }
+
+            if (!dryRun && removed > 0)
+            {
+                SaveMemberships();
+            }
+
+            return new ZabbixStateCleanupResult
+            {
+                Layer = normalizedLayer,
+                DryRun = dryRun,
+                Requested = managedKeys.Count,
+                Matched = targets.Count,
+                Removed = removed,
+                Targets = targets,
+                MissingKeys = missingKeys
+            };
         }
     }
 
@@ -1057,6 +1651,24 @@ public sealed class ZabbixApplyStateStore
                 .Select(item => item.ToSnapshot())
                 .ToArray();
         }
+    }
+
+    private static ZabbixTargetMembershipSummary ToMembershipSummary(ZabbixTargetMembership membership)
+    {
+        return new ZabbixTargetMembershipSummary
+        {
+            Layer = membership.Layer,
+            TargetManagedKey = membership.TargetManagedKey,
+            TargetClass = membership.TargetClass,
+            TargetCardId = membership.TargetCardId,
+            TargetName = membership.TargetName,
+            AggregationType = membership.AggregationType,
+            Threshold = membership.Threshold,
+            N = membership.N,
+            SourceCount = membership.Sources.Count,
+            HostBindingCount = membership.Sources.Values.Count(item => !string.IsNullOrWhiteSpace(item.ZabbixHostId)),
+            PendingSourceCount = membership.PendingSources.Count
+        };
     }
 
     private void LoadMemberships()
@@ -1275,6 +1887,8 @@ public sealed class ZabbixLayerApplyStatus
 
     public ZabbixTargetMembershipSnapshot LastMembership { get; set; } = new();
 
+    public ZabbixCommandApplyPerformance LastPerformance { get; set; } = new();
+
     public int CommandsReceived { get; set; }
 
     public int DryRunCommands { get; set; }
@@ -1293,6 +1907,8 @@ public sealed class ZabbixLayerApplyStatus
 
     public ZabbixReconcileCounters Reconcile { get; } = new();
 
+    public ZabbixLayerApplyPerformance Performance { get; } = new();
+
     public List<string> Errors { get; } = [];
 
     public List<string> Warnings { get; } = [];
@@ -1303,6 +1919,29 @@ public sealed class ZabbixApplyStateOptions
     public const string SectionName = "ZabbixApplyState";
 
     public string FilePath { get; init; } = "state/zabbixconfig2api/apply-membership.json";
+}
+
+public sealed class ZabbixSlaOptions
+{
+    public const string SectionName = "ZabbixSla";
+
+    public bool Enabled { get; init; } = true;
+
+    public string DefaultPolicyKey { get; init; } = "";
+
+    public int DowntimePublicationHorizonMonths { get; init; } = 6;
+
+    public string ManagedExcludedDowntimePrefix { get; init; } = "CMDB2M REG:";
+
+    public string CmdbuildPrefix { get; init; } = "C2M_";
+
+    public string ServiceRootPath { get; init; } = "";
+
+    public string DefaultReportingPeriod { get; init; } = "monthly";
+
+    public string DefaultTimezone { get; init; } = "Europe/Moscow";
+
+    public int SampleLimit { get; init; } = 100;
 }
 
 public sealed class ZabbixMembershipUpdateResult
@@ -1690,9 +2329,82 @@ public sealed class ZabbixCommandApplyResult
 
     public ZabbixTargetMembershipSnapshot Membership { get; set; } = new();
 
+    public ZabbixCommandApplyPerformance Performance { get; set; } = new();
+
     public IReadOnlyList<string> Warnings { get; set; } = [];
 
     public DateTimeOffset AppliedAtUtc { get; set; }
+}
+
+public sealed class ZabbixCommandApplyPerformance
+{
+    public long TotalMs { get; set; }
+
+    public long StateUpdateMs { get; set; }
+
+    public long AffectedTargetsApplyMs { get; set; }
+
+    public long SourceLeafApplyMs { get; set; }
+
+    public long TargetApplyMs { get; set; }
+
+    public int ZabbixApiCallCount { get; set; }
+
+    public long ZabbixApiElapsedMs { get; set; }
+
+    public Dictionary<string, ZabbixApiMethodPerformance> ZabbixApiByMethod { get; set; } = new(StringComparer.Ordinal);
+}
+
+public sealed class ZabbixLayerApplyPerformance
+{
+    public long Commands { get; private set; }
+
+    public long TotalMs { get; private set; }
+
+    public long StateUpdateMs { get; private set; }
+
+    public long AffectedTargetsApplyMs { get; private set; }
+
+    public long SourceLeafApplyMs { get; private set; }
+
+    public long TargetApplyMs { get; private set; }
+
+    public int ZabbixApiCallCount { get; private set; }
+
+    public long ZabbixApiElapsedMs { get; private set; }
+
+    public Dictionary<string, ZabbixApiMethodPerformance> ZabbixApiByMethod { get; } = new(StringComparer.Ordinal);
+
+    public void Add(ZabbixCommandApplyPerformance performance)
+    {
+        Commands++;
+        TotalMs += performance.TotalMs;
+        StateUpdateMs += performance.StateUpdateMs;
+        AffectedTargetsApplyMs += performance.AffectedTargetsApplyMs;
+        SourceLeafApplyMs += performance.SourceLeafApplyMs;
+        TargetApplyMs += performance.TargetApplyMs;
+        ZabbixApiCallCount += performance.ZabbixApiCallCount;
+        ZabbixApiElapsedMs += performance.ZabbixApiElapsedMs;
+
+        foreach (var pair in performance.ZabbixApiByMethod)
+        {
+            if (!ZabbixApiByMethod.TryGetValue(pair.Key, out var stats))
+            {
+                stats = new ZabbixApiMethodPerformance();
+                ZabbixApiByMethod[pair.Key] = stats;
+            }
+
+            stats.Count += pair.Value.Count;
+            stats.ElapsedMs += pair.Value.ElapsedMs;
+        }
+    }
+}
+
+public sealed class ZabbixApiMethodPerformance
+{
+    public int Count { get; set; }
+
+    public long ElapsedMs { get; set; }
 }
 
 public sealed class ZabbixReconcileCounters

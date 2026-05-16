@@ -2,89 +2,11 @@
   "layer": "service",
   "templates": [
     {
-      "template_id": "rule",
-      "name": "Рабочие места",
+      "template_id": "supp-service-copy",
+      "name": "МаршрутизаторыSupp (Сервис)",
       "layer": "service",
       "enabled": true,
-      "available_for": [
-        "service"
-      ],
-      "managed_by": "service",
-      "source_class_regex": "(?i).*(Ноутбук|Тонкий клиент|АРМ).*",
-      "population_dimension": {
-        "enabled": true,
-        "type": "source_field",
-        "source_field": "locationFloorBuildingCity",
-        "values": "",
-        "regex": "",
-        "capture_group": "1",
-        "key_template": "${template.id}:${dimension.key}",
-        "name_template": "${dimension.value}",
-        "condition_field": "",
-        "condition_pattern_template": "",
-        "max_rules": 1000
-      },
-      "filter": {
-        "include": [],
-        "exclude": []
-      },
-      "priority": 100,
-      "target": {
-        "class_code": "C2M_ServiceUserEndpointFleet",
-        "name_template": "${dimension.value}",
-        "description_template": "Создано для ${dimension.value}",
-        "population_source_key_template": "${template.id}:${dimension.key}",
-        "initial_user_values": {}
-      },
-      "variables": [
-        {
-          "name": "town",
-          "value": "${dimension.value}"
-        },
-        {
-          "name": "payload",
-          "value": "рабочие места"
-        }
-      ],
-      "version": 4,
-      "lifecycle": {
-        "change_mode": "modified",
-        "updated_at": "2026-05-10T11:24:43.041Z",
-        "source_regex_fingerprint": "ef15285c:37",
-        "regex_fingerprint": "868a34bc:401",
-        "population_dimension_fingerprint": "56e68153:280",
-        "variables_fingerprint": "6c06ddfb:89",
-        "relation_fingerprint": "7544fc4e:452",
-        "full_fingerprint": "ff930076:1334"
-      },
-      "managed_relations": [
-        {
-          "kind": "template",
-          "relation_role": "depends_on",
-          "target_template_id": "network-access-zone-by-city",
-          "target_rule_id": "",
-          "target_class_code": "",
-          "target_card_id": "",
-          "managed_key": "service-template-rule-relation-template-depends-on-network-access-zone-by-city-153ac46a-118",
-          "artifact_fingerprint": "f610e1ac:304",
-          "attributes": {
-            "match": {
-              "mode": "regex_compare",
-              "source_variable": "town",
-              "target_variable": "city",
-              "source_pattern": ".*",
-              "target_pattern": ".*"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "template_id": "network-access-zone-by-city",
-      "name": "Уровень коммутации",
-      "layer": "service",
-      "enabled": true,
-      "source_class_regex": "Маршрутизатор",
+      "source_class_regex": "(?i)^Маршрутизатор$",
       "population_dimension": {
         "enabled": true,
         "type": "source_field",
@@ -107,13 +29,16 @@
         ],
         "exclude": []
       },
-      "priority": 100,
+      "priority": 90,
       "target": {
         "class_code": "C2M_ServiceNetworkAccessZone",
         "name_template": "${dimension.name}",
-        "description_template": "Автоматчески создано для ${source.locationFloorBuildingCity}",
+        "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
         "population_source_key_template": "${template.id}:${dimension.key}",
-        "initial_user_values": {}
+        "initial_user_values": {
+          "is_critical": "false",
+          "aggregation_type": "all"
+        }
       },
       "variables": [
         {
@@ -121,22 +46,137 @@
           "value": "${source.locationFloorBuildingCity}"
         }
       ],
+      "derived_from": {
+        "layer": "suppression",
+        "type": "template",
+        "id": "supp",
+        "version": "8",
+        "copied_at": "2026-05-15T06:45:35.205Z"
+      },
       "available_for": [
         "service"
       ],
       "managed_by": "service",
-      "version": 5,
+      "version": 2,
       "lifecycle": {
         "change_mode": "modified",
-        "updated_at": "2026-05-11T10:48:12.930Z",
-        "source_regex_fingerprint": "c3426a3:15",
-        "regex_fingerprint": "1be34caf:408",
+        "updated_at": "2026-05-15T06:59:12.789Z",
+        "source_regex_fingerprint": "22dc466e:21",
+        "regex_fingerprint": "d9e65b02:414",
         "population_dimension_fingerprint": "56e68153:280",
         "variables_fingerprint": "66abbba7:63",
-        "relation_fingerprint": "5975e3:2",
-        "full_fingerprint": "ca9c9045:947"
+        "relation_fingerprint": "bd0df185:469",
+        "full_fingerprint": "fd82d71c:1461"
       },
-      "managed_relations": []
+      "managed_relations": [
+        {
+          "kind": "rule",
+          "relation_role": "depends_on",
+          "target_template_id": "",
+          "target_rule_id": "service-vpn-hub-c2m-servicenetworkaccesszone-code",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "service-template-supp-service-copy-relation-rule-depends-on-service-vpn-hub-c2m-servicenetworkaccesszone-code-8a641203-87",
+          "artifact_fingerprint": "a45ed00c:291",
+          "attributes": {
+            "match": {
+              "mode": "source_filters",
+              "filters": [
+                {
+                  "mode": "include",
+                  "variable": "city",
+                  "regex": ".*"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "template_id": "rule-service-copy",
+      "name": "Рабочие места (Сервис)",
+      "layer": "service",
+      "enabled": true,
+      "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+      "population_dimension": {
+        "enabled": true,
+        "type": "source_field",
+        "source_field": "locationFloorBuildingCity",
+        "values": "",
+        "regex": "",
+        "capture_group": "1",
+        "key_template": "${template.id}:${dimension.key}",
+        "name_template": "${dimension.value}",
+        "condition_field": "",
+        "condition_pattern_template": "",
+        "max_rules": 1000
+      },
+      "filter": {
+        "include": [],
+        "exclude": []
+      },
+      "priority": 100,
+      "target": {
+        "class_code": "C2M_ServiceUserEndpointFleet",
+        "name_template": "${dimension.name}",
+        "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+        "population_source_key_template": "${template.id}:${dimension.key}",
+        "initial_user_values": {
+          "is_critical": "false",
+          "aggregation_type": "threshold",
+          "threshold": "60"
+        }
+      },
+      "variables": [
+        {
+          "name": "city",
+          "value": "${source.locationFloorBuildingCity}"
+        }
+      ],
+      "derived_from": {
+        "layer": "suppression",
+        "type": "template",
+        "id": "rule",
+        "version": "4",
+        "copied_at": "2026-05-15T06:44:19.478Z"
+      },
+      "available_for": [
+        "service"
+      ],
+      "managed_by": "service",
+      "version": 2,
+      "lifecycle": {
+        "change_mode": "modified",
+        "updated_at": "2026-05-15T12:27:46.417Z",
+        "source_regex_fingerprint": "d37ca1a6:35",
+        "regex_fingerprint": "a69f6846:399",
+        "population_dimension_fingerprint": "56e68153:280",
+        "variables_fingerprint": "66abbba7:63",
+        "relation_fingerprint": "86678e7d:433",
+        "full_fingerprint": "55c9e83e:1422"
+      },
+      "managed_relations": [
+        {
+          "kind": "template",
+          "relation_role": "depends_on",
+          "target_template_id": "supp-service-copy",
+          "target_rule_id": "",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "service-template-rule-service-copy-relation-template-depends-on-supp-service-copy-3336b5d1-106",
+          "artifact_fingerprint": "e45f7131:282",
+          "attributes": {
+            "match": {
+              "mode": "exact",
+              "source_variable": "city",
+              "target_variable": "city",
+              "source_pattern": "",
+              "target_pattern": ""
+            }
+          }
+        }
+      ]
     }
   ],
   "templateVersions": [
@@ -726,6 +766,361 @@
         "managed_relations": []
       },
       "managed_relations": []
+    },
+    {
+      "snapshot_id": "rule-service-copy-v1-cb095fc0-991",
+      "layer": "service",
+      "template_id": "rule-service-copy",
+      "template_version": 1,
+      "template_name": "Рабочие места (Сервис)",
+      "content_hash": "cb095fc0:991",
+      "candidate_selection_hash": "a69f6846:399",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "5975e3:2",
+      "change_mode": "created",
+      "created_at": "2026-05-15T06:45:21.897Z",
+      "definition": {
+        "template_id": "rule-service-copy",
+        "name": "Рабочие места (Сервис)",
+        "layer": "service",
+        "enabled": true,
+        "available_for": [
+          "service"
+        ],
+        "managed_by": "service",
+        "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_ServiceUserEndpointFleet",
+          "name_template": "${dimension.name}",
+          "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false",
+            "aggregation_type": "threshold",
+            "threshold": "60"
+          }
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": []
+      },
+      "managed_relations": []
+    },
+    {
+      "snapshot_id": "supp-service-copy-v1-7adc859a-994",
+      "layer": "service",
+      "template_id": "supp-service-copy",
+      "template_version": 1,
+      "template_name": "МаршрутизаторыSupp (Сервис)",
+      "content_hash": "7adc859a:994",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "5975e3:2",
+      "change_mode": "created",
+      "created_at": "2026-05-15T06:45:53.807Z",
+      "definition": {
+        "template_id": "supp-service-copy",
+        "name": "МаршрутизаторыSupp (Сервис)",
+        "layer": "service",
+        "enabled": true,
+        "available_for": [
+          "service"
+        ],
+        "managed_by": "service",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 90,
+        "target": {
+          "class_code": "C2M_ServiceNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false",
+            "aggregation_type": "all"
+          }
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": []
+      },
+      "managed_relations": []
+    },
+    {
+      "snapshot_id": "supp-service-copy-v2-fd82d71c-1461",
+      "layer": "service",
+      "template_id": "supp-service-copy",
+      "template_version": 2,
+      "template_name": "МаршрутизаторыSupp (Сервис)",
+      "content_hash": "fd82d71c:1461",
+      "candidate_selection_hash": "d9e65b02:414",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "bd0df185:469",
+      "change_mode": "modified",
+      "created_at": "2026-05-15T06:59:12.790Z",
+      "definition": {
+        "template_id": "supp-service-copy",
+        "name": "МаршрутизаторыSupp (Сервис)",
+        "layer": "service",
+        "enabled": true,
+        "available_for": [
+          "service"
+        ],
+        "managed_by": "service",
+        "source_class_regex": "(?i)^Маршрутизатор$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [
+            {
+              "field": "Code",
+              "regex": ".*"
+            }
+          ],
+          "exclude": []
+        },
+        "priority": 90,
+        "target": {
+          "class_code": "C2M_ServiceNetworkAccessZone",
+          "name_template": "${dimension.name}",
+          "description_template": "Маршрутизаторы города ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false",
+            "aggregation_type": "all"
+          }
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": [
+          {
+            "kind": "rule",
+            "relation_role": "depends_on",
+            "target_template_id": "",
+            "target_rule_id": "service-vpn-hub-c2m-servicenetworkaccesszone-code",
+            "target_class_code": "",
+            "target_card_id": "",
+            "managed_key": "service-template-supp-service-copy-relation-rule-depends-on-service-vpn-hub-c2m-servicenetworkaccesszone-code-8a641203-87",
+            "artifact_fingerprint": "a45ed00c:291",
+            "attributes": {
+              "match": {
+                "mode": "source_filters",
+                "filters": [
+                  {
+                    "mode": "include",
+                    "variable": "city",
+                    "regex": ".*"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "managed_relations": [
+        {
+          "kind": "rule",
+          "relation_role": "depends_on",
+          "target_template_id": "",
+          "target_rule_id": "service-vpn-hub-c2m-servicenetworkaccesszone-code",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "service-template-supp-service-copy-relation-rule-depends-on-service-vpn-hub-c2m-servicenetworkaccesszone-code-8a641203-87",
+          "artifact_fingerprint": "a45ed00c:291",
+          "attributes": {
+            "match": {
+              "mode": "source_filters",
+              "filters": [
+                {
+                  "mode": "include",
+                  "variable": "city",
+                  "regex": ".*"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "snapshot_id": "rule-service-copy-v2-55c9e83e-1422",
+      "layer": "service",
+      "template_id": "rule-service-copy",
+      "template_version": 2,
+      "template_name": "Рабочие места (Сервис)",
+      "content_hash": "55c9e83e:1422",
+      "candidate_selection_hash": "a69f6846:399",
+      "variables_hash": "66abbba7:63",
+      "relation_hash": "86678e7d:433",
+      "change_mode": "modified",
+      "created_at": "2026-05-15T12:27:46.422Z",
+      "definition": {
+        "template_id": "rule-service-copy",
+        "name": "Рабочие места (Сервис)",
+        "layer": "service",
+        "enabled": true,
+        "available_for": [
+          "service"
+        ],
+        "managed_by": "service",
+        "source_class_regex": "(?i)^(АРМ|Ноутбук|Тонкий клиент)$",
+        "population_dimension": {
+          "enabled": true,
+          "type": "source_field",
+          "source_field": "locationFloorBuildingCity",
+          "values": "",
+          "regex": "",
+          "capture_group": "1",
+          "key_template": "${template.id}:${dimension.key}",
+          "name_template": "${dimension.value}",
+          "condition_field": "",
+          "condition_pattern_template": "",
+          "max_rules": 1000
+        },
+        "filter": {
+          "include": [],
+          "exclude": []
+        },
+        "priority": 100,
+        "target": {
+          "class_code": "C2M_ServiceUserEndpointFleet",
+          "name_template": "${dimension.name}",
+          "description_template": "Подавление для ${source.locationFloorBuildingCity}",
+          "population_source_key_template": "${template.id}:${dimension.key}",
+          "initial_user_values": {
+            "is_critical": "false",
+            "aggregation_type": "threshold",
+            "threshold": "60"
+          }
+        },
+        "variables": [
+          {
+            "name": "city",
+            "value": "${source.locationFloorBuildingCity}"
+          }
+        ],
+        "managed_relations": [
+          {
+            "kind": "template",
+            "relation_role": "depends_on",
+            "target_template_id": "supp-service-copy",
+            "target_rule_id": "",
+            "target_class_code": "",
+            "target_card_id": "",
+            "managed_key": "service-template-rule-service-copy-relation-template-depends-on-supp-service-copy-3336b5d1-106",
+            "artifact_fingerprint": "e45f7131:282",
+            "attributes": {
+              "match": {
+                "mode": "exact",
+                "source_variable": "city",
+                "target_variable": "city",
+                "source_pattern": "",
+                "target_pattern": ""
+              }
+            }
+          }
+        ]
+      },
+      "managed_relations": [
+        {
+          "kind": "template",
+          "relation_role": "depends_on",
+          "target_template_id": "supp-service-copy",
+          "target_rule_id": "",
+          "target_class_code": "",
+          "target_card_id": "",
+          "managed_key": "service-template-rule-service-copy-relation-template-depends-on-supp-service-copy-3336b5d1-106",
+          "artifact_fingerprint": "e45f7131:282",
+          "attributes": {
+            "match": {
+              "mode": "exact",
+              "source_variable": "city",
+              "target_variable": "city",
+              "source_pattern": "",
+              "target_pattern": ""
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "serviceObjectTemplateRelations": [
+    {
+      "relation_id": "service-template-link-service-contains-template-c2m-serviceplatformservice-1541038-rule-service-copy-c2m-serviceuserendpointfleet",
+      "relation_kind": "service_contains_template",
+      "relation_type": "aggregates_to",
+      "domain_direction": "target_to_source",
+      "source_type": "service",
+      "source_class_code": "C2M_ServicePlatformService",
+      "source_card_id": "1541038",
+      "target_type": "service_template",
+      "target_template_id": "rule-service-copy",
+      "target_class_code": "C2M_ServiceUserEndpointFleet",
+      "created_at": "2026-05-15T12:42:49.749Z",
+      "updated_at": "2026-05-15T12:42:49.749Z",
+      "status": "pending_targets"
     }
   ]
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
 var cmdbuildOptions = new StaticOptionsMonitor<CmdbuildOptions>(new CmdbuildOptions
@@ -20,7 +21,7 @@ var zabbixOptions = new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
 });
 
 using var httpClient = new HttpClient();
-var cmdbuild = new CmdbuildClient(httpClient, cmdbuildOptions);
+var cmdbuild = new CmdbuildClient(httpClient, cmdbuildOptions, new HttpContextAccessor());
 var zabbix = new ZabbixClient(httpClient, zabbixOptions);
 
 var cmdbuildResult = await cmdbuild.CheckConnectionAsync(CancellationToken.None);

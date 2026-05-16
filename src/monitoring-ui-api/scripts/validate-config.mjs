@@ -34,13 +34,20 @@ if (!config.readiness?.zabbixHostIdAttribute) {
   errors.push('readiness.zabbixHostIdAttribute is required');
 }
 
+if (!config.managedMicroservices?.zabbixconfig2api?.configFile) {
+  errors.push('managedMicroservices.zabbixconfig2api.configFile is required');
+}
+
 for (const key of [
   'rulesValidateUrl',
   'rulesApplyCurrentUrl',
   'zabbixApplyStatusUrl',
   'zabbixTriggerDependenciesStatusUrl',
   'zabbixTriggerDependenciesDryRunUrl',
-  'zabbixTriggerDependenciesApplyUrl'
+  'zabbixTriggerDependenciesApplyUrl',
+  'zabbixSlaStatusUrl',
+  'zabbixSlaDryRunUrl',
+  'zabbixSlaApplyUrl'
 ]) {
   try {
     new URL(config.backend?.[key] ?? '');

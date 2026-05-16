@@ -6,6 +6,8 @@ public sealed class ConversionRulesOptions
 
     public string FilePath { get; init; } = "rules/conversion-rules.sample.json";
 
+    public string ServiceTemplatesFilePath { get; init; } = "state/conversion-config/service-templates.json";
+
     public bool ReloadOnEachEvent { get; init; } = true;
 
     public bool HasValidFilePath()

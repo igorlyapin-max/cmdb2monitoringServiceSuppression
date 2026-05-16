@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 var builder = WebApplication.CreateBuilder(args);
 await builder.Configuration.ResolveSecretReferencesAsync("cmdbaggregation2cmdbuild");
 builder.AddServiceDefaults();
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<CmdbuildSchemaFactory>();
 builder.Services.AddOptions<CmdbuildOptions>()
     .Bind(builder.Configuration.GetSection(CmdbuildOptions.SectionName))
@@ -99,7 +100,7 @@ app.MapPost("/schema/apply", async (
                 extensions: new Dictionary<string, object?> { ["result"] = result },
                 statusCode: StatusCodes.Status502BadGateway);
     }
-    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or TimeoutException or InvalidOperationException)
     {
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
     }
@@ -209,6 +210,75 @@ app.MapPost("/cmdbuild/classes/{classCode}/cards", async (
     try
     {
         var result = await client.CreateClassCardAsync(classCode, request.Values, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapPut("/cmdbuild/classes/{classCode}/cards/{cardId}", async (
+    string classCode,
+    string cardId,
+    CmdbuildCreateCardRequest request,
+    CmdbuildClient client,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await client.UpdateClassCardAsync(classCode, cardId, request.Values, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapDelete("/cmdbuild/classes/{classCode}/cards/{cardId}", async (
+    string classCode,
+    string cardId,
+    CmdbuildClient client,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await client.DeleteClassCardAsync(classCode, cardId, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapPost("/cmdbuild/domains/{domainCode}/relations", async (
+    string domainCode,
+    CmdbuildCreateRelationRequest request,
+    CmdbuildClient client,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await client.CreateDomainRelationAsync(domainCode, request, cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapDelete("/cmdbuild/domains/{domainCode}/relations/{relationId}", async (
+    string domainCode,
+    string relationId,
+    CmdbuildClient client,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await client.DeleteDomainRelationAsync(domainCode, relationId, cancellationToken);
         return Results.Ok(result);
     }
     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)

@@ -1984,6 +1984,17 @@ textarea {
   padding-top: 4px;
 }
 
+.scope-dirty-block {
+  display: grid;
+  gap: 4px;
+  padding-top: 6px;
+}
+
+.scope-dirty-block > div {
+  display: grid;
+  gap: 3px;
+}
+
 .compact-button {
   min-height: 30px;
   padding: 5px 10px;

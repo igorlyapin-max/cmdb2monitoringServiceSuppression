@@ -30,6 +30,18 @@ public sealed class CmdbuildClient(
         string Description,
         string Help);
 
+    private sealed record CmdbuildAttributeMetadata(
+        string Description,
+        string Help,
+        string ValidationRules);
+
+    private sealed record CmdbuildLookupValueMetadata(
+        string Id,
+        string Code,
+        string Description,
+        string Note,
+        int Index);
+
     public async Task<CmdbuildSchemaApplyResult> ApplySchemaAsync(
         CmdbuildSchemaDefinition schema,
         CmdbuildSchemaSelection selection,
@@ -391,30 +403,54 @@ public sealed class CmdbuildClient(
             items.Add(await PostJsonItemAsync($"{endpoint}/lookup_types", "lookup", lookup.Code, payload, cancellationToken));
         }
 
-        var existingValues = await ListLookupValueCodesAsync(endpoint, lookup.Code, cancellationToken);
+        var existingValues = await ListLookupValueMetadataAsync(endpoint, lookup.Code, cancellationToken);
         var index = 1;
         foreach (var value in lookup.Values)
         {
             var valueKey = $"{lookup.Code}/{value.Code}";
-            if (existingValues.Contains(value.Code))
+            if (existingValues.TryGetValue(value.Code, out var existingValue))
             {
-                items.Add(Skipped("lookup_value", valueKey, "Lookup value already exists."));
+                if (LookupValueMetadataNeedsUpdate(existingValue, value, index))
+                {
+                    var valueUri = $"{endpoint}/lookup_types/{Uri.EscapeDataString(lookup.Code)}/values/{Uri.EscapeDataString(existingValue.Id)}";
+                    items.Add(await PutJsonItemAsync(valueUri, "lookup_value", valueKey, LookupValuePayload(value, index), cancellationToken));
+                }
+                else
+                {
+                    items.Add(Skipped("lookup_value", valueKey, "Lookup value already exists."));
+                }
+
                 index++;
                 continue;
             }
 
-            var payload = new Dictionary<string, object?>
-            {
-                ["code"] = value.Code,
-                ["description"] = value.DisplayName,
-                ["index"] = index,
-                ["active"] = true,
-                ["default"] = false,
-                ["note"] = value.Help
-            };
+            var payload = LookupValuePayload(value, index);
             items.Add(await PostJsonItemAsync($"{endpoint}/lookup_types/{Uri.EscapeDataString(lookup.Code)}/values", "lookup_value", valueKey, payload, cancellationToken));
             index++;
         }
+    }
+
+    private static Dictionary<string, object?> LookupValuePayload(CmdbuildLookupValueDefinition value, int index)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["code"] = value.Code,
+            ["description"] = value.DisplayName,
+            ["index"] = index,
+            ["active"] = true,
+            ["default"] = false,
+            ["note"] = value.Help
+        };
+    }
+
+    private static bool LookupValueMetadataNeedsUpdate(
+        CmdbuildLookupValueMetadata existingValue,
+        CmdbuildLookupValueDefinition expectedValue,
+        int expectedIndex)
+    {
+        return !string.Equals(NormalizeMetadataText(existingValue.Description), NormalizeMetadataText(expectedValue.DisplayName), StringComparison.Ordinal)
+            || !string.Equals(NormalizeMetadataText(existingValue.Note), NormalizeMetadataText(expectedValue.Help), StringComparison.Ordinal)
+            || existingValue.Index != expectedIndex;
     }
 
     private async Task<bool> ApplyClassAsync(
@@ -593,17 +629,14 @@ public sealed class CmdbuildClient(
         _ = endpoint;
         var code = $"{ownerCode}.{attribute.Code}";
         var attributeUri = $"{attributesEndpoint}/{Uri.EscapeDataString(attribute.Code)}";
-        if (await ResourceExistsAsync(attributeUri, cancellationToken))
+        var existingAttribute = await ReadAttributeMetadataAsync(attributeUri, cancellationToken);
+        if (existingAttribute is not null)
         {
-            if (!string.IsNullOrWhiteSpace(attribute.ValidationRules))
+            if (AttributeMetadataNeedsUpdate(existingAttribute, attribute))
             {
-                var currentValidationRules = await ReadAttributeValidationRulesAsync(attributeUri, cancellationToken);
-                if (!string.Equals(currentValidationRules ?? "", attribute.ValidationRules, StringComparison.Ordinal))
-                {
-                    var updatePayload = AttributePayload(attribute, index);
-                    items.Add(await PutJsonItemAsync(attributeUri, ownerKind, code, updatePayload, cancellationToken));
-                    return;
-                }
+                var updatePayload = AttributePayload(attribute, index);
+                items.Add(await PutJsonItemAsync(attributeUri, ownerKind, code, updatePayload, cancellationToken));
+                return;
             }
 
             items.Add(Skipped(ownerKind, code, "Attribute already exists."));
@@ -665,7 +698,7 @@ public sealed class CmdbuildClient(
         return payload;
     }
 
-    private async Task<string?> ReadAttributeValidationRulesAsync(
+    private async Task<CmdbuildAttributeMetadata?> ReadAttributeMetadataAsync(
         string requestUri,
         CancellationToken cancellationToken)
     {
@@ -682,27 +715,71 @@ public sealed class CmdbuildClient(
             || !document.RootElement.TryGetProperty("success", out var success)
             || success.ValueKind != JsonValueKind.True
             || !document.RootElement.TryGetProperty("data", out var data)
-            || data.ValueKind != JsonValueKind.Object
-            || !data.TryGetProperty("validationRules", out var validationRules))
+            || data.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
 
-        return validationRules.ValueKind == JsonValueKind.String
-            ? validationRules.GetString()
-            : null;
+        return new CmdbuildAttributeMetadata(
+            Description: ReadString(data, "description") ?? ReadString(data, "_description_translation") ?? "",
+            Help: ReadString(data, "help") ?? ReadString(data, "_help_translation") ?? "",
+            ValidationRules: ReadString(data, "validationRules") ?? "");
     }
 
-    private async Task<HashSet<string>> ListLookupValueCodesAsync(
+    private static bool AttributeMetadataNeedsUpdate(
+        CmdbuildAttributeMetadata existingAttribute,
+        CmdbuildAttributeDefinition expectedAttribute)
+    {
+        return !string.Equals(NormalizeMetadataText(existingAttribute.Description), NormalizeMetadataText(expectedAttribute.DisplayName), StringComparison.Ordinal)
+            || !string.Equals(NormalizeMetadataText(existingAttribute.Help), NormalizeMetadataText(expectedAttribute.Help), StringComparison.Ordinal)
+            || !string.Equals(existingAttribute.ValidationRules ?? "", expectedAttribute.ValidationRules ?? "", StringComparison.Ordinal);
+    }
+
+    private static string NormalizeMetadataText(string? value)
+    {
+        return (value ?? "").Trim();
+    }
+
+    private async Task<IReadOnlyDictionary<string, CmdbuildLookupValueMetadata>> ListLookupValueMetadataAsync(
         string endpoint,
         string lookupCode,
         CancellationToken cancellationToken)
     {
-        var values = await ListLookupValuesCatalogAsync(endpoint, lookupCode, cancellationToken);
-        return values
-            .Select(item => item.Code)
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .ToHashSet(StringComparer.Ordinal);
+        using var request = AuthorizedRequest(HttpMethod.Get, $"{endpoint}/lookup_types/{Uri.EscapeDataString(lookupCode)}/values?limit=1000");
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new Dictionary<string, CmdbuildLookupValueMetadata>(StringComparer.Ordinal);
+        }
+
+        using var document = JsonDocument.Parse(text);
+        if (!TryReadDataArray(document.RootElement, out var data))
+        {
+            return new Dictionary<string, CmdbuildLookupValueMetadata>(StringComparer.Ordinal);
+        }
+
+        var values = new Dictionary<string, CmdbuildLookupValueMetadata>(StringComparer.Ordinal);
+        foreach (var item in data.EnumerateArray())
+        {
+            var code = ReadString(item, "code")
+                ?? ReadString(item, "name")
+                ?? ReadRaw(item, "_id")
+                ?? "";
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                continue;
+            }
+
+            values[code] = new CmdbuildLookupValueMetadata(
+                Id: ReadRaw(item, "_id") ?? ReadRaw(item, "id") ?? code,
+                Code: code,
+                Description: ReadString(item, "description") ?? ReadString(item, "_description_translation") ?? "",
+                Note: ReadString(item, "note") ?? ReadString(item, "_note_translation") ?? "",
+                Index: ReadInt(item, "index") ?? 0);
+        }
+
+        return values;
     }
 
     public async Task<CmdbuildLookupValueCatalogResult> ListLookupValuesCatalogAsync(

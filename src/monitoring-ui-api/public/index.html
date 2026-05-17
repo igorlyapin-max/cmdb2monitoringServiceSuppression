@@ -565,7 +565,7 @@
               </label>
               <div class="rule-attribute-editor template-editor-wide">
                 <span class="field-label">Атрибуты создаваемого целевого объекта</span>
-                <p class="template-expression-examples">Значения применяются к объектам, которые создаст шаблон: для сервисного слоя доступны <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном классе. Можно использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${dimension.key}</code>, <code>${dimension.name}</code>, <code>${vars.name}</code>; <code>${source.*}</code> здесь запрещен.</p>
+                <p class="template-expression-examples">Значения применяются к объектам, которые создаст шаблон: для сервисного слоя доступны <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном классе. <code>is_critical</code> сейчас является метаданными: не меняет расчет доступности, severity trigger-а или Zabbix service algorithm; при публикации managed Zabbix service попадает в Zabbix только как service tag <code>cmdb2monitoring:is_critical</code>. Можно использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${dimension.key}</code>, <code>${dimension.name}</code>, <code>${vars.name}</code>; <code>${source.*}</code> здесь запрещен.</p>
                 <div id="serviceTemplateAttributeList" class="rule-attribute-list"></div>
               </div>
               <div class="template-source-field-helper template-editor-wide">
@@ -734,7 +734,7 @@
               </label>
               <div class="rule-attribute-editor template-editor-wide">
                 <span class="field-label">Атрибуты создаваемого целевого объекта</span>
-                <p class="template-expression-examples">Значения применяются к объектам, которые создаст шаблон: для каскадного подавления доступны <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном классе. Можно использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${dimension.key}</code>, <code>${dimension.name}</code>, <code>${vars.name}</code>; <code>${source.*}</code> здесь запрещен.</p>
+                <p class="template-expression-examples">Значения применяются к объектам, которые создаст шаблон: для каскадного подавления доступны <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном классе. <code>is_critical</code> сейчас является метаданными: не меняет расчет suppression aggregate trigger, severity trigger-а или Zabbix service algorithm; при публикации managed Zabbix service попадает в Zabbix только как service tag <code>cmdb2monitoring:is_critical</code>. Можно использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${dimension.key}</code>, <code>${dimension.name}</code>, <code>${vars.name}</code>; <code>${source.*}</code> здесь запрещен.</p>
                 <div id="suppressionTemplateAttributeList" class="rule-attribute-list"></div>
               </div>
               <div class="template-source-field-helper template-editor-wide">
@@ -974,13 +974,42 @@
             <div class="sync-grid" data-zabbix-apply-summary></div>
             <div class="sync-actions">
               <button class="secondary-button" type="button" data-zabbix-apply-refresh>Проверить фактическое состояние Zabbix</button>
-              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Проверить граф сервиса</button>
-              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать граф сервиса в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Проверить изменения сервиса</button>
+              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать изменения сервиса в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-full-dry-run>Проверить полный граф сервиса</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-full-publish>Опубликовать полный граф сервиса</button>
               <button class="secondary-button" type="button" data-zabbix-apply-cancel>Отменить операцию</button>
               <button id="zabbixSlaDryRunButton" class="secondary-button" type="button">Dry-run SLA</button>
               <button id="zabbixSlaPublishButton" class="primary-button" type="button">Опубликовать SLA в Zabbix</button>
             </div>
             <p class="status-line" data-zabbix-apply-status></p>
+            <div class="rule-summary">
+              <span class="structure-mark">Scope публикации</span>
+              <label>
+                <span>Managed key / rule id / имя</span>
+                <textarea data-zabbix-apply-scope-keys rows="2" placeholder="Пусто = весь слой. Например: Рабочие места филиала или network-access-zone-by-city:City48"></textarea>
+              </label>
+              <label>
+                <span>Глубина раскрытия</span>
+                <input type="number" min="0" max="50" value="0" data-zabbix-apply-scope-depth>
+              </label>
+              <label class="checkbox-line">
+                <input type="checkbox" data-zabbix-apply-scope-require-match checked>
+                <span>Не запускать, если заполненный scope не найден в правилах или сервисных объектах</span>
+              </label>
+              <span>0 означает без ограничения. Для service публикуется выбранный узел, его родители и потомки; для suppression - связанная цепочка.</span>
+              <div class="scope-dirty-block">
+                <span class="structure-mark">Scope из последних изменений</span>
+                <div data-zabbix-dirty-scope-summary>
+                  <span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>
+                </div>
+                <div class="rule-summary-actions">
+                  <button class="secondary-button compact-button" type="button" data-zabbix-scope-preview>Проверить scope</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-use disabled>Подставить scope из последних изменений</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-clear disabled>Очистить pending scope</button>
+                </div>
+              </div>
+            </div>
             <div class="preview-list" data-zabbix-apply-list></div>
             <div class="rule-summary">
               <span class="structure-mark">SLA после сервисной модели</span>
@@ -1000,11 +1029,40 @@
             <div class="sync-grid" data-zabbix-apply-summary></div>
             <div class="sync-actions">
               <button class="secondary-button" type="button" data-zabbix-apply-refresh>Проверить фактическое состояние Zabbix</button>
-              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Проверить граф подавления</button>
-              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать граф подавления в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-dry-run>Проверить изменения подавления</button>
+              <button class="primary-button" type="button" data-zabbix-apply-publish>Опубликовать изменения подавления в Zabbix</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-full-dry-run>Проверить полный граф подавления</button>
+              <button class="secondary-button" type="button" data-zabbix-apply-full-publish>Опубликовать полный граф подавления</button>
               <button class="secondary-button" type="button" data-zabbix-apply-cancel>Отменить операцию</button>
             </div>
             <p class="status-line" data-zabbix-apply-status></p>
+            <div class="rule-summary">
+              <span class="structure-mark">Scope публикации</span>
+              <label>
+                <span>Managed key / rule id / имя</span>
+                <textarea data-zabbix-apply-scope-keys rows="2" placeholder="Пусто = весь слой. Например: МаршрутизаторыSupp / City48 или suppression-supp-routerg-city48"></textarea>
+              </label>
+              <label>
+                <span>Глубина раскрытия</span>
+                <input type="number" min="0" max="50" value="0" data-zabbix-apply-scope-depth>
+              </label>
+              <label class="checkbox-line">
+                <input type="checkbox" data-zabbix-apply-scope-require-match checked>
+                <span>Не запускать, если заполненный scope не найден в правилах или сервисных объектах</span>
+              </label>
+              <span>0 означает без ограничения. Для suppression scope раскрывает связанную цепочку по relations; для service - выбранный узел, родителей и потомков.</span>
+              <div class="scope-dirty-block">
+                <span class="structure-mark">Scope из последних изменений</span>
+                <div data-zabbix-dirty-scope-summary>
+                  <span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>
+                </div>
+                <div class="rule-summary-actions">
+                  <button class="secondary-button compact-button" type="button" data-zabbix-scope-preview>Проверить scope</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-use disabled>Подставить scope из последних изменений</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-clear disabled>Очистить pending scope</button>
+                </div>
+              </div>
+            </div>
           </section>
           <section class="panel">
             <div class="section-heading">
@@ -1311,6 +1369,8 @@
                 <li>Сервисные классы строят дерево сервисов Zabbix.</li>
                 <li>Общие поля находятся в <code>ServiceManagedObject</code>.</li>
                 <li><code>aggregation_type</code> является lookup: <code>all</code>, <code>any</code>, <code>threshold</code>, <code>n_of_m</code>.</li>
+                <li>В дереве Zabbix Services <code>all</code> означает: service станет Problem только когда все прямые дочерние service уже Problem. <code>any</code> означает: любой дочерний service в Problem поднимает состояние наверх.</li>
+                <li><code>threshold</code> и <code>n_of_m</code> в сервисном слое сохраняются как политика агрегации и проверяются UI, но текущая публикация дерева Zabbix Services не считает процент или количество без отдельной aggregate-политики.</li>
                 <li>JS-проверки CMDBuild сохраняются в поле <code>validationRules</code> самих атрибутов, а не отдельными объектами схемы.</li>
                 <li><code>threshold</code> и <code>sla_target</code> задаются процентами от 0 до 100; запятая и точка должны нормализоваться перед отправкой в Zabbix.</li>
                 <li>Связи зависимости между конкретными service-классами строятся через матрицу доменов <code>service_depends_on</code>; <code>member_of</code> и <code>aggregates_to</code> остаются для состава и агрегации.</li>
@@ -1325,6 +1385,7 @@
               <ul class="help-list">
                 <li>Классы подавления строят зависимости для подавления каскадов Zabbix.</li>
                 <li>Все классы подавления наследуют одинаковые общие атрибуты; исключение: <code>SuppressionProxyGroup.fallback_supported</code>.</li>
+                <li>В подавлении те же значения <code>aggregation_type</code> считаются по contributing source-hosts aggregate trigger-а: <code>all</code> становится Problem, если здоровы не все выбранные source-hosts; <code>any</code> - только когда не осталось ни одного здорового source-host; <code>threshold</code> и <code>n_of_m</code> используют поля <code>threshold</code> и <code>n</code>.</li>
                 <li>Домены подавления имеют одинаковые атрибуты связи: <code>is_active</code>, <code>priority</code>, <code>source</code>.</li>
                 <li><code>is_dynamic</code> не используется: изменение состава агрегата является штатным пересчетом управляемых связей.</li>
               </ul>
@@ -1395,7 +1456,7 @@
                 <li>Одинаковые унаследованные/общие атрибуты показываются один раз. UI не достраивает унаследованные атрибуты обходом цепочки parent-классов: они видны только если API схемы CMDBuild возвращает их для конкретного класса.</li>
                 <li>Фильтры одного шаблона копируются во все сгенерированные правила для всех классов-кандидатов. Выбирайте поля, которые есть у всех классов регулярного выражения, либо разделяйте шаблон на несколько более узких выражений.</li>
                 <li>Поле <strong>Атрибуты источника для копирования</strong> показывает те же идентификаторы полей источника, которые доступны условиям выборки. Используйте копирование атрибута для JSON/regex-поля или копирование <code>${source.*}</code> для шаблонов времени обработки.</li>
-                <li><strong>Атрибуты создаваемого целевого объекта</strong> в шаблоне или статическом правиле заполняют пользовательские поля агрегата: для сервиса и подавления это <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном целевом классе. Для существующего target-экземпляра <code>Code</code>, <code>name</code> и <code>Description</code> не редактируются, но поля агрегации сохраняются в правиле и используются runtime-командами.</li>
+                <li><strong>Атрибуты создаваемого целевого объекта</strong> в шаблоне или статическом правиле заполняют пользовательские поля агрегата: для сервиса и подавления это <code>is_critical</code>, <code>aggregation_type</code>, <code>threshold</code>, <code>n</code>, если они есть в выбранном целевом классе. <code>is_critical</code> сейчас не влияет на расчет доступности, severity trigger-а, Zabbix service algorithm или suppression aggregate formulas. Это не то же самое, что <code>most critical</code> в Zabbix Services: там выбирается самый тяжелый текущий статус дочерних service. При публикации managed Zabbix service флаг попадает в Zabbix только как service tag <code>cmdb2monitoring:is_critical</code>. Для существующего target-экземпляра <code>Code</code>, <code>name</code> и <code>Description</code> не редактируются, но поля агрегации сохраняются в правиле и используются runtime-командами.</li>
                 <li>Сохранение шаблона фиксирует версию в <code>templateVersions</code>. Применение шаблонов делает сверку по стабильному <code>managed_key</code> и <code>artifact_fingerprint</code>: неизмененные сгенерированные правила не перезаписываются, измененные обновляются, устаревшие правила попадают в <code>templateDeletionPlans</code>.</li>
                 <li>Связи шаблон-шаблон и шаблон-статический класс/карточка должны формироваться по той же схеме: версия нужна для аудита, а операции create/update/delete считаются по <code>managed_key</code> и fingerprint полезной нагрузки.</li>
                 <li>Связи <strong>шаблон-шаблон</strong>, <strong>шаблон-правило</strong> и <strong>правило-правило</strong> создаются в подменю <strong>Управление связями</strong> внутри сервисного слоя или каскадного подавления. Сервисный экран показывает только сервисные шаблоны и правила, экран подавления только шаблоны и правила подавления.</li>

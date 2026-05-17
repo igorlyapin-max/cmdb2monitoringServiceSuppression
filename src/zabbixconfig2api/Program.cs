@@ -390,7 +390,10 @@ app.MapPost("/commands/apply-graph/dry-run", async (
         "http-direct-graph",
         options.CurrentValue,
         forceDryRun: true,
-        cancellationToken);
+        cancellationToken,
+        request.PublishMode,
+        request.ScopeKeys,
+        request.ScopeDepth);
     foreach (var commandResult in result.CommandResults)
     {
         state.Record(commandResult);
@@ -418,7 +421,10 @@ app.MapPost("/commands/apply-graph", async (
         "http-direct-graph",
         options.CurrentValue,
         request.DryRun,
-        cancellationToken);
+        cancellationToken,
+        request.PublishMode,
+        request.ScopeKeys,
+        request.ScopeDepth);
     foreach (var commandResult in result.CommandResults)
     {
         state.Record(commandResult);
@@ -882,6 +888,7 @@ public static class ZabbixApplyPlanner
             TargetCardId = command.Target.CardId,
             TargetName = command.RuleName,
             AggregationType = TargetAttribute(command.Target.Attributes, "aggregation_type"),
+            IsCritical = TargetAttribute(command.Target.Attributes, "is_critical"),
             Threshold = TargetAttribute(command.Target.Attributes, "threshold"),
             N = TargetAttribute(command.Target.Attributes, "n"),
             SourceCount = hasHostBinding ? 1 : 0,
@@ -1028,6 +1035,8 @@ public sealed class ZabbixTargetMembershipSummary
 
     public string AggregationType { get; init; } = "";
 
+    public string IsCritical { get; init; } = "";
+
     public string Threshold { get; init; } = "";
 
     public string N { get; init; } = "";
@@ -1068,6 +1077,7 @@ public sealed class ZabbixApplyStateStore
     private readonly object membershipLock = new();
     private readonly ConcurrentDictionary<string, ZabbixLayerApplyStatus> layers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ZabbixTargetMembership> memberships = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ZabbixAppliedGraphObject> appliedGraphObjects = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ZabbixTriggerDependencyLayerStatus> triggerDependencyLayers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ZabbixManagedTriggerDependency> triggerDependencies = new(StringComparer.Ordinal);
 
@@ -1132,6 +1142,7 @@ public sealed class ZabbixApplyStateStore
             membership.TargetCardId = command.Target.CardId;
             membership.TargetName = TargetObjectName(command);
             membership.AggregationType = TargetAttribute(command.Target.Attributes, "aggregation_type");
+            membership.IsCritical = TargetAttribute(command.Target.Attributes, "is_critical");
             membership.Threshold = TargetAttribute(command.Target.Attributes, "threshold");
             membership.N = TargetAttribute(command.Target.Attributes, "n");
             membership.UpdatedAtUtc = DateTimeOffset.UtcNow;
@@ -1276,6 +1287,148 @@ public sealed class ZabbixApplyStateStore
         }
     }
 
+    public ZabbixGraphDiffResult DiffAppliedGraph(
+        string layer,
+        IReadOnlyList<ZabbixAppliedGraphObject> desiredObjects,
+        string publishMode,
+        int sampleLimit,
+        IReadOnlySet<string>? scopeTargetManagedKeys = null)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        var effectivePublishMode = ZabbixGraphPublishModes.Normalize(publishMode);
+        if (string.IsNullOrWhiteSpace(normalizedLayer))
+        {
+            return new ZabbixGraphDiffResult { Layer = layer, PublishMode = effectivePublishMode };
+        }
+
+        lock (membershipLock)
+        {
+            var desiredByKey = desiredObjects
+                .Where(item => item.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(item.ObjectKey))
+                .GroupBy(item => item.ObjectKey, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+            var appliedByKey = appliedGraphObjects.Values
+                .Where(item => item.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(item.ObjectKey)
+                    && (scopeTargetManagedKeys is null
+                        || desiredByKey.ContainsKey(item.ObjectKey)
+                        || scopeTargetManagedKeys.Contains(item.TargetManagedKey)))
+                .GroupBy(item => item.ObjectKey, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+            var candidateKeys = new HashSet<string>(StringComparer.Ordinal);
+            var samples = new List<ZabbixGraphDiffSample>();
+            var added = 0;
+            var changed = 0;
+            var unchanged = 0;
+            foreach (var pair in desiredByKey.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                if (!appliedByKey.TryGetValue(pair.Key, out var applied))
+                {
+                    added++;
+                    candidateKeys.Add(pair.Key);
+                    AddDiffSample(samples, "added", pair.Value, sampleLimit);
+                    continue;
+                }
+
+                if (!string.Equals(pair.Value.ContentHash, applied.ContentHash, StringComparison.Ordinal))
+                {
+                    changed++;
+                    candidateKeys.Add(pair.Key);
+                    AddDiffSample(samples, "changed", pair.Value, sampleLimit);
+                    continue;
+                }
+
+                unchanged++;
+                if (ZabbixGraphPublishModes.IsFull(effectivePublishMode))
+                {
+                    candidateKeys.Add(pair.Key);
+                }
+            }
+
+            var removed = 0;
+            foreach (var pair in appliedByKey.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                if (desiredByKey.ContainsKey(pair.Key))
+                {
+                    continue;
+                }
+
+                removed++;
+                AddDiffSample(samples, "removed", pair.Value, sampleLimit);
+            }
+
+            return new ZabbixGraphDiffResult
+            {
+                Layer = normalizedLayer,
+                PublishMode = effectivePublishMode,
+                Desired = desiredByKey.Count,
+                Applied = appliedByKey.Count,
+                Added = added,
+                Changed = changed,
+                Unchanged = unchanged,
+                Removed = removed,
+                PublishCandidates = candidateKeys.Count,
+                Samples = samples,
+                CandidateObjectKeySet = candidateKeys
+            };
+        }
+    }
+
+    public void ReplaceAppliedGraph(string layer, IReadOnlyList<ZabbixAppliedGraphObject> desiredObjects)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        if (string.IsNullOrWhiteSpace(normalizedLayer))
+        {
+            return;
+        }
+
+        lock (membershipLock)
+        {
+            foreach (var key in appliedGraphObjects
+                .Where(pair => pair.Value.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.Key)
+                .ToArray())
+            {
+                appliedGraphObjects.TryRemove(key, out _);
+            }
+
+            foreach (var graphObject in desiredObjects
+                .Where(item => item.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(item.ObjectKey)))
+            {
+                graphObject.Layer = normalizedLayer;
+                graphObject.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                appliedGraphObjects[AppliedGraphObjectKey(normalizedLayer, graphObject.ObjectKey)] = graphObject;
+            }
+
+            SaveMemberships();
+        }
+    }
+
+    public void UpsertAppliedGraph(string layer, IReadOnlyList<ZabbixAppliedGraphObject> desiredObjects)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        if (string.IsNullOrWhiteSpace(normalizedLayer))
+        {
+            return;
+        }
+
+        lock (membershipLock)
+        {
+            foreach (var graphObject in desiredObjects
+                .Where(item => item.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(item.ObjectKey)))
+            {
+                graphObject.Layer = normalizedLayer;
+                graphObject.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                appliedGraphObjects[AppliedGraphObjectKey(normalizedLayer, graphObject.ObjectKey)] = graphObject;
+            }
+
+            SaveMemberships();
+        }
+    }
+
     public object Snapshot(KafkaTopicsOptions topics, ApplyOptions options)
     {
         return new
@@ -1334,6 +1487,7 @@ public sealed class ZabbixApplyStateStore
                 lastPerformance = status.LastPerformance,
                 membership = status.LastMembership,
                 membershipTargets = MembershipSnapshots(layer),
+                appliedGraphObjectCount = AppliedGraphObjectCount(layer),
                 errors = status.Errors.ToArray(),
                 warnings = status.Warnings.ToArray()
             };
@@ -1442,6 +1596,79 @@ public sealed class ZabbixApplyStateStore
         }
     }
 
+    public ZabbixSourceHostBindingCleanupResult RemoveSourceHostBindings(
+        string layer,
+        IReadOnlySet<string> zabbixHostIds)
+    {
+        var normalizedLayer = ZabbixApplyPlanner.NormalizeLayer(layer);
+        var requestedHostIds = zabbixHostIds
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item.Trim())
+            .ToHashSet(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalizedLayer) || requestedHostIds.Count == 0)
+        {
+            return new ZabbixSourceHostBindingCleanupResult
+            {
+                Layer = normalizedLayer,
+                RequestedHostIds = requestedHostIds.Count
+            };
+        }
+
+        lock (membershipLock)
+        {
+            var removed = 0;
+            var removedHostIds = new HashSet<string>(StringComparer.Ordinal);
+            var affectedTargets = new List<ZabbixTargetMembershipSnapshot>();
+            foreach (var membership in memberships.Values
+                .Where(item => item.Layer.Equals(normalizedLayer, StringComparison.OrdinalIgnoreCase)))
+            {
+                var sourceKeys = membership.Sources
+                    .Where(pair => requestedHostIds.Contains(pair.Value.ZabbixHostId))
+                    .Select(pair => pair.Key)
+                    .ToArray();
+                if (sourceKeys.Length == 0)
+                {
+                    continue;
+                }
+
+                foreach (var sourceKey in sourceKeys)
+                {
+                    if (!membership.Sources.TryGetValue(sourceKey, out var source)
+                        || !membership.Sources.Remove(sourceKey))
+                    {
+                        continue;
+                    }
+
+                    removed++;
+                    if (!string.IsNullOrWhiteSpace(source.ZabbixHostId))
+                    {
+                        removedHostIds.Add(source.ZabbixHostId);
+                    }
+                }
+
+                membership.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                affectedTargets.Add(membership.ToSnapshot());
+            }
+
+            if (removed > 0)
+            {
+                SaveMemberships();
+            }
+
+            return new ZabbixSourceHostBindingCleanupResult
+            {
+                Layer = normalizedLayer,
+                RequestedHostIds = requestedHostIds.Count,
+                RemovedSourceMemberships = removed,
+                RemovedHostIds = removedHostIds.OrderBy(item => item, StringComparer.Ordinal).ToArray(),
+                AffectedTargets = affectedTargets
+                    .OrderBy(item => item.TargetName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.TargetManagedKey, StringComparer.Ordinal)
+                    .ToArray()
+            };
+        }
+    }
+
     public IReadOnlyList<ZabbixManagedTriggerDependency> ListManagedTriggerDependencies(string layer)
     {
         lock (membershipLock)
@@ -1508,6 +1735,8 @@ public sealed class ZabbixApplyStateStore
             status.TriggerGetBatchCount = result.TriggerGetBatchCount;
             status.TriggerGetElapsedMs = result.TriggerGetElapsedMs;
             status.ZabbixRequestTimeoutMs = result.ZabbixRequestTimeoutMs;
+            status.StaleSourceHostBindingCount = result.StaleSourceHostBindingCount;
+            status.StaleSourceMembershipsRemoved = result.StaleSourceMembershipsRemoved;
             status.MaxSourceHostsPerAggregate = result.MaxSourceHostsPerAggregate;
             status.MaxAggregateFormulaLength = result.MaxAggregateFormulaLength;
             status.LargestAggregateSourceHostCount = result.LargestAggregateSourceHostCount;
@@ -1569,6 +1798,8 @@ public sealed class ZabbixApplyStateStore
                 triggerGetBatchCount = status.TriggerGetBatchCount,
                 triggerGetElapsedMs = status.TriggerGetElapsedMs,
                 zabbixRequestTimeoutMs = zabbixOptions.RequestTimeoutMs,
+                staleSourceHostBindingCount = status.StaleSourceHostBindingCount,
+                staleSourceMembershipsRemoved = status.StaleSourceMembershipsRemoved,
                 maxSourceHostsPerAggregate = options.MaxSourceHostsPerAggregate,
                 maxAggregateFormulaLength = options.MaxAggregateFormulaLength,
                 largestAggregateSourceHostCount = status.LargestAggregateSourceHostCount,
@@ -1663,6 +1894,7 @@ public sealed class ZabbixApplyStateStore
             TargetCardId = membership.TargetCardId,
             TargetName = membership.TargetName,
             AggregationType = membership.AggregationType,
+            IsCritical = membership.IsCritical,
             Threshold = membership.Threshold,
             N = membership.N,
             SourceCount = membership.Sources.Count,
@@ -1710,6 +1942,17 @@ public sealed class ZabbixApplyStateStore
 
                 triggerDependencies[TriggerDependencyKey(dependency)] = dependency;
             }
+
+            foreach (var graphObject in state.AppliedGraphObjects)
+            {
+                if (string.IsNullOrWhiteSpace(graphObject.Layer)
+                    || string.IsNullOrWhiteSpace(graphObject.ObjectKey))
+                {
+                    continue;
+                }
+
+                appliedGraphObjects[AppliedGraphObjectKey(graphObject.Layer, graphObject.ObjectKey)] = graphObject;
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -1737,6 +1980,10 @@ public sealed class ZabbixApplyStateStore
                     .OrderBy(item => item.Layer, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(item => item.DependentTriggerId, StringComparer.Ordinal)
                     .ThenBy(item => item.DependencyTriggerId, StringComparer.Ordinal)
+                    .ToList(),
+                AppliedGraphObjects = appliedGraphObjects.Values
+                    .OrderBy(item => item.Layer, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.ObjectKey, StringComparer.Ordinal)
                     .ToList()
             };
             File.WriteAllText(stateFilePath, JsonSerializer.Serialize(state, StateJsonOptions));
@@ -1805,6 +2052,42 @@ public sealed class ZabbixApplyStateStore
     private static string TriggerDependencyKey(ZabbixManagedTriggerDependency dependency)
     {
         return $"{dependency.Layer}\u001f{dependency.DependentTriggerId}\u001f{dependency.DependencyTriggerId}";
+    }
+
+    private static string AppliedGraphObjectKey(string layer, string objectKey)
+    {
+        return $"{layer}\u001f{objectKey}";
+    }
+
+    private int AppliedGraphObjectCount(string layer)
+    {
+        lock (membershipLock)
+        {
+            return appliedGraphObjects.Values.Count(item => item.Layer.Equals(layer, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private static void AddDiffSample(
+        ICollection<ZabbixGraphDiffSample> samples,
+        string action,
+        ZabbixAppliedGraphObject graphObject,
+        int sampleLimit)
+    {
+        if (samples.Count >= sampleLimit)
+        {
+            return;
+        }
+
+        samples.Add(new ZabbixGraphDiffSample
+        {
+            Action = action,
+            ObjectType = graphObject.ObjectType,
+            ObjectKey = graphObject.ObjectKey,
+            DisplayName = graphObject.DisplayName,
+            TargetManagedKey = graphObject.TargetManagedKey,
+            RuleId = graphObject.RuleId,
+            ClassCode = graphObject.ClassCode
+        });
     }
 
     private static string TargetObjectName(AggregationCommand command)
@@ -1953,11 +2236,26 @@ public sealed class ZabbixMembershipUpdateResult
     public int RemovedSourceMemberships { get; init; }
 }
 
+public sealed class ZabbixSourceHostBindingCleanupResult
+{
+    public string Layer { get; init; } = "";
+
+    public int RequestedHostIds { get; init; }
+
+    public int RemovedSourceMemberships { get; init; }
+
+    public IReadOnlyList<string> RemovedHostIds { get; init; } = [];
+
+    public IReadOnlyList<ZabbixTargetMembershipSnapshot> AffectedTargets { get; init; } = [];
+}
+
 public sealed class ZabbixApplyPersistentState
 {
     public List<ZabbixTargetMembership> Memberships { get; init; } = [];
 
     public List<ZabbixManagedTriggerDependency> TriggerDependencies { get; init; } = [];
+
+    public List<ZabbixAppliedGraphObject> AppliedGraphObjects { get; init; } = [];
 }
 
 public sealed class ZabbixTargetMembership
@@ -1973,6 +2271,8 @@ public sealed class ZabbixTargetMembership
     public string TargetName { get; set; } = "";
 
     public string AggregationType { get; set; } = "";
+
+    public string IsCritical { get; set; } = "";
 
     public string Threshold { get; set; } = "";
 
@@ -2006,6 +2306,7 @@ public sealed class ZabbixTargetMembership
             TargetCardId = TargetCardId,
             TargetName = TargetName,
             AggregationType = AggregationType,
+            IsCritical = IsCritical,
             Threshold = Threshold,
             N = N,
             SourceCount = sources.Length,
@@ -2038,6 +2339,8 @@ public sealed class ZabbixTargetMembershipSnapshot
     public string TargetName { get; init; } = "";
 
     public string AggregationType { get; init; } = "";
+
+    public string IsCritical { get; init; } = "";
 
     public string Threshold { get; init; } = "";
 
@@ -2140,6 +2443,10 @@ public sealed class ZabbixTriggerDependencyLayerStatus
     public int TriggerGetElapsedMs { get; set; }
 
     public int ZabbixRequestTimeoutMs { get; set; }
+
+    public int StaleSourceHostBindingCount { get; set; }
+
+    public int StaleSourceMembershipsRemoved { get; set; }
 
     public int MaxSourceHostsPerAggregate { get; set; }
 

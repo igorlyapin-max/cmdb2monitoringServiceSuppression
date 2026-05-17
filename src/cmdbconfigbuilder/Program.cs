@@ -129,6 +129,71 @@ app.MapPost("/events/convert/dry-run", async (
     });
 });
 
+app.MapPost("/rules/apply-current/scope-preview", async (
+    ApplyCurrentRulesRequest request,
+    ConversionRulesFileLoader loader,
+    ConversionRulesValidator validator,
+    CmdbuildClient cmdbuild,
+    IOptions<ConversionRulesOptions> conversionRulesOptions,
+    IHostEnvironment environment,
+    CancellationToken cancellationToken) =>
+{
+    var rules = await loader.LoadAsync(cancellationToken);
+    var validation = validator.Validate(rules);
+    if (!validation.IsValid)
+    {
+        return Results.BadRequest(validation);
+    }
+
+    var baseSelectedRules = SelectRulesForCurrentApply(rules, request);
+    var serviceObjectScopeHints = await ResolveServiceObjectScopeHintsAsync(
+        cmdbuild,
+        request,
+        baseSelectedRules,
+        conversionRulesOptions.Value,
+        environment,
+        cancellationToken);
+    var scopePrefilter = SelectScopedRulesForCurrentApply(
+        baseSelectedRules,
+        request,
+        serviceObjectScopeHints.ScopeKeys);
+    var selectedRules = scopePrefilter.Applied
+        ? scopePrefilter.Rules
+        : baseSelectedRules;
+    var sourceClasses = SourceClassesForCurrentApply(selectedRules, request);
+    var scopeMatchError = CurrentApplyScopeMatchError(request, scopePrefilter, serviceObjectScopeHints);
+    if (!string.IsNullOrWhiteSpace(scopeMatchError))
+    {
+        return Results.BadRequest(new
+        {
+            error = scopeMatchError,
+            zabbixScopePrefilter = scopePrefilter.ToSummary(sourceClasses, serviceObjectScopeHints)
+        });
+    }
+
+    return Results.Ok(new ApplyCurrentRulesScopePreviewResult
+    {
+        Layer = ScopedLayerForCurrentApply(request, baseSelectedRules),
+        RuleCount = selectedRules.Count,
+        SourceClassCount = sourceClasses.Count,
+        SourceClasses = sourceClasses,
+        ZabbixScopePrefilter = scopePrefilter.ToSummary(sourceClasses, serviceObjectScopeHints),
+        Rules = selectedRules
+            .Take(50)
+            .Select(rule => new ApplyCurrentRulesScopePreviewRule
+            {
+                RuleId = rule.RuleId,
+                Name = rule.Name,
+                Layer = rule.Layer,
+                SourceClass = rule.Source.ClassCode,
+                TargetClass = rule.Target.ClassCode,
+                GeneratedFromTemplate = rule.GeneratedFromTemplate,
+                TemplateId = rule.TemplateGeneration.TemplateId
+            })
+            .ToArray()
+    });
+});
+
 app.MapPost("/rules/apply-current", async (
     ApplyCurrentRulesRequest request,
     ConversionRulesFileLoader loader,
@@ -171,9 +236,38 @@ app.MapPost("/rules/apply-current", async (
             return Results.BadRequest(validation);
         }
 
-        var selectedRules = SelectRulesForCurrentApply(rules, request);
+        var baseSelectedRules = SelectRulesForCurrentApply(rules, request);
+        var serviceObjectScopeHints = await ResolveServiceObjectScopeHintsAsync(
+            cmdbuild,
+            request,
+            baseSelectedRules,
+            conversionRulesOptions.Value,
+            environment,
+            applyCancellationToken);
+        var scopePrefilter = SelectScopedRulesForCurrentApply(
+            baseSelectedRules,
+            request,
+            serviceObjectScopeHints.ScopeKeys);
+        var selectedRules = scopePrefilter.Applied
+            ? scopePrefilter.Rules
+            : baseSelectedRules;
         var selectedDocument = rules with { Rules = selectedRules };
         var sourceClasses = SourceClassesForCurrentApply(selectedRules, request);
+        var scopeMatchError = CurrentApplyScopeMatchError(request, scopePrefilter, serviceObjectScopeHints);
+        if (!string.IsNullOrWhiteSpace(scopeMatchError))
+        {
+            operationWatch.Stop();
+            performance.TotalMs = operationWatch.ElapsedMilliseconds;
+            progress.AddPerformance(operationId, item => item.TotalMs = performance.TotalMs);
+            progress.Fail(operationId, "scope_not_matched", scopeMatchError);
+            return Results.BadRequest(new
+            {
+                operationId,
+                error = scopeMatchError,
+                zabbixScopePrefilter = scopePrefilter.ToSummary(sourceClasses, serviceObjectScopeHints)
+            });
+        }
+
         var publishTargets = ResolvePublishTargets(request.Targets);
         var publishTopics = PublishTopicsForRequest(topicOptions.Value, publishTargets, selectedRules.Select(rule => rule.Layer));
         progress.Configure(operationId, sourceClasses, selectedRules.Count, publishTopics);
@@ -184,6 +278,8 @@ app.MapPost("/rules/apply-current", async (
             Topic = string.Join(", ", publishTopics),
             Topics = publishTopics,
             ZabbixDeliveryMode = publishTargets.ZabbixDirect ? "direct" : publishTargets.Zabbix ? "topic" : "",
+            ZabbixPublishMode = NormalizeZabbixPublishMode(request.ZabbixPublishMode),
+            ZabbixScopePrefilter = scopePrefilter.ToSummary(sourceClasses, serviceObjectScopeHints),
             SourceClassCount = sourceClasses.Count,
             RuleCount = selectedRules.Count,
             Performance = performance
@@ -287,6 +383,27 @@ app.MapPost("/rules/apply-current", async (
 
         progress.Stage(operationId, "zabbix_graph_validation", "Проверка полного desired graph перед публикацией в Zabbix.");
         var graphValidationErrors = AddZabbixTopologyDiagnostics(result, pendingPlans, progress, operationId);
+        if (request.DryRun && publishTargets.ZabbixDirect)
+        {
+            progress.Stage(
+                operationId,
+                "zabbix_graph_diff",
+                "Расчет diff desired graph в zabbixconfig2api без публикации в Zabbix.");
+            await PublishPendingZabbixPlansAsync(
+                request,
+                producer,
+                httpClientFactory.CreateClient(),
+                topicOptions.Value,
+                publishTargets,
+                pendingPlans,
+                operationDeduplicationKeys,
+                result,
+                progress,
+                operationId,
+                forceDryRun: true,
+                applyCancellationToken);
+        }
+
         if (!request.DryRun)
         {
             var blockingErrors = result.Errors
@@ -319,6 +436,7 @@ app.MapPost("/rules/apply-current", async (
                 result,
                 progress,
                 operationId,
+                forceDryRun: false,
                 applyCancellationToken);
         }
         operationWatch.Stop();
@@ -461,6 +579,521 @@ static IReadOnlyList<string> SourceClassesForCurrentApply(
     return requested.Count == 0
         ? result
         : result.Where(requested.Contains).ToArray();
+}
+
+static ApplyCurrentRulesScopeSelection SelectScopedRulesForCurrentApply(
+    IReadOnlyList<ConversionRule> rules,
+    ApplyCurrentRulesRequest request,
+    IReadOnlyList<string>? extraScopeKeys = null)
+{
+    var requestedKeys = ScopeKeysForCurrentApply(request)
+        .Concat(extraScopeKeys ?? [])
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    var hasExtraScopeKeys = (extraScopeKeys?.Count ?? 0) > 0;
+    var originalSourceClasses = rules
+        .Select(rule => rule.Source.ClassCode.Trim())
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Count();
+    if (requestedKeys.Length == 0 || rules.Count == 0)
+    {
+        return ApplyCurrentRulesScopeSelection.Disabled(rules, originalSourceClasses);
+    }
+
+    var candidatesByRule = rules
+        .Select((rule, index) => new
+        {
+            Rule = rule,
+            Index = index,
+            Candidates = RuleScopeCandidates(rule)
+        })
+        .ToArray();
+    var seedIndexes = candidatesByRule
+        .Where(item => requestedKeys.Any(requested => item.Candidates.Contains(requested)))
+        .Select(item => item.Index)
+        .ToHashSet();
+    var missingKeys = requestedKeys
+        .Where(requested => !candidatesByRule.Any(item => item.Candidates.Contains(requested)))
+        .ToArray();
+    if (seedIndexes.Count == 0)
+    {
+        if (hasExtraScopeKeys)
+        {
+            return new ApplyCurrentRulesScopeSelection(
+                Enabled: true,
+                Applied: true,
+                Rules: [],
+                RequestedKeys: requestedKeys,
+                MissingKeys: missingKeys,
+                Layer: ScopedLayerForCurrentApply(request, rules),
+                Depth: request.ZabbixScopeDepth <= 0 ? 0 : Math.Min(request.ZabbixScopeDepth, 50),
+                MatchedSeedCount: 0,
+                OriginalRuleCount: rules.Count,
+                SelectedRuleCount: 0,
+                OriginalSourceClassCount: originalSourceClasses,
+                SelectedSourceClassCount: 0);
+        }
+
+        return ApplyCurrentRulesScopeSelection.NotMatched(
+            rules,
+            requestedKeys,
+            missingKeys,
+            originalSourceClasses);
+    }
+
+    var layer = ScopedLayerForCurrentApply(request, rules);
+    var maxDepth = request.ZabbixScopeDepth <= 0
+        ? int.MaxValue
+        : Math.Min(request.ZabbixScopeDepth, 50);
+    var edges = BuildRuleScopeEdges(rules);
+    var selectedIndexes = string.Equals(layer, "service", StringComparison.OrdinalIgnoreCase)
+        ? ResolveServiceRuleScope(seedIndexes, edges, maxDepth)
+        : ResolveConnectedRuleScope(seedIndexes, edges, maxDepth);
+    var selectedRules = selectedIndexes
+        .Order()
+        .Select(index => rules[index])
+        .ToArray();
+    var selectedSourceClasses = selectedRules
+        .Select(rule => rule.Source.ClassCode.Trim())
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Count();
+
+    return new ApplyCurrentRulesScopeSelection(
+        Enabled: true,
+        Applied: selectedRules.Length < rules.Count,
+        Rules: selectedRules,
+        RequestedKeys: requestedKeys,
+        MissingKeys: missingKeys,
+        Layer: layer,
+        Depth: request.ZabbixScopeDepth <= 0 ? 0 : maxDepth,
+        MatchedSeedCount: seedIndexes.Count,
+        OriginalRuleCount: rules.Count,
+        SelectedRuleCount: selectedRules.Length,
+        OriginalSourceClassCount: originalSourceClasses,
+        SelectedSourceClassCount: selectedSourceClasses);
+}
+
+static IReadOnlyList<string> ScopeKeysForCurrentApply(ApplyCurrentRulesRequest request)
+{
+    return (request.ZabbixScopeKeys ?? [])
+        .SelectMany(value => value.Split(
+            [',', '\n', '\r', '\t', ';'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .ToArray();
+}
+
+static string? CurrentApplyScopeMatchError(
+    ApplyCurrentRulesRequest request,
+    ApplyCurrentRulesScopeSelection scopePrefilter,
+    ApplyCurrentRulesServiceObjectScopeHints serviceObjectScopeHints)
+{
+    var requestedKeys = ScopeKeysForCurrentApply(request);
+    if (!request.RequireZabbixScopeMatch || requestedKeys.Count == 0)
+    {
+        return null;
+    }
+
+    if (scopePrefilter.MatchedSeedCount > 0
+        || serviceObjectScopeHints.MatchedServiceObjectCount > 0)
+    {
+        return null;
+    }
+
+    return $"Scope публикации задан ({requestedKeys.Count}), но не сопоставлен ни с rule id/name/managed key, ни с ручным сервисным объектом. Подготовка полного scan остановлена; исправьте scope или отключите строгую проверку.";
+}
+
+static string ScopedLayerForCurrentApply(
+    ApplyCurrentRulesRequest request,
+    IReadOnlyList<ConversionRule> rules)
+{
+    var requestedLayers = (request.Layers ?? [])
+        .Select(item => item.Trim())
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    if (requestedLayers.Length == 1)
+    {
+        return requestedLayers[0];
+    }
+
+    var ruleLayers = rules
+        .Select(rule => rule.Layer.Trim())
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    return ruleLayers.Length == 1
+        ? ruleLayers[0]
+        : "service";
+}
+
+static HashSet<string> RuleScopeCandidates(ConversionRule rule)
+{
+    var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    AddScopeCandidate(result, rule.RuleId);
+    AddScopeCandidate(result, rule.Name);
+    AddScopeCandidate(result, rule.Layer);
+    AddScopeCandidate(result, rule.Source.ClassCode);
+    AddScopeCandidate(result, rule.Target.ClassCode);
+    AddScopeCandidate(result, rule.Target.CardId);
+    AddScopeCandidate(result, rule.Target.CardDescription);
+    AddScopeCandidate(result, RuleTargetManagedKey(rule.Target));
+    AddScopeCandidate(result, rule.GeneratedFromTemplate);
+    AddScopeCandidate(result, rule.TemplateGeneration.TemplateId);
+    foreach (var value in rule.Target.AttributeMappings.Values.Concat(rule.Target.InitialUserValues.Values))
+    {
+        AddScopeCandidate(result, value);
+    }
+
+    return result;
+}
+
+static void AddScopeCandidate(ISet<string> values, string? value)
+{
+    if (!string.IsNullOrWhiteSpace(value))
+    {
+        values.Add(value.Trim());
+    }
+}
+
+static RuleScopeEdges BuildRuleScopeEdges(IReadOnlyList<ConversionRule> rules)
+{
+    var targetKeyToIndexes = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+    for (var index = 0; index < rules.Count; index++)
+    {
+        var key = RuleTargetManagedKey(rules[index].Target);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            continue;
+        }
+
+        if (!targetKeyToIndexes.TryGetValue(key, out var indexes))
+        {
+            indexes = [];
+            targetKeyToIndexes[key] = indexes;
+        }
+
+        indexes.Add(index);
+    }
+
+    var childrenByParent = new Dictionary<int, HashSet<int>>();
+    var parentsByChild = new Dictionary<int, HashSet<int>>();
+    var undirected = new Dictionary<int, HashSet<int>>();
+    for (var sourceIndex = 0; sourceIndex < rules.Count; sourceIndex++)
+    {
+        foreach (var relation in rules[sourceIndex].Relations)
+        {
+            var targetIndexes = ZabbixManagedServiceMapper
+                .LookupCandidates(relation.TargetClassCode, relation.TargetLookup)
+                .Where(targetKeyToIndexes.ContainsKey)
+                .SelectMany(key => targetKeyToIndexes[key])
+                .Where(targetIndex => targetIndex != sourceIndex)
+                .Distinct()
+                .ToArray();
+            foreach (var targetIndex in targetIndexes)
+            {
+                AddRuleScopeEdge(childrenByParent, sourceIndex, targetIndex);
+                AddRuleScopeEdge(parentsByChild, targetIndex, sourceIndex);
+                AddRuleScopeEdge(undirected, sourceIndex, targetIndex);
+                AddRuleScopeEdge(undirected, targetIndex, sourceIndex);
+            }
+        }
+    }
+
+    return new RuleScopeEdges(childrenByParent, parentsByChild, undirected);
+}
+
+static HashSet<int> ResolveServiceRuleScope(
+    HashSet<int> seeds,
+    RuleScopeEdges edges,
+    int maxDepth)
+{
+    var result = new HashSet<int>(seeds);
+    foreach (var seed in seeds)
+    {
+        TraverseRuleScope(seed, edges.ParentsByChild, int.MaxValue, result);
+        TraverseRuleScope(seed, edges.ChildrenByParent, maxDepth, result);
+    }
+
+    return result;
+}
+
+static HashSet<int> ResolveConnectedRuleScope(
+    HashSet<int> seeds,
+    RuleScopeEdges edges,
+    int maxDepth)
+{
+    var result = new HashSet<int>(seeds);
+    foreach (var seed in seeds)
+    {
+        TraverseRuleScope(seed, edges.Undirected, maxDepth, result);
+    }
+
+    return result;
+}
+
+static void TraverseRuleScope(
+    int start,
+    IReadOnlyDictionary<int, HashSet<int>> adjacency,
+    int maxDepth,
+    HashSet<int> result)
+{
+    var queue = new Queue<(int Index, int Depth)>();
+    queue.Enqueue((start, 0));
+    while (queue.Count > 0)
+    {
+        var (index, depth) = queue.Dequeue();
+        if (depth >= maxDepth || !adjacency.TryGetValue(index, out var next))
+        {
+            continue;
+        }
+
+        foreach (var nextIndex in next)
+        {
+            if (!result.Add(nextIndex))
+            {
+                continue;
+            }
+
+            queue.Enqueue((nextIndex, depth + 1));
+        }
+    }
+}
+
+static void AddRuleScopeEdge(
+    IDictionary<int, HashSet<int>> edges,
+    int from,
+    int to)
+{
+    if (from == to)
+    {
+        return;
+    }
+
+    if (!edges.TryGetValue(from, out var next))
+    {
+        next = [];
+        edges[from] = next;
+    }
+
+    next.Add(to);
+}
+
+static async Task<ApplyCurrentRulesServiceObjectScopeHints> ResolveServiceObjectScopeHintsAsync(
+    CmdbuildClient cmdbuild,
+    ApplyCurrentRulesRequest request,
+    IReadOnlyList<ConversionRule> rules,
+    ConversionRulesOptions conversionRulesOptions,
+    IHostEnvironment environment,
+    CancellationToken cancellationToken)
+{
+    var requestedKeys = ScopeKeysForCurrentApply(request);
+    if (requestedKeys.Count == 0
+        || !CurrentApplyIncludesServiceLayer(request)
+        || rules.Count == 0)
+    {
+        return ApplyCurrentRulesServiceObjectScopeHints.Empty;
+    }
+
+    var catalog = await cmdbuild.ListManagedLayerClassInstancesAsync(
+        request.CmdbuildPrefix,
+        "Service",
+        request.ServiceModelRoot,
+        item => IsManualServiceObjectClass(request.CmdbuildPrefix, item.Code),
+        cancellationToken);
+    var serviceObjects = catalog.Classes
+        .SelectMany(item => item.Cards.Select(card => new ServiceTopologyCard(item.ClassCode, card)))
+        .ToArray();
+    if (serviceObjects.Length == 0)
+    {
+        return ApplyCurrentRulesServiceObjectScopeHints.Empty;
+    }
+
+    var serviceObjectKeys = serviceObjects
+        .Select(item => CardRefKey(item.ClassCode, item.Card.Id))
+        .ToHashSet(StringComparer.Ordinal);
+    var matchedServiceObjectKeys = serviceObjects
+        .Where(item => requestedKeys.Any(requested => ServiceObjectScopeCandidates(item).Contains(requested)))
+        .Select(item => CardRefKey(item.ClassCode, item.Card.Id))
+        .ToHashSet(StringComparer.Ordinal);
+    if (matchedServiceObjectKeys.Count == 0)
+    {
+        return ApplyCurrentRulesServiceObjectScopeHints.Empty;
+    }
+
+    var domains = await cmdbuild.ListDomainsAsync(request.CmdbuildPrefix, cancellationToken);
+    var domainByCode = domains
+        .GroupBy(domain => domain.Code, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+    var relationsCatalog = await cmdbuild.ListDomainRelationsAsync(
+        request.CmdbuildPrefix,
+        domain => ServiceTopologyDirection(request.CmdbuildPrefix, domain.Code) != ServiceTopologyRelationDirection.Skip,
+        cancellationToken);
+    var relationsByParent = BuildServiceTopologyRelations(
+        request.CmdbuildPrefix,
+        relationsCatalog.Relations,
+        domainByCode,
+        serviceObjectKeys);
+    var templateRelations = await LoadServiceObjectTemplateRelationsAsync(
+        conversionRulesOptions,
+        environment,
+        cancellationToken);
+    AddServiceObjectTemplateRelations(
+        relationsByParent,
+        templateRelations,
+        new ConversionRulesDocument
+        {
+            Version = "scope-prefilter",
+            Rules = rules
+        },
+        serviceObjectKeys);
+    NormalizeRelations(relationsByParent);
+
+    var maxDepth = request.ZabbixScopeDepth <= 0 ? int.MaxValue : Math.Min(request.ZabbixScopeDepth, 50);
+    var visitedServiceObjects = ResolveServiceObjectScopeTargets(
+        matchedServiceObjectKeys,
+        relationsByParent,
+        serviceObjectKeys,
+        maxDepth);
+    var targetKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var serviceObjectKey in visitedServiceObjects)
+    {
+        AddScopeCandidate(targetKeys, serviceObjectKey);
+        var parts = serviceObjectKey.Split('\u001f');
+        if (parts.Length == 2)
+        {
+            AddScopeCandidate(targetKeys, $"cmdbuild:{parts[0]}:{parts[1]}");
+            AddScopeCandidate(targetKeys, parts[1]);
+        }
+
+        if (!relationsByParent.TryGetValue(serviceObjectKey, out var relations))
+        {
+            continue;
+        }
+
+        foreach (var relation in relations)
+        {
+            AddScopeCandidate(targetKeys, relation.TargetLookup);
+            AddScopeCandidate(targetKeys, $"{relation.TargetClassCode}:{relation.TargetLookup}");
+            foreach (var candidate in ZabbixManagedServiceMapper.LookupCandidates(
+                relation.TargetClassCode,
+                relation.TargetLookup))
+            {
+                AddScopeCandidate(targetKeys, candidate);
+            }
+        }
+    }
+
+    return new ApplyCurrentRulesServiceObjectScopeHints(
+        Enabled: true,
+        MatchedServiceObjectCount: matchedServiceObjectKeys.Count,
+        TraversedServiceObjectCount: visitedServiceObjects.Count,
+        ScopeKeys: targetKeys
+            .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+}
+
+static bool CurrentApplyIncludesServiceLayer(ApplyCurrentRulesRequest request)
+{
+    var layers = new HashSet<string>(
+        (request.Layers ?? [])
+            .Select(item => item.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item)),
+        StringComparer.OrdinalIgnoreCase);
+    return layers.Count == 0 || layers.Contains("service");
+}
+
+static HashSet<string> ServiceObjectScopeCandidates(ServiceTopologyCard item)
+{
+    var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    AddScopeCandidate(result, CardRefKey(item.ClassCode, item.Card.Id));
+    AddScopeCandidate(result, $"cmdbuild:{item.ClassCode}:{item.Card.Id}");
+    AddScopeCandidate(result, item.Card.Id);
+    AddScopeCandidate(result, item.ClassCode);
+    AddScopeCandidate(result, ServiceCardDisplayName(item.Card));
+    foreach (var attribute in ServiceCardAttributes(item.Card))
+    {
+        AddScopeCandidate(result, Convert.ToString(attribute.Value, CultureInfo.InvariantCulture));
+    }
+
+    return result;
+}
+
+static HashSet<string> ResolveServiceObjectScopeTargets(
+    HashSet<string> seeds,
+    IReadOnlyDictionary<string, List<AggregationTargetRelation>> relationsByParent,
+    IReadOnlySet<string> serviceObjectKeys,
+    int maxDepth)
+{
+    var result = new HashSet<string>(seeds, StringComparer.Ordinal);
+    var parentsByChild = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+    foreach (var (parent, relations) in relationsByParent)
+    {
+        foreach (var relation in relations)
+        {
+            var childKey = CardRefKey(relation.TargetClassCode, relation.TargetLookup);
+            if (!serviceObjectKeys.Contains(childKey))
+            {
+                continue;
+            }
+
+            if (!parentsByChild.TryGetValue(childKey, out var parents))
+            {
+                parents = [];
+                parentsByChild[childKey] = parents;
+            }
+
+            parents.Add(parent);
+        }
+    }
+
+    foreach (var seed in seeds)
+    {
+        TraverseServiceObjectScope(seed, parentsByChild, int.MaxValue, result);
+        TraverseServiceObjectScope(
+            seed,
+            relationsByParent.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value
+                    .Select(relation => CardRefKey(relation.TargetClassCode, relation.TargetLookup))
+                    .Where(serviceObjectKeys.Contains)
+                    .ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal),
+            maxDepth,
+            result);
+    }
+
+    return result;
+}
+
+static void TraverseServiceObjectScope(
+    string start,
+    IReadOnlyDictionary<string, HashSet<string>> adjacency,
+    int maxDepth,
+    HashSet<string> result)
+{
+    var queue = new Queue<(string Key, int Depth)>();
+    queue.Enqueue((start, 0));
+    while (queue.Count > 0)
+    {
+        var (key, depth) = queue.Dequeue();
+        if (depth >= maxDepth || !adjacency.TryGetValue(key, out var next))
+        {
+            continue;
+        }
+
+        foreach (var nextKey in next)
+        {
+            if (!result.Add(nextKey))
+            {
+                continue;
+            }
+
+            queue.Enqueue((nextKey, depth + 1));
+        }
+    }
 }
 
 static CmdbRawEvent BuildApplyCurrentRawEvent(
@@ -651,6 +1284,7 @@ static async Task PublishPendingZabbixPlansAsync(
     ApplyCurrentRulesResult result,
     ApplyCurrentRulesProgressStore progress,
     string operationId,
+    bool forceDryRun,
     CancellationToken cancellationToken)
 {
     var orderedPlans = PrepareZabbixGraphPublishPlans(pendingPlans);
@@ -679,8 +1313,17 @@ static async Task PublishPendingZabbixPlansAsync(
                 request.ZabbixCommandApplyUrl,
                 layerGroup.Key,
                 layerGroup.Select(item => item.Plan.Command).ToArray(),
+                forceDryRun,
+                request.ZabbixPublishMode,
+                request.ZabbixScopeKeys,
+                request.ZabbixScopeDepth,
                 cancellationToken);
             publishWatch.Stop();
+            if (publishedTopics.Body.ValueKind == JsonValueKind.Object)
+            {
+                result.ZabbixDirectGraphResults.Add(publishedTopics.Body);
+            }
+
             var serviceTopology = layerGroup.Any(item => item.ServiceTopology);
             AddPublishPerformance(
                 result.Performance,
@@ -689,13 +1332,27 @@ static async Task PublishPendingZabbixPlansAsync(
                 zabbixDirect: true,
                 publishWatch.ElapsedMilliseconds,
                 serviceTopology);
-            foreach (var pending in layerGroup)
+            if (forceDryRun)
+            {
+                continue;
+            }
+
+            var appliedCommandIds = ReadGraphResultCommandIds(publishedTopics.Body);
+            var selectedCommandCount = ReadJsonInt(publishedTopics.Body, "commandsSelectedForPublish");
+            var publishedPlans = appliedCommandIds.Count > 0
+                ? layerGroup
+                    .Where(item => appliedCommandIds.Contains(item.Plan.Command.CommandId))
+                    .ToArray()
+                : layerGroup
+                    .Take(Math.Max(0, selectedCommandCount ?? layerGroup.Count()))
+                    .ToArray();
+            foreach (var pending in publishedPlans)
             {
                 pending.ClassResult.CommandsPublished++;
                 result.CommandsPublished++;
                 result.CommandsAppliedDirect++;
-                progress.AddPublished(operationId, publishedTopics);
-                foreach (var topic in publishedTopics)
+                progress.AddPublished(operationId, publishedTopics.Topics);
+                foreach (var topic in publishedTopics.Topics)
                 {
                     Increment(result.CommandsPublishedByTopic, topic);
                 }
@@ -1651,11 +2308,15 @@ static IReadOnlyList<string> PublishTopicsForCommand(
         .ToArray();
 }
 
-static async Task<IReadOnlyList<string>> ApplyZabbixGraphDirectAsync(
+static async Task<ZabbixGraphDirectApplyResponse> ApplyZabbixGraphDirectAsync(
     HttpClient client,
     string? applyUrl,
     string layer,
     IReadOnlyList<AggregationCommand> commands,
+    bool dryRun,
+    string publishMode,
+    IReadOnlyList<string> scopeKeys,
+    int scopeDepth,
     CancellationToken cancellationToken)
 {
     if (string.IsNullOrWhiteSpace(applyUrl))
@@ -1673,7 +2334,10 @@ static async Task<IReadOnlyList<string>> ApplyZabbixGraphDirectAsync(
             {
                 layer,
                 commands,
-                dryRun = false
+                dryRun,
+                publishMode = NormalizeZabbixPublishMode(publishMode),
+                scopeKeys,
+                scopeDepth
             }),
             Encoding.UTF8,
             "application/json")
@@ -1685,9 +2349,11 @@ static async Task<IReadOnlyList<string>> ApplyZabbixGraphDirectAsync(
         throw new InvalidOperationException($"Zabbix direct graph apply failed: HTTP {(int)response.StatusCode}: {Trim(text)}");
     }
 
+    JsonElement body = default;
     if (!string.IsNullOrWhiteSpace(text))
     {
         using var document = JsonDocument.Parse(text);
+        body = document.RootElement.Clone();
         var status = ReadJsonString(document.RootElement, "status");
         var error = ReadJsonString(document.RootElement, "error");
         var firstError = ReadFirstJsonString(document.RootElement, "errors");
@@ -1703,7 +2369,11 @@ static async Task<IReadOnlyList<string>> ApplyZabbixGraphDirectAsync(
         }
     }
 
-    return ["zabbix-direct-graph"];
+    return new ZabbixGraphDirectApplyResponse
+    {
+        Topics = ["zabbix-direct-graph"],
+        Body = body
+    };
 }
 
 static string ResolveZabbixGraphApplyUrl(string applyUrl)
@@ -1721,6 +2391,51 @@ static string ResolveZabbixGraphApplyUrl(string applyUrl)
     }
 
     return value.TrimEnd('/') + "/commands/apply-graph";
+}
+
+static string NormalizeZabbixPublishMode(string? value)
+{
+    return string.Equals(value, "full", StringComparison.OrdinalIgnoreCase)
+        ? "full"
+        : "changes";
+}
+
+static IReadOnlySet<string> ReadGraphResultCommandIds(JsonElement element)
+{
+    var result = new HashSet<string>(StringComparer.Ordinal);
+    if (element.ValueKind != JsonValueKind.Object
+        || !element.TryGetProperty("commandResults", out var commandResults)
+        || commandResults.ValueKind != JsonValueKind.Array)
+    {
+        return result;
+    }
+
+    foreach (var commandResult in commandResults.EnumerateArray())
+    {
+        var commandId = ReadJsonString(commandResult, "commandId");
+        if (!string.IsNullOrWhiteSpace(commandId))
+        {
+            result.Add(commandId);
+        }
+    }
+
+    return result;
+}
+
+static int? ReadJsonInt(JsonElement element, string propertyName)
+{
+    if (element.ValueKind != JsonValueKind.Object
+        || !element.TryGetProperty(propertyName, out var value))
+    {
+        return null;
+    }
+
+    return value.ValueKind switch
+    {
+        JsonValueKind.Number when value.TryGetInt32(out var number) => number,
+        JsonValueKind.String when int.TryParse(value.GetString(), out var number) => number,
+        _ => null
+    };
 }
 
 static string? ReadJsonString(JsonElement element, string propertyName)
@@ -1886,6 +2601,14 @@ public sealed record ApplyCurrentRulesRequest
 
     public string ZabbixCommandApplyUrl { get; init; } = "";
 
+    public string ZabbixPublishMode { get; init; } = "changes";
+
+    public IReadOnlyList<string> ZabbixScopeKeys { get; init; } = [];
+
+    public int ZabbixScopeDepth { get; init; }
+
+    public bool RequireZabbixScopeMatch { get; init; }
+
     public int MaxCardsPerClass { get; init; }
 
     public bool DryRun { get; init; }
@@ -1898,6 +2621,186 @@ public sealed record PendingApplyCurrentPlan(
     ApplyCurrentRulesClassResult ClassResult,
     bool ServiceTopology);
 
+public sealed record RuleScopeEdges(
+    IReadOnlyDictionary<int, HashSet<int>> ChildrenByParent,
+    IReadOnlyDictionary<int, HashSet<int>> ParentsByChild,
+    IReadOnlyDictionary<int, HashSet<int>> Undirected);
+
+public sealed record ApplyCurrentRulesScopeSelection(
+    bool Enabled,
+    bool Applied,
+    IReadOnlyList<ConversionRule> Rules,
+    IReadOnlyList<string> RequestedKeys,
+    IReadOnlyList<string> MissingKeys,
+    string Layer,
+    int Depth,
+    int MatchedSeedCount,
+    int OriginalRuleCount,
+    int SelectedRuleCount,
+    int OriginalSourceClassCount,
+    int SelectedSourceClassCount)
+{
+    public static ApplyCurrentRulesScopeSelection Disabled(
+        IReadOnlyList<ConversionRule> rules,
+        int sourceClassCount) =>
+        new(
+            Enabled: false,
+            Applied: false,
+            Rules: rules,
+            RequestedKeys: [],
+            MissingKeys: [],
+            Layer: "",
+            Depth: 0,
+            MatchedSeedCount: 0,
+            OriginalRuleCount: rules.Count,
+            SelectedRuleCount: rules.Count,
+            OriginalSourceClassCount: sourceClassCount,
+            SelectedSourceClassCount: sourceClassCount);
+
+    public static ApplyCurrentRulesScopeSelection NotMatched(
+        IReadOnlyList<ConversionRule> rules,
+        IReadOnlyList<string> requestedKeys,
+        IReadOnlyList<string> missingKeys,
+        int sourceClassCount) =>
+        new(
+            Enabled: true,
+            Applied: false,
+            Rules: rules,
+            RequestedKeys: requestedKeys,
+            MissingKeys: missingKeys,
+            Layer: "",
+            Depth: 0,
+            MatchedSeedCount: 0,
+            OriginalRuleCount: rules.Count,
+            SelectedRuleCount: rules.Count,
+            OriginalSourceClassCount: sourceClassCount,
+            SelectedSourceClassCount: sourceClassCount);
+
+    public ApplyCurrentRulesScopePrefilterSummary ToSummary(
+        IReadOnlyList<string> selectedSourceClasses,
+        ApplyCurrentRulesServiceObjectScopeHints serviceObjectScopeHints) =>
+        new()
+        {
+            Enabled = Enabled,
+            Applied = Applied,
+            RequestedKeyCount = RequestedKeys.Count,
+            MissingKeys = MissingKeys.Take(30).ToArray(),
+            ServiceObjectMatchedCount = serviceObjectScopeHints.MatchedServiceObjectCount,
+            ServiceObjectTraversedCount = serviceObjectScopeHints.TraversedServiceObjectCount,
+            ServiceObjectScopeKeyCount = serviceObjectScopeHints.ScopeKeys.Count,
+            Layer = Layer,
+            Depth = Depth,
+            MatchedSeedCount = MatchedSeedCount,
+            OriginalRuleCount = OriginalRuleCount,
+            SelectedRuleCount = SelectedRuleCount,
+            OriginalSourceClassCount = OriginalSourceClassCount,
+            SelectedSourceClassCount = selectedSourceClasses.Count,
+            Message = ScopePrefilterMessage(selectedSourceClasses.Count, serviceObjectScopeHints)
+        };
+
+    private string ScopePrefilterMessage(
+        int selectedSourceClassCount,
+        ApplyCurrentRulesServiceObjectScopeHints serviceObjectScopeHints)
+    {
+        if (!Enabled)
+        {
+            return "Scope публикации не задан; правила и карточки не сужались.";
+        }
+
+        if (MatchedSeedCount == 0)
+        {
+            return serviceObjectScopeHints.MatchedServiceObjectCount > 0
+                ? $"Scope сопоставлен с сервисными объектами ({serviceObjectScopeHints.MatchedServiceObjectCount}), но связанные правила не найдены; source-карточки правил не читаются."
+                : "Scope задан, но статически не сопоставлен с rule id/name/managed key; без строгой проверки подготовка выполняется полным набором.";
+        }
+
+        if (!Applied)
+        {
+            return "Scope сопоставлен, но после раскрытия связей выбраны все правила; чтение CMDBuild не сократилось.";
+        }
+
+        return $"Scope сократил подготовку: правил {SelectedRuleCount}/{OriginalRuleCount}, source-классов {selectedSourceClassCount}/{OriginalSourceClassCount}.";
+    }
+}
+
+public sealed record ApplyCurrentRulesServiceObjectScopeHints(
+    bool Enabled,
+    int MatchedServiceObjectCount,
+    int TraversedServiceObjectCount,
+    IReadOnlyList<string> ScopeKeys)
+{
+    public static ApplyCurrentRulesServiceObjectScopeHints Empty { get; } = new(
+        Enabled: false,
+        MatchedServiceObjectCount: 0,
+        TraversedServiceObjectCount: 0,
+        ScopeKeys: []);
+}
+
+public sealed class ApplyCurrentRulesScopePrefilterSummary
+{
+    public bool Enabled { get; init; }
+
+    public bool Applied { get; init; }
+
+    public int RequestedKeyCount { get; init; }
+
+    public IReadOnlyList<string> MissingKeys { get; init; } = [];
+
+    public int ServiceObjectMatchedCount { get; init; }
+
+    public int ServiceObjectTraversedCount { get; init; }
+
+    public int ServiceObjectScopeKeyCount { get; init; }
+
+    public string Layer { get; init; } = "";
+
+    public int Depth { get; init; }
+
+    public int MatchedSeedCount { get; init; }
+
+    public int OriginalRuleCount { get; init; }
+
+    public int SelectedRuleCount { get; init; }
+
+    public int OriginalSourceClassCount { get; init; }
+
+    public int SelectedSourceClassCount { get; init; }
+
+    public string Message { get; init; } = "";
+}
+
+public sealed class ApplyCurrentRulesScopePreviewResult
+{
+    public string Layer { get; init; } = "";
+
+    public int RuleCount { get; init; }
+
+    public int SourceClassCount { get; init; }
+
+    public IReadOnlyList<string> SourceClasses { get; init; } = [];
+
+    public ApplyCurrentRulesScopePrefilterSummary ZabbixScopePrefilter { get; init; } = new();
+
+    public IReadOnlyList<ApplyCurrentRulesScopePreviewRule> Rules { get; init; } = [];
+}
+
+public sealed class ApplyCurrentRulesScopePreviewRule
+{
+    public string RuleId { get; init; } = "";
+
+    public string Name { get; init; } = "";
+
+    public string Layer { get; init; } = "";
+
+    public string SourceClass { get; init; } = "";
+
+    public string TargetClass { get; init; } = "";
+
+    public string GeneratedFromTemplate { get; init; } = "";
+
+    public string TemplateId { get; init; } = "";
+}
+
 public sealed class ApplyCurrentRulesResult
 {
     public string OperationId { get; init; } = "";
@@ -1909,6 +2812,10 @@ public sealed class ApplyCurrentRulesResult
     public IReadOnlyList<string> Topics { get; init; } = [];
 
     public string ZabbixDeliveryMode { get; init; } = "";
+
+    public string ZabbixPublishMode { get; init; } = "changes";
+
+    public ApplyCurrentRulesScopePrefilterSummary ZabbixScopePrefilter { get; init; } = new();
 
     public int SourceClassCount { get; init; }
 
@@ -1938,7 +2845,16 @@ public sealed class ApplyCurrentRulesResult
 
     public List<ApplyCurrentRulesCommandSample> SampleCommands { get; } = [];
 
+    public List<JsonElement> ZabbixDirectGraphResults { get; } = [];
+
     public List<string> Errors { get; } = [];
+}
+
+public sealed class ZabbixGraphDirectApplyResponse
+{
+    public IReadOnlyList<string> Topics { get; init; } = [];
+
+    public JsonElement Body { get; init; }
 }
 
 public sealed class ApplyCurrentRulesClassResult

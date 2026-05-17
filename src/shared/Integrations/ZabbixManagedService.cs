@@ -366,6 +366,14 @@ public static class ZabbixManagedServiceTags
 
     public const string AggregateKind = "cmdb2monitoring:aggregate_kind";
 
+    public const string AggregationType = "cmdb2monitoring:aggregation_type";
+
+    public const string IsCritical = "cmdb2monitoring:is_critical";
+
+    public const string Threshold = "cmdb2monitoring:threshold";
+
+    public const string N = "cmdb2monitoring:n";
+
     public const string SlaPolicy = "cmdb2monitoring:sla_policy";
 
     public const string SlaTarget = "cmdb2monitoring:sla_target";
@@ -658,10 +666,10 @@ public static class ZabbixManagedServiceMapper
         AddTag(tags, ZabbixManagedServiceTags.SourceKeyAttribute, command.Source.KeyAttribute);
         AddTag(tags, ZabbixManagedServiceTags.SourceKeyValue, command.Source.KeyValue);
         AddTag(tags, ZabbixManagedServiceTags.SourceZabbixHostId, command.Source.ZabbixHostId);
-        AddTag(tags, "cmdb2monitoring:aggregation_type", FirstAttribute(command.Target.Attributes, "aggregation_type"));
-        AddTag(tags, "cmdb2monitoring:is_critical", FirstAttribute(command.Target.Attributes, "is_critical"));
-        AddTag(tags, "cmdb2monitoring:threshold", FirstAttribute(command.Target.Attributes, "threshold"));
-        AddTag(tags, "cmdb2monitoring:n", FirstAttribute(command.Target.Attributes, "n"));
+        AddTag(tags, ZabbixManagedServiceTags.AggregationType, FirstAttribute(command.Target.Attributes, "aggregation_type"));
+        AddTag(tags, ZabbixManagedServiceTags.IsCritical, FirstAttribute(command.Target.Attributes, "is_critical"));
+        AddTag(tags, ZabbixManagedServiceTags.Threshold, FirstAttribute(command.Target.Attributes, "threshold"));
+        AddTag(tags, ZabbixManagedServiceTags.N, FirstAttribute(command.Target.Attributes, "n"));
         AddTag(tags, ZabbixManagedServiceTags.SlaPolicy, FirstAttribute(command.Target.Attributes, "sla_policy_key", "sla_policy", "SlaPolicy"));
         AddTag(tags, ZabbixManagedServiceTags.SlaTarget, FirstAttribute(command.Target.Attributes, "sla_target"));
         return tags;

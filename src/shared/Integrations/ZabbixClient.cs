@@ -409,6 +409,47 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         return await GetTriggersByLookupBatchesAsync(ids, "hostids", includeDisabled, batchSize, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ZabbixHostInfo>> GetHostsByIdsAsync(
+        IReadOnlyList<string> hostIds,
+        int batchSize,
+        CancellationToken cancellationToken)
+    {
+        var ids = hostIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var result = new List<ZabbixHostInfo>();
+        var effectiveBatchSize = Math.Max(1, batchSize);
+        foreach (var batch in ids.Chunk(effectiveBatchSize))
+        {
+            var parameters = new JsonObject
+            {
+                ["output"] = new JsonArray("hostid", "host", "name"),
+                ["hostids"] = StringArray(batch),
+                ["selectTags"] = new JsonArray("tag", "value")
+            };
+
+            var response = await SendZabbixMethodAsync("host.get", parameters, cancellationToken);
+            var hosts = response.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonArray array
+                ? array
+                : throw new InvalidOperationException("Zabbix host.get did not return an array.");
+
+            result.AddRange(hosts
+                .OfType<JsonObject>()
+                .Select(ReadHost)
+                .Where(host => !string.IsNullOrWhiteSpace(host.HostId)));
+        }
+
+        return result
+            .DistinctBy(host => host.HostId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     public async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByIdsAsync(
         IReadOnlyList<string> triggerIds,
         bool includeDisabled,
@@ -857,6 +898,10 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
         };
         var response = await SendZabbixMethodAsync("trigger.get", parameters, cancellationToken);
         var existing = ReadResultArray(response, "trigger.get");
+        if (existing.Count == 0)
+        {
+            existing = await FindAggregateTriggersByNameAsync(definition, hostId, cancellationToken);
+        }
         var payload = new JsonObject
         {
             ["description"] = definition.TriggerName,
@@ -881,6 +926,25 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
         var create = await SendZabbixMethodAsync("trigger.create", payload, cancellationToken);
         return new ZabbixObjectAction(ReadFirstId(create, "triggerids", "trigger.create"), "created");
+    }
+
+    private async Task<JsonArray> FindAggregateTriggersByNameAsync(
+        ZabbixSuppressionAggregateDefinition definition,
+        string hostId,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new JsonObject
+        {
+            ["output"] = new JsonArray("triggerid", "description", "expression", "priority"),
+            ["hostids"] = new JsonArray(hostId),
+            ["filter"] = new JsonObject
+            {
+                ["description"] = new JsonArray(definition.TriggerName)
+            },
+            ["limit"] = 2
+        };
+        var response = await SendZabbixMethodAsync("trigger.get", parameters, cancellationToken);
+        return ReadResultArray(response, "trigger.get");
     }
 
     private async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersAsync(
@@ -1028,13 +1092,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
         var host = result[0] as JsonObject
             ?? throw new InvalidOperationException("Zabbix host.get returned an invalid host object.");
-        return new ZabbixHostInfo
-        {
-            HostId = JsonString(host["hostid"]),
-            Host = JsonString(host["host"]),
-            Name = JsonString(host["name"]),
-            Tags = ReadTagList(host["tags"] as JsonArray)
-        };
+        return ReadHost(host);
     }
 
     private async Task<string> GetApiVersionAsync(CancellationToken cancellationToken)
@@ -1530,7 +1588,7 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
 
         if (!string.IsNullOrWhiteSpace(definition.AggregationType))
         {
-            tags["cmdb2monitoring:aggregation_type"] = definition.AggregationType;
+            tags[ZabbixManagedServiceTags.AggregationType] = definition.AggregationType;
         }
 
         return tags;
@@ -1659,6 +1717,17 @@ public sealed class ZabbixClient(HttpClient httpClient, IOptionsMonitor<ZabbixOp
             Tags = ReadTags(service["tags"] as JsonArray),
             Children = ReadServiceReferences(service["children"] as JsonArray),
             Parents = ReadServiceReferences(service["parents"] as JsonArray)
+        };
+    }
+
+    private static ZabbixHostInfo ReadHost(JsonObject host)
+    {
+        return new ZabbixHostInfo
+        {
+            HostId = JsonString(host["hostid"]),
+            Host = JsonString(host["host"]),
+            Name = JsonString(host["name"]),
+            Tags = ReadTagList(host["tags"] as JsonArray)
         };
     }
 

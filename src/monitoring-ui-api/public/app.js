@@ -8,6 +8,7 @@ const CACHE_KEYS = {
   conversionConfig: 'conversion.config'
 };
 const GENERAL_SETTINGS_STORAGE_KEY = 'cmdb2monitoring.serviceSuppression.generalSettings.v2';
+const ZABBIX_DIRTY_SCOPE_STORAGE_KEY = 'cmdb2monitoring.serviceSuppression.zabbixDirtyScope.v1';
 const POPULATION_SOURCE_KEY_ATTRIBUTE = 'population_source_key';
 const TARGET_CARD_IDENTITY_ATTRIBUTES = [
   'Code',
@@ -263,6 +264,8 @@ const wideChoiceMenuState = {
   selecting: false
 };
 
+const ZABBIX_DIRTY_SCOPE_LIMIT = 200;
+
 const state = {
   prefix: 'C2M_',
   language: 'ru',
@@ -421,6 +424,9 @@ const state = {
       result: null,
       status: null,
       progress: null,
+      scopePreview: null,
+      scopePreviewError: '',
+      scopePreviewLoading: false,
       lastGraphCheckOk: false,
       lastGraphCheckAt: '',
       planPage: 1,
@@ -439,6 +445,9 @@ const state = {
       result: null,
       status: null,
       progress: null,
+      scopePreview: null,
+      scopePreviewError: '',
+      scopePreviewLoading: false,
       lastGraphCheckOk: false,
       lastGraphCheckAt: '',
       planPage: 1,
@@ -448,6 +457,22 @@ const state = {
       cleanupStateApplying: false,
       deletingStaleCmdbuild: false,
       deletingStaleZabbix: false
+    }
+  },
+  zabbixDirtyScope: {
+    service: {
+      entries: [],
+      updatedAt: '',
+      lastReason: '',
+      omittedCount: 0,
+      warnings: []
+    },
+    suppression: {
+      entries: [],
+      updatedAt: '',
+      lastReason: '',
+      omittedCount: 0,
+      warnings: []
     }
   },
   zabbixTriggerDependencies: {
@@ -1125,15 +1150,39 @@ document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
     void loadZabbixApplyStatus(layerKey);
   });
   panel.querySelector('[data-zabbix-apply-dry-run]')?.addEventListener('click', () => {
-    void applyZabbixLayer(layerKey, { dryRun: true });
+    void applyZabbixLayer(layerKey, { dryRun: true, publishMode: 'changes' });
   });
   panel.querySelector('[data-zabbix-apply-publish]')?.addEventListener('click', () => {
-    void applyZabbixLayer(layerKey, { dryRun: false });
+    void applyZabbixLayer(layerKey, { dryRun: false, publishMode: 'changes' });
+  });
+  panel.querySelector('[data-zabbix-apply-full-dry-run]')?.addEventListener('click', () => {
+    void applyZabbixLayer(layerKey, { dryRun: true, publishMode: 'full' });
+  });
+  panel.querySelector('[data-zabbix-apply-full-publish]')?.addEventListener('click', () => {
+    void applyZabbixLayer(layerKey, { dryRun: false, publishMode: 'full' });
   });
   panel.querySelector('[data-zabbix-apply-cancel]')?.addEventListener('click', () => {
     void cancelZabbixApply(layerKey);
   });
   panel.addEventListener('click', (event) => {
+    const dirtyScopeUseButton = event.target.closest?.('[data-zabbix-dirty-scope-use]');
+    if (dirtyScopeUseButton && panel.contains(dirtyScopeUseButton)) {
+      applyZabbixDirtyScopeToInput(layerKey);
+      return;
+    }
+
+    const dirtyScopeClearButton = event.target.closest?.('[data-zabbix-dirty-scope-clear]');
+    if (dirtyScopeClearButton && panel.contains(dirtyScopeClearButton)) {
+      clearZabbixDirtyScope(layerKey);
+      return;
+    }
+
+    const scopePreviewButton = event.target.closest?.('[data-zabbix-scope-preview]');
+    if (scopePreviewButton && panel.contains(scopePreviewButton)) {
+      void previewZabbixApplyScope(layerKey);
+      return;
+    }
+
     const staleRefreshButton = event.target.closest?.('[data-zabbix-stale-report-refresh]');
     if (staleRefreshButton && panel.contains(staleRefreshButton)) {
       void loadZabbixStaleReport(layerKey);
@@ -1306,6 +1355,7 @@ document.addEventListener('click', (event) => {
 
 await loadInitialConfig();
 loadGeneralSettings({ silent: true });
+loadZabbixDirtyScopeJournal();
 await loadCmdbSourceCache({ silent: true });
 await loadZabbixSourceCache({ silent: true });
 await loadWebhooksSourceCache({ silent: true });
@@ -5749,6 +5799,13 @@ async function applyRuleEditorChange(layerKey) {
 
       const [deleted] = document.rules.splice(selectedIndex, 1);
       writeRuleDocument(layerKey, document);
+      markZabbixDirtyScopeFromRules(
+        layerKey,
+        [deleted],
+        `Удалено статическое правило ${deleted.name || deleted.rule_id || selectedIndex}`,
+        {
+          warning: 'Удаление правила формирует stale: публикация изменений покажет расхождение, а фактическая очистка выполняется через stale cleanup или полный граф.'
+        });
       setRuleEditorStatus(layerKey, `Удалено правило ${deleted.name || deleted.rule_id || selectedIndex}.`);
       renderRuleEditor(layerKey);
       return;
@@ -5775,6 +5832,10 @@ async function applyRuleEditorChange(layerKey) {
     }
 
     writeRuleDocument(layerKey, document);
+    markZabbixDirtyScopeFromRules(
+      layerKey,
+      [rule],
+      `${action === 'modify' ? 'Изменено' : 'Создано'} статическое правило ${rule.name || rule.rule_id}`);
     setRuleEditorStatus(layerKey, `${action === 'modify' ? 'Изменено' : 'Создано'} правило ${rule.name}.`);
     renderRuleEditor(layerKey);
   } catch (error) {
@@ -9091,6 +9152,13 @@ function removeGeneratedRulesForTemplate(layerKey, templateId, template, reason)
   document.rules = (document.rules ?? []).filter((rule) => managedRuleTemplateId(rule) !== templateId);
   removeRuleReferencesToRemovedRules(document, rulesToRemove, { preserveRuntimeRelations: false });
   writeRuleDocument(layerKey, document);
+  markZabbixDirtyScopeFromRules(
+    layerKey,
+    rulesToRemove,
+    `Удалены правила шаблона ${template?.name || templateId || '-'}`,
+    {
+      warning: 'Удаление шаблонных правил формирует stale: для фактического удаления объектов используйте планы удаления/stale cleanup или полный граф.'
+    });
   return {
     detachedRules: 0,
     removedRules: rulesToRemove.length,
@@ -9884,8 +9952,59 @@ function collectZabbixTriggerDependencyRunPayload() {
     : { transitiveGroupDependencyDepth: overrideDepth };
 }
 
+async function previewZabbixApplyScope(layerKey) {
+  const scope = collectZabbixApplyScope(layerKey);
+  const stateItem = zabbixApplyState(layerKey);
+  try {
+    stateItem.scopePreviewLoading = true;
+    stateItem.scopePreviewError = '';
+    stateItem.error = '';
+    stateItem.message = scope.scopeKeys.length > 0
+      ? `Проверяю scope ${zabbixLayerTitle(layerKey, 'genitive')} без чтения source-карточек...`
+      : 'Scope пуст: следующий запуск будет готовить весь слой.';
+    renderZabbixApplyView(layerKey);
+
+    const response = await fetch('/api/zabbix/apply-current/scope-preview', {
+      method: 'POST',
+      headers: cmdbuildFetchHeaders({
+        'content-type': 'application/json',
+        accept: 'application/json'
+      }),
+      body: JSON.stringify({
+        layer: layerKey,
+        cmdbuildPrefix: state.prefix,
+        serviceModelRoot: state.serviceModelRoot || defaultModelRoot(state.language),
+        suppressionModelRoot: state.suppressionModelRoot || defaultModelRoot(state.language),
+        dryRun: true,
+        publishMode: 'changes',
+        scopeKeys: scope.scopeKeys,
+        scopeDepth: scope.scopeDepth,
+        requireScopeMatch: scope.requireMatch
+      })
+    });
+    const result = await response.json();
+    stateItem.scopePreview = result;
+    if (!response.ok) {
+      const detail = result.detail || result.error || `scope не проверен: ${response.status}`;
+      handleCmdbuildAuthFailure(detail);
+      throw new Error(detail);
+    }
+
+    stateItem.message = 'Scope проверен. Перед запуском видно, какие правила и source-классы попадут в подготовку.';
+  } catch (error) {
+    handleCmdbuildAuthFailure(error.message);
+    stateItem.scopePreviewError = error.message;
+    stateItem.error = error.message;
+  } finally {
+    stateItem.scopePreviewLoading = false;
+    renderZabbixApplyView(layerKey);
+  }
+}
+
 async function applyZabbixLayer(layerKey, options = {}) {
   const dryRun = Boolean(options.dryRun);
+  const publishMode = options.publishMode === 'full' ? 'full' : 'changes';
+  const scope = collectZabbixApplyScope(layerKey);
   const stateItem = zabbixApplyState(layerKey);
   if (!dryRun && !stateItem.lastGraphCheckOk) {
     stateItem.error = 'Сначала выполните успешную проверку графа без ошибок.';
@@ -9911,8 +10030,8 @@ async function applyZabbixLayer(layerKey, options = {}) {
       dryRun
     };
     stateItem.message = dryRun
-      ? `Проверка графа ${zabbixLayerTitle(layerKey, 'genitive')} перед публикацией в Zabbix...`
-      : `Публикация проверенного графа ${zabbixLayerTitle(layerKey, 'genitive')} в Zabbix...`;
+      ? `Проверка ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''} перед публикацией в Zabbix...`
+      : `Публикация ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''} в Zabbix...`;
     renderZabbixApplyView(layerKey);
 
     progressTimer = window.setInterval(() => {
@@ -9932,6 +10051,10 @@ async function applyZabbixLayer(layerKey, options = {}) {
         serviceModelRoot: state.serviceModelRoot || defaultModelRoot(state.language),
         suppressionModelRoot: state.suppressionModelRoot || defaultModelRoot(state.language),
         dryRun,
+        publishMode,
+        scopeKeys: scope.scopeKeys,
+        scopeDepth: scope.scopeDepth,
+        requireScopeMatch: scope.requireMatch,
         detached: true
       })
     });
@@ -10058,17 +10181,360 @@ function zabbixApplyFinalMessage(layerKey, result, dryRun) {
   const serviceObjectsText = result?.serviceObjectsScanned
     ? `, сервисных объектов ${result.serviceObjectsScanned}`
     : '';
+  const diff = latestZabbixGraphDiff(result);
+  const diffText = diff
+    ? ` diff: к публикации ${diff.publishCandidates ?? 0}, добавлено ${diff.added ?? 0}, изменено ${diff.changed ?? 0}, stale ${diff.removed ?? 0}.`
+    : '';
   if (dryRun) {
-    return `Проверка графа завершена: карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, команд ${result?.commandsBuilt ?? 0}.`;
+    return `Проверка графа завершена: карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, команд ${result?.commandsBuilt ?? 0}.${diffText}`;
   }
 
   if (deliveryMode === 'direct') {
-    return `Применено в Zabbix: команд ${result?.commandsAppliedDirect ?? result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`;
+    return `Применено в Zabbix: команд ${result?.commandsAppliedDirect ?? result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.${diffText}`;
   }
 
   return layerKey === 'suppression'
     ? `Отправлено в Zabbix-топик для обновления suppression membership: команд ${result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`
     : `Опубликовано в Zabbix-топик: команд ${result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`;
+}
+
+function latestZabbixGraphDiff(result) {
+  const graphResults = Array.isArray(result?.zabbixDirectGraphResults)
+    ? result.zabbixDirectGraphResults
+    : [];
+  for (let index = graphResults.length - 1; index >= 0; index -= 1) {
+    if (graphResults[index]?.diff) {
+      return graphResults[index].diff;
+    }
+  }
+
+  return null;
+}
+
+function collectZabbixApplyScope(layerKey) {
+  const panel = document.querySelector(`[data-zabbix-apply-layer="${layerKey}"]`);
+  const rawKeys = panel?.querySelector('[data-zabbix-apply-scope-keys]')?.value || '';
+  const scopeKeys = rawKeys
+    .split(/[\n,;\t]+/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const rawDepth = Number(panel?.querySelector('[data-zabbix-apply-scope-depth]')?.value || 0);
+  const scopeDepth = Number.isFinite(rawDepth)
+    ? Math.max(0, Math.min(50, Math.trunc(rawDepth)))
+    : 0;
+  const requireMatch = scopeKeys.length > 0
+    && panel?.querySelector('[data-zabbix-apply-scope-require-match]')?.checked !== false;
+  return { scopeKeys, scopeDepth, requireMatch };
+}
+
+function zabbixDirtyScopeState(layerKey) {
+  const normalizedLayer = layerKey === 'suppression' ? 'suppression' : 'service';
+  if (!state.zabbixDirtyScope[normalizedLayer]) {
+    state.zabbixDirtyScope[normalizedLayer] = emptyZabbixDirtyScope();
+  }
+
+  return state.zabbixDirtyScope[normalizedLayer];
+}
+
+function emptyZabbixDirtyScope() {
+  return {
+    entries: [],
+    updatedAt: '',
+    lastReason: '',
+    omittedCount: 0,
+    warnings: []
+  };
+}
+
+function normalizeZabbixDirtyScope(scope) {
+  const entries = Array.isArray(scope?.entries)
+    ? scope.entries
+        .map((entry) => ({
+          key: String(entry?.key ?? '').trim(),
+          reason: String(entry?.reason ?? '').trim(),
+          updatedAt: String(entry?.updatedAt ?? '').trim()
+        }))
+        .filter((entry) => entry.key)
+        .slice(0, ZABBIX_DIRTY_SCOPE_LIMIT)
+    : [];
+  const warnings = Array.isArray(scope?.warnings)
+    ? scope.warnings
+        .map((warning) => String(warning ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    : [];
+  return {
+    entries,
+    updatedAt: String(scope?.updatedAt ?? '').trim(),
+    lastReason: String(scope?.lastReason ?? '').trim(),
+    omittedCount: Math.max(0, Number(scope?.omittedCount ?? 0) || 0),
+    warnings
+  };
+}
+
+function loadZabbixDirtyScopeJournal() {
+  try {
+    const raw = localStorage.getItem(ZABBIX_DIRTY_SCOPE_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    const payload = JSON.parse(raw);
+    state.zabbixDirtyScope.service = normalizeZabbixDirtyScope(payload?.service);
+    state.zabbixDirtyScope.suppression = normalizeZabbixDirtyScope(payload?.suppression);
+  } catch (error) {
+    state.zabbixDirtyScope.service = normalizeZabbixDirtyScope(state.zabbixDirtyScope.service);
+    state.zabbixDirtyScope.suppression = normalizeZabbixDirtyScope(state.zabbixDirtyScope.suppression);
+    console.warn('Zabbix dirty scope journal was not loaded:', error);
+  }
+}
+
+function saveZabbixDirtyScopeJournal() {
+  try {
+    localStorage.setItem(ZABBIX_DIRTY_SCOPE_STORAGE_KEY, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      service: normalizeZabbixDirtyScope(state.zabbixDirtyScope.service),
+      suppression: normalizeZabbixDirtyScope(state.zabbixDirtyScope.suppression)
+    }));
+  } catch (error) {
+    console.warn('Zabbix dirty scope journal was not saved:', error);
+  }
+}
+
+function markZabbixDirtyScope(layerKey, keys, reason = '', options = {}) {
+  const normalizedLayer = layerKey === 'suppression' ? 'suppression' : 'service';
+  const rawKeys = Array.isArray(keys) ? keys : [keys];
+  const uniqueKeys = [];
+  const seenKeys = new Set();
+  for (const rawKey of rawKeys.flatMap((item) => Array.isArray(item) ? item : [item])) {
+    const key = String(rawKey ?? '').trim();
+    const token = canonicalToken(key);
+    if (!key || seenKeys.has(token)) {
+      continue;
+    }
+
+    seenKeys.add(token);
+    uniqueKeys.push(key);
+  }
+
+  const scope = zabbixDirtyScopeState(normalizedLayer);
+  const warning = String(options.warning ?? '').trim();
+  if (uniqueKeys.length === 0 && !warning) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const currentEntries = Array.isArray(scope.entries) ? scope.entries : [];
+  const incomingTokens = new Set(uniqueKeys.map(canonicalToken));
+  const nextEntries = uniqueKeys.map((key) => ({
+    key,
+    reason: String(reason ?? '').trim(),
+    updatedAt: now
+  })).concat(currentEntries.filter((entry) =>
+    !incomingTokens.has(canonicalToken(entry?.key))));
+  const overflow = Math.max(0, nextEntries.length - ZABBIX_DIRTY_SCOPE_LIMIT);
+  scope.entries = nextEntries.slice(0, ZABBIX_DIRTY_SCOPE_LIMIT);
+  scope.omittedCount = Math.max(0, Number(scope.omittedCount ?? 0) || 0) + overflow;
+  scope.updatedAt = now;
+  scope.lastReason = String(reason ?? '').trim() || scope.lastReason || '';
+  if (warning) {
+    const warnings = [warning, ...(Array.isArray(scope.warnings) ? scope.warnings : [])];
+    const seenWarnings = new Set();
+    scope.warnings = warnings.filter((item) => {
+      const text = String(item ?? '').trim();
+      const token = canonicalToken(text);
+      if (!text || seenWarnings.has(token)) {
+        return false;
+      }
+      seenWarnings.add(token);
+      return true;
+    }).slice(0, 5);
+  }
+
+  const applyState = zabbixApplyState(normalizedLayer);
+  applyState.lastGraphCheckOk = false;
+  applyState.lastGraphCheckAt = '';
+  saveZabbixDirtyScopeJournal();
+  renderZabbixDirtyScope(normalizedLayer);
+}
+
+function markZabbixDirtyScopeFromRules(layerKey, rules, reason = '', options = {}) {
+  const scopeKeys = (rules ?? [])
+    .flatMap((rule) => zabbixScopeKeysFromRule(rule, layerKey));
+  markZabbixDirtyScope(layerKey, scopeKeys, reason, options);
+}
+
+function markZabbixDirtyScopeFromTemplateApplyResult(layerKey, result) {
+  const reconcile = result?.reconcile ?? {};
+  const relationSummary = relationReconcileSummary(reconcile.relations);
+  const changedCount = Number(reconcile.created ?? 0)
+    + Number(reconcile.updated ?? 0)
+    + Number(reconcile.removed ?? 0)
+    + Number(relationSummary.created ?? 0)
+    + Number(relationSummary.updated ?? 0)
+    + Number(relationSummary.removed ?? 0);
+  if (changedCount <= 0) {
+    return;
+  }
+
+  const warning = Number(reconcile.removed ?? 0) > 0
+    ? 'В результате материализации есть удаленные правила: они будут видны как stale; для фактической очистки используйте stale cleanup или полный граф.'
+    : '';
+  markZabbixDirtyScopeFromRules(
+    layerKey,
+    result?.reconcile?.generatedRules ?? [],
+    `Создать/обновить правила по шаблонам и связям: изменено ${changedCount}`,
+    { warning });
+}
+
+function zabbixScopeKeysFromRule(rule, layerKey = '') {
+  if (!rule) {
+    return [];
+  }
+
+  const target = rule.target ?? {};
+  const mappings = target.attribute_mappings ?? {};
+  const initialValues = target.initial_user_values ?? {};
+  return uniqueStrings([
+    zabbixManagedKeyFromRule(rule),
+    ruleTemplateId(rule) ? generatedRuleManagedKeyFromRule(rule, layerKey) : '',
+    rule.rule_id,
+    rule.name,
+    target.idempotency_key,
+    target.card_id && ruleTargetClassCode(rule) ? `cmdbuild:${ruleTargetClassCode(rule)}:${target.card_id}` : '',
+    mappings[POPULATION_SOURCE_KEY_ATTRIBUTE],
+    mappings.Code,
+    mappings.code,
+    mappings.name,
+    mappings.Name,
+    initialValues.Code,
+    initialValues.code,
+    initialValues.name,
+    initialValues.Name
+  ]);
+}
+
+function zabbixRulesForLinkEntity(layerKey, type, id) {
+  const normalizedType = String(type ?? '').trim();
+  const normalizedId = String(id ?? '').trim();
+  if (!normalizedId) {
+    return [];
+  }
+
+  const parsed = parseRuleDocument(layerKey);
+  if (!parsed.ok) {
+    return [];
+  }
+
+  if (normalizedType === 'rule') {
+    return (parsed.document.rules ?? []).filter((rule) => rule.rule_id === normalizedId);
+  }
+
+  if (normalizedType === 'template') {
+    return (parsed.document.rules ?? []).filter((rule) => ruleTemplateId(rule) === normalizedId);
+  }
+
+  return [];
+}
+
+function markZabbixDirtyScopeForLinkRelationChange(
+  layerKey,
+  sourceType,
+  sourceId,
+  targetType,
+  targetId,
+  reason = 'Изменена управляемая связь') {
+  const affectedRules = zabbixRulesForLinkEntity(layerKey, sourceType, sourceId)
+    .concat(zabbixRulesForLinkEntity(layerKey, targetType, targetId));
+  const warning = sourceType === 'template' || targetType === 'template'
+    ? 'Связь затрагивает шаблон: перед публикацией в Zabbix выполните "Создать/обновить правила по шаблонам и связям".'
+    : '';
+  markZabbixDirtyScopeFromRules(layerKey, affectedRules, reason, { warning });
+}
+
+function uniqueStrings(items) {
+  const result = [];
+  const seen = new Set();
+  for (const item of items ?? []) {
+    const text = String(item ?? '').trim();
+    const token = canonicalToken(text);
+    if (!text || seen.has(token)) {
+      continue;
+    }
+
+    seen.add(token);
+    result.push(text);
+  }
+
+  return result;
+}
+
+function applyZabbixDirtyScopeToInput(layerKey) {
+  const panel = document.querySelector(`[data-zabbix-apply-layer="${layerKey}"]`);
+  const input = panel?.querySelector('[data-zabbix-apply-scope-keys]');
+  if (!input) {
+    return;
+  }
+
+  const scope = zabbixDirtyScopeState(layerKey);
+  const keys = (scope.entries ?? []).map((entry) => String(entry?.key ?? '').trim()).filter(Boolean);
+  input.value = keys.join('\n');
+  const stateItem = zabbixApplyState(layerKey);
+  stateItem.message = keys.length > 0
+    ? `Scope из последних изменений подставлен: ${keys.length} ключей. Выполните проверку изменений перед публикацией.`
+    : 'Нет pending scope из последних изменений.';
+  renderZabbixApplyView(layerKey);
+}
+
+function clearZabbixDirtyScope(layerKey) {
+  const scope = zabbixDirtyScopeState(layerKey);
+  scope.entries = [];
+  scope.updatedAt = '';
+  scope.lastReason = '';
+  scope.omittedCount = 0;
+  scope.warnings = [];
+  saveZabbixDirtyScopeJournal();
+  renderZabbixDirtyScope(layerKey);
+}
+
+function renderZabbixDirtyScope(layerKey) {
+  const panel = document.querySelector(`[data-zabbix-apply-layer="${layerKey}"]`);
+  const summary = panel?.querySelector('[data-zabbix-dirty-scope-summary]');
+  const useButton = panel?.querySelector('[data-zabbix-dirty-scope-use]');
+  const clearButton = panel?.querySelector('[data-zabbix-dirty-scope-clear]');
+  if (!summary) {
+    return;
+  }
+
+  const scope = zabbixDirtyScopeState(layerKey);
+  const entries = Array.isArray(scope.entries) ? scope.entries : [];
+  const warnings = Array.isArray(scope.warnings) ? scope.warnings : [];
+  if (useButton) {
+    useButton.disabled = entries.length === 0;
+  }
+  if (clearButton) {
+    clearButton.disabled = entries.length === 0 && warnings.length === 0;
+  }
+
+  if (entries.length === 0 && warnings.length === 0) {
+    summary.innerHTML = '<span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>';
+    return;
+  }
+
+  const examples = entries
+    .slice(0, 8)
+    .map((entry) => entry.key)
+    .join(', ');
+  const omittedText = Number(scope.omittedCount ?? 0) > 0
+    ? ` · не показано из-за лимита ${escapeHtml(scope.omittedCount)}`
+    : '';
+  summary.innerHTML = `
+    <strong>Pending scope: ${escapeHtml(entries.length)} ключей${omittedText}</strong>
+    <span>${escapeHtml(scope.lastReason || 'Последние изменения правил/шаблонов')}</span>
+    <span>${escapeHtml(scope.updatedAt ? `сохранено в локальном журнале: ${formatCacheTimestamp(scope.updatedAt)}` : 'сохраняется в локальном журнале браузера')}</span>
+    ${examples ? `<span>Примеры: ${escapeHtml(examples)}</span>` : ''}
+    ${warnings.map((warning) => `<span class="error-text">${escapeHtml(warning)}</span>`).join('')}
+  `;
 }
 
 async function waitForZabbixApplyCompletion(layerKey, operationId) {
@@ -10146,15 +10612,32 @@ function renderZabbixApplyView(layerKey) {
   const refreshButton = panel.querySelector('[data-zabbix-apply-refresh]');
   const dryRunButton = panel.querySelector('[data-zabbix-apply-dry-run]');
   const publishButton = panel.querySelector('[data-zabbix-apply-publish]');
+  const fullDryRunButton = panel.querySelector('[data-zabbix-apply-full-dry-run]');
+  const fullPublishButton = panel.querySelector('[data-zabbix-apply-full-publish]');
   const cancelButton = panel.querySelector('[data-zabbix-apply-cancel]');
+  const scopePreviewButton = panel.querySelector('[data-zabbix-scope-preview]');
   if (!summary || !status || !list || !refreshButton || !dryRunButton || !publishButton || !cancelButton) {
     return;
   }
 
-  const busy = stateItem.applying || stateItem.loadingStatus;
+  const busy = stateItem.applying || stateItem.loadingStatus || stateItem.scopePreviewLoading;
   refreshButton.disabled = busy;
   dryRunButton.disabled = busy;
   publishButton.disabled = busy || !stateItem.lastGraphCheckOk;
+  if (scopePreviewButton) {
+    scopePreviewButton.disabled = busy;
+  }
+  if (fullDryRunButton) {
+    fullDryRunButton.disabled = busy;
+  }
+
+  if (fullPublishButton) {
+    fullPublishButton.disabled = busy || !stateItem.lastGraphCheckOk;
+    fullPublishButton.title = stateItem.lastGraphCheckOk
+      ? ''
+      : 'Сначала выполните успешную проверку графа без ошибок.';
+  }
+
   publishButton.title = stateItem.lastGraphCheckOk
     ? ''
     : 'Сначала выполните успешную проверку графа без ошибок.';
@@ -10231,6 +10714,7 @@ function renderZabbixApplyView(layerKey) {
       : 'Команды этого слоя публикуются в отдельный Zabbix-топик; статус ведется независимо от второго слоя.');
   status.classList.toggle('error', Boolean(stateItem.error));
 
+  renderZabbixDirtyScope(layerKey);
   list.innerHTML = renderZabbixApplyDetails(layerKey, stateItem);
   if (layerKey === 'service') {
     renderZabbixSlaPublicationPanel();
@@ -10252,6 +10736,9 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
   return `
     ${progress ? renderZabbixApplyProgress(progress) : ''}
     ${renderApplyCurrentPerformance(operationPerformance)}
+    ${renderZabbixScopePreview(stateItem)}
+    ${renderZabbixScopePrefilter(result)}
+    ${renderZabbixGraphDiffResults(result)}
     ${renderZabbixApplyPerformance(layerStatus)}
     ${zabbixPlan ? renderZabbixObjectPlan(zabbixPlan, layerKey) : ''}
     ${membershipTargets.length > 0 ? renderZabbixMembershipTargets(membershipTargets, layerKey) : ''}
@@ -10300,6 +10787,100 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
       </div>
     ` : ''}
   `;
+}
+
+function renderZabbixScopePreview(stateItem) {
+  const preview = stateItem.scopePreview;
+  const loading = Boolean(stateItem.scopePreviewLoading);
+  const error = stateItem.scopePreviewError || '';
+  if (!loading && !error && !preview) {
+    return '';
+  }
+
+  const rules = Array.isArray(preview?.rules) ? preview.rules : [];
+  const sourceClasses = Array.isArray(preview?.sourceClasses) ? preview.sourceClasses : [];
+  const ruleText = rules
+    .slice(0, 8)
+    .map((rule) => `${rule.name || rule.ruleId || '-'} (${rule.sourceClass || '-'} -> ${rule.targetClass || '-'})`)
+    .join('; ');
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">проверка scope</span>
+      <strong>${escapeHtml(loading ? 'выполняется' : error ? 'ошибка' : 'готово')}</strong>
+      ${loading ? '<span>Проверяю совпадения по rule id/name/managed key и сервисным объектам; source-карточки не читаются.</span>' : ''}
+      ${error ? `<span class="error-text">${escapeHtml(error)}</span>` : ''}
+      ${preview ? `<span>правил ${escapeHtml(preview.ruleCount ?? 0)} · source-классов ${escapeHtml(preview.sourceClassCount ?? sourceClasses.length)} · слой ${escapeHtml(preview.layer || '-')}</span>` : ''}
+      ${sourceClasses.length > 0 ? `<span>source-классы: ${escapeHtml(sourceClasses.slice(0, 12).join(', '))}${sourceClasses.length > 12 ? escapeHtml(`; еще ${sourceClasses.length - 12}`) : ''}</span>` : ''}
+      ${ruleText ? `<span>правила: ${escapeHtml(ruleText)}${rules.length > 8 ? escapeHtml(`; еще ${rules.length - 8}`) : ''}</span>` : ''}
+    </div>
+    ${renderZabbixScopePrefilter(preview)}
+  `;
+}
+
+function renderZabbixScopePrefilter(result) {
+  const scope = result?.zabbixScopePrefilter;
+  if (!scope?.enabled) {
+    return '';
+  }
+
+  const missingKeys = Array.isArray(scope.missingKeys) ? scope.missingKeys : [];
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">scope подготовки</span>
+      <strong>${escapeHtml(scope.applied ? 'применен' : 'не сократил подготовку')}</strong>
+      <span>${escapeHtml(scope.message || '')}</span>
+      <span>seed ${escapeHtml(scope.matchedSeedCount ?? 0)} · правил ${escapeHtml(scope.selectedRuleCount ?? 0)}/${escapeHtml(scope.originalRuleCount ?? 0)} · source-классов ${escapeHtml(scope.selectedSourceClassCount ?? 0)}/${escapeHtml(scope.originalSourceClassCount ?? 0)} · глубина ${escapeHtml(scope.depth ?? 0)}</span>
+      ${(scope.serviceObjectMatchedCount ?? 0) > 0 ? `<span>сервисных объектов scope ${escapeHtml(scope.serviceObjectMatchedCount)} · раскрыто ${escapeHtml(scope.serviceObjectTraversedCount ?? 0)} · ключей к правилам ${escapeHtml(scope.serviceObjectScopeKeyCount ?? 0)}</span>` : ''}
+      ${missingKeys.length > 0 ? `<span class="error-text">не сопоставлены статически: ${escapeHtml(missingKeys.slice(0, 10).join(', '))}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderZabbixGraphDiffResults(result) {
+  const graphResults = Array.isArray(result?.zabbixDirectGraphResults)
+    ? result.zabbixDirectGraphResults
+    : [];
+  const diffs = graphResults
+    .map((item) => item?.diff)
+    .filter((item) => item && typeof item === 'object');
+  if (diffs.length === 0) {
+    return '';
+  }
+
+  return diffs.map((diff) => {
+    const samples = Array.isArray(diff.samples) ? diff.samples.slice(0, 12) : [];
+    const mode = diff.publishMode === 'full' ? 'полный граф' : 'только изменения';
+    const graphResult = graphResults.find((item) => item?.diff === diff) || {};
+    const scope = graphResult.scope || {};
+    const scopeText = scope.enabled
+      ? `scope: seed ${scope.matchedSeedCount ?? 0}, target ${scope.targetCount ?? 0}, команд ${scope.commandCount ?? 0}, глубина ${scope.depth ?? 0}`
+      : 'scope: весь слой';
+    return `
+      <details class="rule-summary" open>
+        <summary>
+          <strong>diff Zabbix desired graph: ${escapeHtml(mode)}</strong>
+          <span>desired ${escapeHtml(diff.desired ?? 0)} · применено ранее ${escapeHtml(diff.applied ?? 0)} · добавлено ${escapeHtml(diff.added ?? 0)} · изменено ${escapeHtml(diff.changed ?? 0)} · без изменений ${escapeHtml(diff.unchanged ?? 0)} · stale ${escapeHtml(diff.removed ?? 0)} · к публикации ${escapeHtml(diff.publishCandidates ?? 0)}</span>
+        </summary>
+        <span>${escapeHtml(scopeText)}</span>
+        ${Array.isArray(scope.missingKeys) && scope.missingKeys.length ? `<span class="error-text">не найдены scope-ключи: ${escapeHtml(scope.missingKeys.slice(0, 8).join(', '))}</span>` : ''}
+        ${samples.length > 0 ? `<span>${escapeHtml(samples.map((item) => `${zabbixGraphDiffActionLabel(item.action)} ${item.displayName || item.objectKey || '-'} (${item.objectType || '-'})`).join('; '))}</span>` : '<span>Примеры изменений отсутствуют.</span>'}
+      </details>
+    `;
+  }).join('');
+}
+
+function zabbixGraphDiffActionLabel(action) {
+  const value = String(action ?? '').toLowerCase();
+  if (value === 'added') {
+    return 'добавлено';
+  }
+  if (value === 'changed') {
+    return 'изменено';
+  }
+  if (value === 'removed') {
+    return 'stale';
+  }
+  return value || '-';
 }
 
 function renderZabbixApplyPerformance(layerStatus) {
@@ -10629,6 +11210,11 @@ function renderZabbixTriggerDependenciesDetails(payload) {
       <span>${escapeHtml(payload?.aggregateStateTriggerSelector || payload?.aggregateStateTriggerSelectorSummary || '-')}</span>
       <span>Используется только для calculated item suppression-группы; сюда должны попадать корневые признаки недоступности.</span>
       <span>Порог aggregation_type считается по host-ам, чьи выбранные поддержанные trigger-ы реально попали в calculated item; host-ы без выбранных trigger-ов показываются как unknown/skipped и не считаются отказавшими.</span>
+    </div>
+    <div class="rule-summary">
+      <span class="structure-mark">семантика aggregation_type</span>
+      <span>В suppression <code>all</code> означает: aggregate trigger становится PROBLEM, если здоровы не все выбранные source-hosts. <code>any</code> означает: PROBLEM только когда не осталось ни одного здорового source-host.</span>
+      <span><code>threshold</code> сравнивает процент здоровых source-hosts с полем threshold, <code>n_of_m</code> сравнивает число здоровых source-hosts с полем n. Это не алгоритм дерева Zabbix Services: там service-узел <code>all</code> становится Problem только когда все прямые дочерние service уже Problem.</span>
     </div>
     <div class="rule-summary">
       <span class="structure-mark">selector dependency-покрытия</span>
@@ -11193,6 +11779,10 @@ function zabbixLayerTitle(layerKey, form = 'nominative') {
   }
 
   return form === 'genitive' ? 'сервисной модели' : 'Сервис';
+}
+
+function zabbixPublishModeTitle(mode) {
+  return mode === 'full' ? 'полного графа' : 'изменений графа';
 }
 
 function zabbixApplyStatusLabel(status) {
@@ -11924,6 +12514,8 @@ async function applyTemplatesToRuleDocuments() {
     const suppressionPlan = templateMaterializationPlan('suppression');
     const serviceResult = materializeTemplatesForLayer('service', servicePlan);
     const suppressionResult = materializeTemplatesForLayer('suppression', suppressionPlan);
+    markZabbixDirtyScopeFromTemplateApplyResult('service', serviceResult);
+    markZabbixDirtyScopeFromTemplateApplyResult('suppression', suppressionResult);
     state.templateApplyLastResult = {
       appliedAt: new Date().toISOString(),
       service: templateApplyResultSummary(serviceResult),
@@ -15524,6 +16116,13 @@ function applyLinkRelationEditorChange() {
     } else {
       addRuleLinkRelation(context.layer, sourceId, relation);
     }
+    markZabbixDirtyScopeForLinkRelationChange(
+      context.layer,
+      effectiveSourceType,
+      sourceId,
+      effectiveTargetType,
+      targetId,
+      `Добавлена связь ${linkRelationRoleLabel(relationRole)}: ${linkRelationEntityDisplayName(context.layer, effectiveSourceType, sourceId)} -> ${linkRelationEntityDisplayName(context.layer, effectiveTargetType, targetId)}`);
 
     if (config.description) {
       config.description.value = '';
@@ -15790,15 +16389,31 @@ function deleteLinkRelation(layerKey, kind, sourceId, managedKey, sourceType = '
       throw new Error('Связь для удаления не определена.');
     }
 
+    const existingRow = linkRelationRows(layerKey, kind, kindConfig)
+      .find((row) =>
+        String(row.sourceId ?? '') === String(sourceId ?? '')
+        && String(row.sourceType ?? kindConfig.sourceType ?? '') === String(sourceType || kindConfig.sourceType || '')
+        && String(row.relation?.managed_key ?? '') === String(managedKey ?? ''));
     const effectiveSourceType = kindConfig.sourceType === 'mixed'
       ? String(sourceType ?? '').trim()
       : kindConfig.sourceType;
+    const effectiveTargetType = existingRow?.targetType || kindConfig.targetType;
+    const targetId = existingRow?.relation
+      ? linkRelationTargetId(existingRow.relation, effectiveTargetType)
+      : '';
     if (effectiveSourceType === 'template') {
       deleteTemplateLinkRelation(layerKey, sourceId, managedKey);
     } else {
       deleteRuleLinkRelation(layerKey, sourceId, managedKey);
     }
 
+    markZabbixDirtyScopeForLinkRelationChange(
+      layerKey,
+      effectiveSourceType,
+      sourceId,
+      effectiveTargetType,
+      targetId,
+      `Удалена управляемая связь ${managedKey}`);
     setLinkRelationStatus('Связь удалена.');
   } catch (error) {
     setLinkRelationStatus(error.message, 'error');
@@ -16071,6 +16686,13 @@ function cleanupDetachedTemplateRules(layerKey, mode = 'keep_objects') {
         !ruleIds.has(String(rule.rule_id || '').trim()));
       const relationCleanup = removeRuleReferencesToRemovedRules(document, rules, { preserveRuntimeRelations: false });
       writeRuleDocument(layerKey, document);
+      markZabbixDirtyScopeFromRules(
+        layerKey,
+        rules,
+        `Убраны отвязанные правила шаблонов: ${rules.length}`,
+        {
+          warning: 'Удаление отвязанных правил формирует stale: после cleanup CMDBuild проверьте stale managed objects и при необходимости выполните полный граф.'
+        });
       state.templateApplyMessage = `${layerHumanLabel(layerKey)}: убрано ${rules.length} отвязанных правил, создано ${afterPlans - beforePlans} планов удаления на ${targets} объектов, удалено ссылок на правила ${relationCleanup.managedRelations}. Нажмите "Применить планы удаления в CMDBuild" для фактического удаления карточек.`;
       state.templateApplyError = '';
     } else {
@@ -16078,6 +16700,13 @@ function cleanupDetachedTemplateRules(layerKey, mode = 'keep_objects') {
         !ruleIds.has(String(rule.rule_id || '').trim()));
       const relationCleanup = removeRuleReferencesToRemovedRules(document, rules, { preserveRuntimeRelations: true });
       writeRuleDocument(layerKey, document);
+      markZabbixDirtyScopeFromRules(
+        layerKey,
+        rules,
+        `Убраны отвязанные правила шаблонов: ${rules.length}`,
+        {
+          warning: 'Правила убраны, объекты CMDBuild сохранены. Проверьте stale managed objects перед следующей публикацией изменений.'
+        });
       state.templateApplyMessage = `${layerHumanLabel(layerKey)}: убрано ${rules.length} отвязанных правил, CMDBuild-объекты сохранены. Ссылок на удаленные правила снято ${relationCleanup.managedRelations}, runtime-связей оставлено как статические ${relationCleanup.detachedRuntimeRelations}.`;
       state.templateApplyError = '';
     }

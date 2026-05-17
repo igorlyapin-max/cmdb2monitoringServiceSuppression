@@ -88,7 +88,9 @@ async function loadAppApi() {
     'applyCommandCountersText',
     'zabbixHostIdAttributeName',
     'templateMaterializationPlan',
-    'detachedTemplateCleanupRules'
+    'detachedTemplateCleanupRules',
+    'zabbixScopeKeysFromRule',
+    'zabbixDirtyScopeState'
   ];
   const wrapped = `(async () => { ${startupDisabled}\nreturn { ${exportedNames.join(', ')} }; })()`;
   return vm.runInNewContext(wrapped, browserLikeContext(), { filename: appPath });
@@ -347,6 +349,8 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'suppressionTemplateSourceFieldCopySelect', 'template source attribute copy control must exist for suppression.');
   assertIncludes(indexText, 'Атрибуты создаваемого целевого объекта', 'template target attributes editor must exist.');
   assertIncludes(indexText, 'aggregation_type', 'template target attributes help must mention aggregation_type.');
+  assertIncludes(indexText, 'cmdb2monitoring:is_critical', 'UI help must explain is_critical is only a Zabbix service tag.');
+  assertIncludes(indexText, 'не влияет на расчет доступности', 'UI help must explain is_critical does not change availability calculation.');
   assertIncludes(indexText, 'serviceRuleDeriveSource', 'service static rules must support create based on existing rules.');
   assertIncludes(indexText, 'suppressionRuleDeriveSource', 'suppression static rules must support create based on existing rules.');
   assertIncludes(indexText, 'serviceTemplateDeriveSource', 'service templates must support create based on existing templates.');
@@ -554,6 +558,65 @@ function assertReadinessConfigContracts() {
     'Zabbix apply UI must explain why publication is disabled before a successful graph check.');
   assertIncludes(appText, 'Проверка графа',
     'Zabbix apply UI must show the current graph-check gate state to the operator.');
+  assertIncludes(indexText, 'Scope из последних изменений',
+    'Zabbix apply UI must show pending dirty scope from recent rule/template changes.');
+  assertIncludes(indexText, 'data-zabbix-dirty-scope-use',
+    'Zabbix apply UI must let operators paste dirty scope into the publication scope field.');
+  assertIncludes(indexText, 'data-zabbix-scope-preview',
+    'Zabbix apply UI must let operators preview scope before a long publication run.');
+  assertIncludes(indexText, 'data-zabbix-apply-scope-require-match',
+    'Zabbix apply UI must expose strict scope matching before publication.');
+  assertIncludes(indexText, 'Не запускать, если заполненный scope не найден',
+    'strict scope matching must be explained in operator language.');
+  assertIncludes(appText, 'previewZabbixApplyScope',
+    'Zabbix apply UI must call a lightweight scope preview endpoint.');
+  assertIncludes(appText, 'ZABBIX_DIRTY_SCOPE_STORAGE_KEY',
+    'dirty Zabbix scope must be persisted in a browser-local journal.');
+  assertIncludes(appText, 'saveZabbixDirtyScopeJournal',
+    'dirty Zabbix scope changes must be saved to the local journal.');
+  assertIncludes(appText, 'loadZabbixDirtyScopeJournal();',
+    'dirty Zabbix scope journal must be loaded on UI startup.');
+  assertIncludes(appText, 'requireScopeMatch: scope.requireMatch',
+    'Zabbix apply and scope preview must send strict scope matching to the backend.');
+  assertIncludes(serverText, '/api/zabbix/apply-current/scope-preview',
+    'monitoring UI BFF must proxy current apply scope preview.');
+  assertIncludes(serverText, 'requireZabbixScopeMatch',
+    'monitoring UI BFF must forward strict scope matching to cmdbconfigbuilder.');
+  assertIncludes(cmdbConfigBuilderText, '/rules/apply-current/scope-preview',
+    'cmdbconfigbuilder must expose a lightweight current apply scope preview endpoint.');
+  assertIncludes(cmdbConfigBuilderText, 'RequireZabbixScopeMatch',
+    'cmdbconfigbuilder must accept strict scope matching in current apply requests.');
+  assertIncludes(cmdbConfigBuilderText, 'CurrentApplyScopeMatchError',
+    'cmdbconfigbuilder must stop unmatched strict scope before source-card reads.');
+  assertIncludes(appText, 'markZabbixDirtyScopeFromTemplateApplyResult',
+    'template materialization must mark affected Zabbix publication scope.');
+  assertIncludes(appText, 'markZabbixDirtyScopeForLinkRelationChange',
+    'relation changes must mark affected Zabbix publication scope.');
+  assertIncludes(appText, 'renderZabbixScopePrefilter',
+    'Zabbix apply report must show whether scope reduced preparation before publication.');
+  assertIncludes(cmdbConfigBuilderText, 'SelectScopedRulesForCurrentApply',
+    'current Zabbix apply must prefilter rules/source classes when scope matches static rule metadata.');
+  assertIncludes(cmdbConfigBuilderText, 'ResolveServiceObjectScopeHintsAsync',
+    'service object scope must be resolved into related aggregate rule scope before source card reads.');
+  assertIncludes(cmdbConfigBuilderText, 'AddServiceObjectTemplateRelations(',
+    'service object scope prefilter must account for service object template links.');
+  assertIncludes(appText, 'serviceObjectMatchedCount',
+    'Zabbix apply report must expose service-object scope prefilter counters.');
+  assertIncludes(cmdbConfigBuilderText, 'Scope сократил подготовку',
+    'current Zabbix apply scope prefilter must report how much preparation was reduced.');
+  assertIncludes(cmdbConfigBuilderText, 'scopePrefilter.Applied',
+    'current Zabbix apply must apply the prefiltered rule set only when safe static matching succeeded.');
+  assert(api.zabbixScopeKeysFromRule({
+    rule_id: 'rule-city48',
+    name: 'Рабочие места / City48',
+    target: {
+      class_code: 'C2M_ServiceWorkplaceFleet',
+      idempotency_key: 'service-workplace-city48',
+      attribute_mappings: { population_source_key: 'service-workplace-city48' },
+      initial_user_values: { name: 'Рабочие места / City48' }
+    }
+  }, 'service').includes('service-workplace-city48'),
+    'dirty Zabbix scope must include stable managed keys from affected rules.');
   assertIncludes(serverText, "...cmdbuildBackendAuthHeaders(request)\n        },\n        body: '{}'",
     'monitoring UI BFF must forward CMDBuild auth overrides to SLA dry-run/apply.');
   assertIncludes(serverText, 'x-cmdb2monitoring-cmdbuild-password',

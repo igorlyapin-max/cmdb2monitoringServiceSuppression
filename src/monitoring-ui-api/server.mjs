@@ -115,6 +115,28 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
+    if (url.pathname === '/api/zabbix/apply-current/scope-preview' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const layer = normalizeRuntimeLayer(body?.layer);
+      if (layer !== 'service' && layer !== 'suppression') {
+        return sendJson(response, 400, { error: 'layer must be service or suppression' });
+      }
+
+      const backendBody = zabbixApplyCurrentBackendBody(body, layer, { dryRun: true });
+      const backendInit = {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          ...cmdbuildBackendAuthHeaders(request)
+        },
+        body: JSON.stringify(backendBody)
+      };
+      const previewUrl = config.backend.rulesApplyCurrentScopePreviewUrl
+        || appendPath(config.backend.rulesApplyCurrentUrl, 'scope-preview');
+      return proxyJson(response, previewUrl, backendInit);
+    }
+
     if (url.pathname === '/api/zabbix/apply-current' && request.method === 'POST') {
       const body = await readJsonBody(request);
       const layer = normalizeRuntimeLayer(body?.layer);
@@ -125,19 +147,7 @@ const server = http.createServer(async (request, response) => {
       const directApplyUrl = stringValue(config.backend.zabbixCommandApplyUrl);
       const targets = directApplyUrl ? ['zabbix-direct'] : ['zabbix'];
       const operationId = stringValue(body?.operationId) || randomUUID();
-      const backendBody = {
-        operationId,
-        layers: [layer],
-        targets,
-        cmdbuildPrefix: stringValue(body?.cmdbuildPrefix || body?.prefix || config.cmdbuildSchema?.defaultPrefix),
-        serviceModelRoot: stringValue(body?.serviceModelRoot),
-        suppressionModelRoot: stringValue(body?.suppressionModelRoot),
-        zabbixCommandApplyUrl: directApplyUrl,
-        dryRun: Boolean(body?.dryRun),
-        sourceClasses: Array.isArray(body?.sourceClasses) ? body.sourceClasses : [],
-        maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
-        eventType: stringValue(body?.eventType) || 'UPDATE'
-      };
+      const backendBody = zabbixApplyCurrentBackendBody(body, layer, { operationId, targets });
       const backendInit = {
         method: 'POST',
         headers: {
@@ -565,6 +575,32 @@ function applyRuntimeServerOverrides(configValue) {
       host,
       port: Number.isInteger(port) && port > 0 ? port : serverConfig.port
     }
+  };
+}
+
+function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
+  const directApplyUrl = stringValue(config.backend.zabbixCommandApplyUrl);
+  const targets = Array.isArray(overrides.targets)
+    ? overrides.targets
+    : (directApplyUrl ? ['zabbix-direct'] : ['zabbix']);
+  return {
+    operationId: stringValue(overrides.operationId ?? body?.operationId) || randomUUID(),
+    layers: [layer],
+    targets,
+    cmdbuildPrefix: stringValue(body?.cmdbuildPrefix || body?.prefix || config.cmdbuildSchema?.defaultPrefix),
+    serviceModelRoot: stringValue(body?.serviceModelRoot),
+    suppressionModelRoot: stringValue(body?.suppressionModelRoot),
+    zabbixCommandApplyUrl: directApplyUrl,
+    zabbixPublishMode: stringValue(body?.publishMode || body?.zabbixPublishMode) || 'changes',
+    zabbixScopeKeys: Array.isArray(body?.scopeKeys) ? body.scopeKeys.map((item) => stringValue(item)).filter(Boolean) : [],
+    zabbixScopeDepth: Number.isInteger(body?.scopeDepth) ? body.scopeDepth : 0,
+    requireZabbixScopeMatch: body?.requireScopeMatch === undefined
+      ? Boolean(body?.requireZabbixScopeMatch)
+      : Boolean(body.requireScopeMatch),
+    dryRun: overrides.dryRun === undefined ? Boolean(body?.dryRun) : Boolean(overrides.dryRun),
+    sourceClasses: Array.isArray(body?.sourceClasses) ? body.sourceClasses : [],
+    maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
+    eventType: stringValue(body?.eventType) || 'UPDATE'
   };
 }
 

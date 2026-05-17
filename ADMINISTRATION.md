@@ -112,16 +112,76 @@ Zabbix application is split by layer:
 | Service | `Сервисный слой -> Применить в Zabbix` | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` |
 | Suppression | `Каскадное подавление -> Применить в Zabbix` | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` |
 
-The UI action `Проверить граф ...` evaluates current CMDBuild cards and rules
-for one layer without publishing. The real publish action first builds the full
-desired graph, validates it, and only then writes commands. If the graph has
-blocking errors, for example a visible service aggregate without parent, a
-cycle, a conflicting managed key, or a source-class read/auth error, publication
-is stopped before any Zabbix write or Kafka publish. When `monitoring-ui-api`
-has `backend.zabbixCommandApplyUrl` configured, the accepted graph is sent
-directly to `zabbixconfig2api /commands/apply` and mutates Zabbix immediately.
-Without that URL it falls back to writing only to that layer's Zabbix topic. In
-both modes it does not write to `KafkaTopics:AggregationCommands`, so CMDBuild
+The UI evaluates and publishes each layer in two modes:
+
+- `Проверить изменения ...` / `Опубликовать изменения ...` is the routine mode.
+  `cmdbconfigbuilder` still builds the current desired graph from CMDBuild cards
+  and rules, but `zabbixconfig2api` compares it with the persisted applied graph
+  snapshot in `ZabbixApplyState:FilePath` and sends to Zabbix only added or
+  changed graph objects. The report shows `desired`, previously applied objects,
+  added, changed, unchanged, stale/removed, and `к публикации`.
+- `Проверить полный граф ...` / `Опубликовать полный граф ...` intentionally
+  replays the whole desired graph. Use it after applier state loss, manual
+  Zabbix repair, deployment recovery, or when an operator wants to force a full
+  reconciliation.
+
+Each Zabbix apply screen also has `Scope публикации`. Leave it empty for the
+whole layer. To publish a smaller part of the graph, enter one or more managed
+keys, rule ids, or display names separated by comma/newline. For the service
+layer, scope includes the matched service/aggregate, its parent chain, and its
+children. For the suppression layer, scope includes the matched object and the
+connected relation chain. `Глубина раскрытия=0` means no depth limit; a positive
+value limits relation hops. Scope limits Zabbix writes and the direct-applier
+diff. `cmdbconfigbuilder` also tries to prefilter preparation before loading
+source cards: if a scope key can be matched statically to a rule id, rule name,
+template id, target managed key, target card id, or target class/name fields,
+it narrows the selected rules and source classes before reading CMDBuild.
+Service-layer scope can also match a manual service object. In that case
+`cmdbconfigbuilder` reads service objects and their service-object-to-template
+or service-object-to-aggregate relations first, converts related aggregate
+targets into rule scope keys, and then reduces source-card reading. If the
+manual service object has no linked aggregate/template rules, source-card
+reading is skipped and only service topology is prepared. If scope still cannot
+be matched, preparation falls back to the full rule/card scan and the later
+`zabbixconfig2api` graph scope still limits Zabbix writes.
+Before starting a long check or publication, press `Проверить scope`: the UI
+calls `cmdbconfigbuilder /rules/apply-current/scope-preview`, shows matched
+rules/source classes and the same `scope подготовки` counters, but does not
+read source cards and does not send commands to Kafka or Zabbix.
+The checkbox `Не запускать, если заполненный scope не найден...` is enabled by
+default. With a non-empty scope it makes `cmdbconfigbuilder` stop with
+`scope_not_matched` before source-card reads when keys match neither static
+rule metadata nor manual service objects. Empty scope still means an intentional
+full-layer run.
+
+The UI also keeps a local `Scope из последних изменений` hint for each layer.
+It is filled when static rules are changed, when managed rule/template
+relations are changed, and when `Создать/обновить правила по шаблонам и
+связям` materializes changed generated rules. The operator can press
+`Подставить scope из последних изменений`, review the keys, run
+`Проверить изменения ...`, and then publish. The hint is persisted in the
+browser-local journal `cmdb2monitoring.serviceSuppression.zabbixDirtyScope.v1`;
+it is not written to conversion configuration files or microservice state and
+can be cleared from the UI.
+
+Removed desired objects are reported as stale in changes mode, but are not
+deleted from Zabbix automatically. Use the stale managed objects cleanup actions
+when deletion is intended. Current implementation reduces Zabbix writes; it
+can reduce CMDBuild card scanning only when scope matches rules statically.
+When a template/rule deletion removes objects from desired graph, dirty scope
+can show the affected old keys, but the actual removal remains an explicit
+stale cleanup or full-graph reconciliation step because scoped diff matches
+desired targets.
+
+The real publish action first builds the desired graph, validates it, and only
+then writes commands. If the graph has blocking errors, for example a visible
+service aggregate without parent, a cycle, a conflicting managed key, or a
+source-class read/auth error, publication is stopped before any Zabbix write or
+Kafka publish. When `monitoring-ui-api` has `backend.zabbixCommandApplyUrl`
+configured, the accepted graph is sent directly to
+`zabbixconfig2api /commands/apply-graph` and mutates Zabbix immediately. Without
+that URL it falls back to writing only to that layer's Zabbix topic. In both
+modes it does not write to `KafkaTopics:AggregationCommands`, so CMDBuild
 aggregation objects are not touched by these layer-specific Zabbix actions.
 
 For the service layer the same action also publishes manual service topology:
@@ -198,6 +258,25 @@ shows root services and visible orphan nodes. The stale report additionally
 shows root-level source leaves and root-level non-root managed services. Treat
 those lists as topology defects: add or fix CMDBuild relations, then rerun
 service publication; do not fix them by renaming objects.
+
+`aggregation_type` on service objects is interpreted through Zabbix Services
+algorithms, not through the suppression healthy-host trigger formula. In the
+current service-tree publication `all` means "parent becomes Problem only when
+all direct child services are already Problem". `any` means "any Problem direct
+child propagates to the parent". `threshold` and `n_of_m` are preserved and
+validated as aggregation policy metadata, but the Zabbix Services tree does not
+calculate percentage/count by itself; use a separate aggregate/business trigger
+policy when service availability must be "40 of 50 routers are available" or
+"20% of workplaces may fail".
+
+`is_critical` is metadata, not a Zabbix severity or service algorithm switch.
+It does not change availability calculation, trigger severity, service
+`algorithm`, or suppression aggregate formulas. The Zabbix Services term "most
+critical" means the most severe current status among child services. It is not
+the CMDBuild `is_critical` attribute. When a managed Zabbix service is
+published, the attribute is exported only as a service tag,
+`cmdb2monitoring:is_critical=<value>`; in other paths treat it as CMDBuild/UI
+metadata until explicit impact logic is added.
 
 Manual service-layer objects that are not produced from source aggregation are
 created in `Сервисный слой -> Объекты сервиса`. This page is for concrete
@@ -363,6 +442,36 @@ from all targets in that layer. The service and suppression layers are isolated,
 so a suppression tombstone does not remove service membership for the same
 CMDBuild card.
 
+For a clean test run after manually deleting Zabbix objects, distinguish Zabbix
+objects from `zabbixconfig2api` state:
+
+- In Zabbix `Data collection -> Hosts`, delete test source hosts and the
+  technical host `cmdb2monitoring-suppression-aggregates`.
+- In Zabbix `Services -> Services`, delete managed service-tree nodes if the
+  tree must be rebuilt from scratch.
+- In Zabbix `Services -> SLA`, delete managed SLA definitions when SLA should
+  also be rebuilt. If manual one-time downtime entries must be preserved, do
+  not delete the whole SLA; delete only managed excluded downtimes with the
+  prefix from `ZabbixSla:ManagedExcludedDowntimePrefix`, by default
+  `CMDB2M REG:`.
+- The local state file `src/zabbixconfig2api/state/zabbixconfig2api/apply-membership.json`
+  is not a Zabbix object. It stores membership, pending sources, applied graph
+  snapshot, stale diagnostics, and managed dependency history. During a normal
+  test reset it can remain in place if the next run uses `Опубликовать полный
+  граф ...`: full-graph publication refreshes the desired graph and state.
+- Delete `apply-membership.json` only for a deliberately history-free lab run,
+  or when the state file is known to be corrupted. Stop `zabbixconfig2api`
+  before deleting it, delete the file rather than the whole state directory,
+  start the service again, and then run full-graph publication. The file is
+  recreated automatically on the next state write.
+
+After manual Zabbix cleanup, use this order from the Monitoring UI:
+
+1. `Сервисный слой -> Применить в Zabbix -> Опубликовать полный граф сервиса`.
+2. `Каскадное подавление -> Применить в Zabbix -> Опубликовать полный граф подавления`.
+3. `Каскадное подавление -> Применить в Zabbix -> Зависимости триггеров -> Опубликовать зависимости триггеров в Zabbix`.
+4. `Сервисный слой -> Применить в Zabbix -> Опубликовать SLA в Zabbix`.
+
 Webhook payloads may omit `zabbix_main_hostid`. `cmdbconfigbuilder` resolves the
 configured readiness attribute (`Readiness:ZabbixHostIdAttribute`, default
 `zabbix_main_hostid`) from the current CMDBuild card before rule evaluation and
@@ -409,6 +518,10 @@ membership and relation graph after `Опубликовать граф пода�
   every enabled trigger for group state, set
   `AggregateStateTriggerIncludeNameRegex=.*` rather than leaving include
   filters empty;
+- do not confuse this suppression meaning with Zabbix Services `all/any`:
+  suppression `all` means "all selected source hosts must be healthy", while
+  service-tree `all` means "all direct child services are already Problem before
+  the parent becomes Problem";
 - `aggregation_type` is evaluated against source hosts that actually contributed
   at least one selected, supported trigger to the calculated item. Source cards
   with `zabbix_main_hostid` but no selected group-state trigger are reported as
@@ -464,7 +577,17 @@ membership and relation graph after `Опубликовать граф пода�
   aggregations correct;
 - existing manual Zabbix dependencies are preserved;
 - stale dependencies are removed only if they were recorded as managed by
-  `zabbixconfig2api` in `ZabbixApplyState:FilePath`.
+  `zabbixconfig2api` in `ZabbixApplyState:FilePath`;
+- before source triggers are loaded, `zabbixconfig2api` verifies saved
+  source-host bindings with Zabbix `host.get`. Dry-run reports stale host
+  bindings without changing state. Apply removes source membership records whose
+  `zabbix_main_hostid` no longer exists in Zabbix, so old deleted hosts cannot
+  keep polluting formulas or diagnostics. Existing hosts that simply have no
+  selected triggers are not removed; they remain diagnostic warnings for the
+  operator to fix in trigger selectors, templates, or monitoring setup;
+- if an aggregate trigger with the expected name already exists on the technical
+  aggregate host but is missing managed tags, the applier adopts it by updating
+  expression, priority, and tags instead of creating a duplicate trigger.
 
 Operators should run dry-run first. Blocking errors include dependency cycles,
 missing membership for related targets, or a dependency count above
@@ -687,6 +810,10 @@ Administrative constraints for that workflow:
 - Target attributes in materialized templates follow the same rule. Service and
   suppression templates may set `is_critical`, `aggregation_type`, `threshold`,
   and `n` when those attributes exist on the selected target class.
+  `is_critical` is metadata only: it does not change Zabbix trigger severity,
+  service `algorithm`, or suppression aggregate formulas; when a managed Zabbix
+  service is published it appears as the service tag
+  `cmdb2monitoring:is_critical`.
   `aggregation_type=threshold` requires `threshold` 0..100 and empty `n`;
   `aggregation_type=n_of_m` requires integer `n >= 1` and empty `threshold`.
 - `Создать на основе...` is an operator convenience, not a reuse contract. In

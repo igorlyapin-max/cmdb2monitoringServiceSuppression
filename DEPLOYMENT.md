@@ -338,15 +338,37 @@ membership for aggregate triggers and trigger dependencies; operators verify
 that contour in `Каскадное подавление -> Применить в Zabbix -> Зависимости
 триггеров` and on the technical aggregate host.
 
-The apply state file keeps source membership for target services and the set of
-managed Zabbix trigger dependencies. Keep this path on durable storage if
-`zabbixconfig2api` can restart; without it the service can rebuild desired
-dependencies from membership, but it cannot distinguish old managed trigger
-dependencies from manual Zabbix dependencies.
+The apply state file keeps source membership for target services, the set of
+managed Zabbix trigger dependencies, and the last applied desired graph
+snapshot used by `Опубликовать изменения ...`. Keep this path on durable
+storage if `zabbixconfig2api` can restart; without it the service can rebuild
+desired dependencies from membership, but it cannot distinguish old managed
+trigger dependencies from manual Zabbix dependencies and the next
+changes-mode publication behaves like the first run for graph objects.
 Membership state is keyed by `layer + source class + source card id`, not by the
 population dimension. A source moving between dimensions is moved between target
 memberships; if it no longer matches any rule in a layer, a
 `remove_source_membership` command removes it from every target in that layer.
+
+The UI `Scope из последних изменений` hint is not part of durable service
+state. It is a browser-session helper that proposes scope keys after
+rule/template changes; operators can paste it into `Scope публикации`.
+Restarting the UI or loading the page again loses that hint, while the
+persisted Zabbix apply state still controls the real graph diff. During
+current-card apply, `cmdbconfigbuilder` uses the provided scope as an optional
+preparation prefilter: statically matched rule/target keys reduce the rule list
+and source classes before CMDBuild card reads. For service-layer scope that
+matches manual service objects, `cmdbconfigbuilder` resolves
+service-object-to-template and service-object-to-aggregate relations first and
+uses those related targets as rule scope keys. If no related aggregate/template
+rules exist, source-card reads for rules are skipped. Unmatched keys keep the
+full preparation scan. Operators can call the same matching logic from the UI
+with `Проверить scope`; this preview does not read source cards and does not
+publish commands. When the UI sends `RequireZabbixScopeMatch=true`, a
+non-empty unmatched scope fails before card reads instead of silently falling
+back to a full scan. The pending dirty-scope hint is browser-local journal
+state (`cmdb2monitoring.serviceSuppression.zabbixDirtyScope.v1`), not durable
+microservice state.
 
 `ZabbixTriggerDependencies` controls the suppression dependency reconciliation:
 dry-run and apply read suppression membership, find active triggers for
@@ -365,6 +387,12 @@ The aggregation denominator is the number of source hosts whose selected,
 supported trigger expressions actually enter the calculated item. Source cards
 with host bindings but without selected group-state triggers are reported as
 unknown/skipped and do not make the group fail by themselves.
+For suppression `aggregation_type`, `all` means the group fails when not all
+selected source hosts are healthy, `any` means it fails only when none are
+healthy, `threshold` compares the healthy-host percentage, and `n_of_m` compares
+the healthy-host count. This is intentionally not the same runtime as the
+Zabbix Services tree, where service algorithm `all` raises the parent only when
+all direct child services are already Problem.
 Keep this selector explicit in configuration: `zabbixconfig2api` validates that
 it has include tags or an include-name regex. To intentionally select every
 enabled source trigger for group state, set

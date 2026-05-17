@@ -163,17 +163,8 @@ public sealed class ZabbixTriggerDependencyApplier(
             .ToArray();
         result.TargetCount = memberships.Length;
         result.ManagedDependencyCountBefore = state.ListManagedTriggerDependencies(Layer).Count;
-
-        var hostIds = memberships
-            .SelectMany(item => item.Sources)
-            .Select(source => source.ZabbixHostId)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        result.HostCount = hostIds.Length;
         result.TriggerGetBatchSize = currentOptions.TriggerGetBatchSize;
         result.ZabbixRequestTimeoutMs = currentZabbixOptions.RequestTimeoutMs;
-        result.TriggerGetBatchCount = BatchCount(hostIds.Length, currentOptions.TriggerGetBatchSize);
 
         if (memberships.Length == 0)
         {
@@ -181,9 +172,26 @@ public sealed class ZabbixTriggerDependencyApplier(
             return;
         }
 
+        var hostIds = SourceHostIds(memberships);
         if (hostIds.Length == 0)
         {
             result.Warnings.Add("В suppression membership нет source-карточек с zabbix_main_hostid; trigger dependencies не из чего строить.");
+            return;
+        }
+
+        (memberships, hostIds) = await ReconcileSourceHostBindingsAsync(
+            memberships,
+            hostIds,
+            currentOptions,
+            currentZabbixOptions,
+            dryRun,
+            result,
+            cancellationToken);
+        result.HostCount = hostIds.Length;
+        result.TriggerGetBatchCount = BatchCount(hostIds.Length, currentOptions.TriggerGetBatchSize);
+        if (hostIds.Length == 0)
+        {
+            result.Warnings.Add("После очистки stale source-host bindings в suppression membership не осталось source-карточек с zabbix_main_hostid.");
             return;
         }
 
@@ -358,6 +366,80 @@ public sealed class ZabbixTriggerDependencyApplier(
         result.SampleDependencies.AddRange(result.DesiredDependencies.Take(currentOptions.SampleLimit));
         result.HasMoreSamples = result.DesiredDependencies.Count > result.SampleDependencies.Count;
         result.SampleAggregates.AddRange(result.Aggregates.Take(currentOptions.SampleLimit));
+    }
+
+    private async Task<(ZabbixTargetMembershipSnapshot[] Memberships, string[] HostIds)> ReconcileSourceHostBindingsAsync(
+        ZabbixTargetMembershipSnapshot[] memberships,
+        string[] hostIds,
+        ZabbixTriggerDependenciesOptions currentOptions,
+        ZabbixOptions currentZabbixOptions,
+        bool dryRun,
+        ZabbixTriggerDependencyRunResult result,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ZabbixHostInfo> liveHosts;
+        try
+        {
+            liveHosts = await zabbix.GetHostsByIdsAsync(
+                hostIds,
+                currentOptions.TriggerGetBatchSize,
+                cancellationToken);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Zabbix host.get по source-hosts не успел завершиться за {currentZabbixOptions.RequestTimeoutMs} ms. "
+                + $"hostids={hostIds.Length}, batch={currentOptions.TriggerGetBatchSize}, batches={BatchCount(hostIds.Length, currentOptions.TriggerGetBatchSize)}. "
+                + "Увеличьте Zabbix:RequestTimeoutMs или уменьшите ZabbixTriggerDependencies:TriggerGetBatchSize.",
+                ex);
+        }
+
+        var liveHostIds = liveHosts
+            .Select(host => host.HostId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
+        var staleHostIds = hostIds
+            .Where(id => !liveHostIds.Contains(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        result.StaleSourceHostBindingCount = staleHostIds.Length;
+        if (staleHostIds.Length == 0)
+        {
+            return (memberships, hostIds);
+        }
+
+        var sample = string.Join(", ", staleHostIds.Take(10));
+        if (dryRun)
+        {
+            result.Warnings.Add(
+                $"В suppression state найдены stale source-host bindings: hostids={staleHostIds.Length}"
+                + (string.IsNullOrWhiteSpace(sample) ? "." : $" ({sample}).")
+                + " Dry-run state не меняет; при apply эти source-привязки будут удалены.");
+            return (memberships, hostIds);
+        }
+
+        var cleanup = state.RemoveSourceHostBindings(
+            Layer,
+            staleHostIds.ToHashSet(StringComparer.Ordinal));
+        result.StaleSourceMembershipsRemoved = cleanup.RemovedSourceMemberships;
+        result.Warnings.Add(
+            $"Из suppression state удалены stale source-host bindings: hostids={staleHostIds.Length}, "
+            + $"source-записей={cleanup.RemovedSourceMemberships}, targets={cleanup.AffectedTargets.Count}.");
+
+        var refreshedMemberships = state.ListMemberships(Layer)
+            .Where(item => item.SourceCount > 0 || item.Relations.Count > 0)
+            .ToArray();
+        return (refreshedMemberships, SourceHostIds(refreshedMemberships));
+    }
+
+    private static string[] SourceHostIds(IReadOnlyList<ZabbixTargetMembershipSnapshot> memberships)
+    {
+        return memberships
+            .SelectMany(item => item.Sources)
+            .Select(source => source.ZabbixHostId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private async Task BuildReconcilePlanAsync(
@@ -1764,6 +1846,10 @@ public sealed class ZabbixTriggerDependencyRunResult
     public int TriggerGetElapsedMs { get; set; }
 
     public int ZabbixRequestTimeoutMs { get; set; }
+
+    public int StaleSourceHostBindingCount { get; set; }
+
+    public int StaleSourceMembershipsRemoved { get; set; }
 
     public int MaxSourceHostsPerAggregate { get; set; }
 

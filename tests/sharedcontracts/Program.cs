@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
@@ -393,6 +394,10 @@ AssertRouterCoreAggregationContract();
 AssertRuleEngineEmitsSourceMembershipTombstones();
 AssertZabbixMembershipMovesSourceBetweenTargets();
 AssertZabbixMembershipRemovesSourceFromLayer();
+AssertZabbixMembershipPrunesMissingHostBindings();
+AssertZabbixMembershipPublishesCriticalityTag();
+AssertZabbixAppliedGraphDiffContract();
+AssertZabbixGraphScopeContract();
 AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
 AssertSemanticFingerprintChangesWhenHostIdAppears();
@@ -612,6 +617,119 @@ static void AssertZabbixMembershipRemovesSourceFromLayer()
         "source tombstone must remove the source from every target in its layer.");
     Assert(state.ListMemberships("service").Single().SourceCount == 1,
         "source tombstone must not remove the same source from another layer.");
+}
+
+static void AssertZabbixMembershipPrunesMissingHostBindings()
+{
+    var state = NewZabbixApplyStateStore();
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City01", "City01", "30001", "1001"), "suppression", includeSourceLeafManagedKey: false);
+    state.UpdateMembership(BuildMembershipCommand("suppression", "supp:City02", "City02", "30002", "1002"), "suppression", includeSourceLeafManagedKey: false);
+    state.UpdateMembership(BuildMembershipCommand("service", "svc:City02", "City02", "30002", "1002"), "service");
+
+    var cleanup = state.RemoveSourceHostBindings(
+        "suppression",
+        new HashSet<string>(["30002", "39999"], StringComparer.Ordinal));
+
+    Assert(cleanup.RequestedHostIds == 2, "stale source-host cleanup must report requested hostids.");
+    Assert(cleanup.RemovedSourceMemberships == 1, "stale source-host cleanup must remove matching source memberships.");
+    Assert(cleanup.RemovedHostIds.SequenceEqual(["30002"]), "stale source-host cleanup must report removed hostids.");
+    var suppression = state.ListMemberships("suppression");
+    Assert(suppression.Single(item => item.TargetManagedKey == "supp:City01").SourceCount == 1,
+        "stale source-host cleanup must keep suppression memberships with existing hostids.");
+    Assert(suppression.Single(item => item.TargetManagedKey == "supp:City02").SourceCount == 0,
+        "stale source-host cleanup must remove only sources bound to missing Zabbix hostids.");
+    Assert(state.ListMemberships("service").Single().SourceCount == 1,
+        "stale source-host cleanup must be layer-scoped.");
+}
+
+static void AssertZabbixMembershipPublishesCriticalityTag()
+{
+    var state = NewZabbixApplyStateStore();
+    var command = BuildMembershipCommand(
+        "service",
+        "svc:Critical",
+        "Critical",
+        "30001",
+        isCritical: "true");
+
+    var update = state.UpdateMembership(command, "service");
+    Assert(update.Current.IsCritical == "true",
+        "Zabbix persisted membership must keep target is_critical metadata.");
+
+    var method = typeof(ZabbixAggregationApplier).GetMethod(
+        "FromMembershipSnapshot",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("ZabbixAggregationApplier.FromMembershipSnapshot was not found.");
+    var definition = (ZabbixManagedServiceDefinition?)method.Invoke(null, [update.Current, "service"])
+        ?? throw new InvalidOperationException("ZabbixAggregationApplier.FromMembershipSnapshot returned null.");
+
+    Assert(definition.Tags.TryGetValue(ZabbixManagedServiceTags.IsCritical, out var isCritical)
+        && isCritical == "true",
+        "Zabbix service graph publication must include the cmdb2monitoring:is_critical tag.");
+}
+
+static void AssertZabbixAppliedGraphDiffContract()
+{
+    var state = NewZabbixApplyStateStore();
+    var command = BuildMembershipCommand("service", "svc:City01", "City01", "30001");
+    var desired = ZabbixDesiredGraphBuilder.Build([command], "service", createManagedServices: true);
+    var firstDiff = state.DiffAppliedGraph("service", desired.Objects, "changes", sampleLimit: 20);
+    Assert(firstDiff.Added == desired.Objects.Count,
+        "empty applied graph must mark every desired object as added.");
+    Assert(firstDiff.PublishCandidates == desired.Objects.Count,
+        "changes mode must publish every added desired object.");
+
+    state.ReplaceAppliedGraph("service", desired.Objects);
+    var unchangedDiff = state.DiffAppliedGraph("service", desired.Objects, "changes", sampleLimit: 20);
+    Assert(unchangedDiff.Unchanged == desired.Objects.Count && unchangedDiff.PublishCandidates == 0,
+        "changes mode must skip unchanged desired graph objects.");
+
+    var fullDiff = state.DiffAppliedGraph("service", desired.Objects, "full", sampleLimit: 20);
+    Assert(fullDiff.Unchanged == desired.Objects.Count && fullDiff.PublishCandidates == desired.Objects.Count,
+        "full mode must publish unchanged desired graph objects.");
+
+    var changedCommand = BuildMembershipCommand(
+        "service",
+        "svc:City01",
+        "City01",
+        "30001",
+        isCritical: "true");
+    var changedDesired = ZabbixDesiredGraphBuilder.Build([changedCommand], "service", createManagedServices: true);
+    var changedDiff = state.DiffAppliedGraph("service", changedDesired.Objects, "changes", sampleLimit: 20);
+    Assert(changedDiff.Changed > 0 && changedDiff.PublishCandidates > 0,
+        "target attribute changes must be visible in desired graph diff.");
+
+    var removedDiff = state.DiffAppliedGraph("service", [], "changes", sampleLimit: 20);
+    Assert(removedDiff.Removed == desired.Objects.Count && removedDiff.PublishCandidates == 0,
+        "missing desired graph objects must be reported as removed without automatic publish candidates.");
+}
+
+static void AssertZabbixGraphScopeContract()
+{
+    var root = BuildMembershipCommand("service", "svc:root", "Root", "30001");
+    var child = BuildMembershipCommand("service", "svc:child", "Child", "30002", sourceCardId: "1002")
+        with
+        {
+            Target = BuildMembershipCommand("service", "svc:child", "Child", "30002", sourceCardId: "1002").Target
+                with { ParentManagedKeys = ["svc:root"] }
+        };
+    var unrelated = BuildMembershipCommand("service", "svc:other", "Other", "30003", sourceCardId: "1003");
+    var serviceScope = ZabbixGraphScopeResolver.Resolve([root, child, unrelated], "service", ["svc:root"], 0);
+    Assert(serviceScope.Enabled, "scope resolver must mark explicit scope as enabled.");
+    Assert(serviceScope.TargetManagedKeys.SetEquals(["svc:root", "svc:child"]),
+        "service scope by root must include the selected target and its descendants, but not unrelated targets.");
+    Assert(serviceScope.Commands.Count == 2,
+        "service scope must filter commands to scoped target keys.");
+
+    var suppA = BuildSuppressionRelationCommand("supp:A", "A", "supp:B", "1001");
+    var suppB = BuildSuppressionRelationCommand("supp:B", "B", "supp:C", "1002");
+    var suppC = BuildMembershipCommand("suppression", "supp:C", "C", "30003", sourceCardId: "1003");
+    var limitedSuppressionScope = ZabbixGraphScopeResolver.Resolve([suppA, suppB, suppC], "suppression", ["supp:A"], 1);
+    Assert(limitedSuppressionScope.TargetManagedKeys.SetEquals(["supp:A", "supp:B"]),
+        "suppression scope depth must limit relation-chain traversal.");
+    var fullSuppressionScope = ZabbixGraphScopeResolver.Resolve([suppA, suppB, suppC], "suppression", ["A"], 0);
+    Assert(fullSuppressionScope.TargetManagedKeys.SetEquals(["supp:A", "supp:B", "supp:C"]),
+        "suppression scope with depth 0 must include the connected chain.");
 }
 
 static void AssertZabbixManagedServiceMappingContract()
@@ -1088,7 +1206,7 @@ static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
             Password = "zabbix",
             RequestTimeoutMs = 5000
         }));
-    var manyHostIds = Enumerable.Range(1, 55).Select(index => $"host-{index:00}").ToArray();
+    var manyHostIds = Enumerable.Range(1, 55).Select(index => index == 1 ? "30011" : $"host-{index:00}").ToArray();
     var batchedTriggers = await batchClient.GetTriggersByHostIdsAsync(manyHostIds, includeDisabled: false, CancellationToken.None);
     Assert(batchedTriggers.Count == 2, "Batched Zabbix trigger.get must merge duplicate trigger results.");
     Assert(batchHandler.TriggerGetPayloads.Count == 3,
@@ -1109,6 +1227,14 @@ static async Task AssertZabbixClientAppliesTriggerDependenciesAsync()
         "Zabbix trigger.get must honor an explicitly configured batch size.");
     Assert(configuredBatchPayloads.All(payload => TriggerGetLookupCount(payload, "hostids") <= 10),
         "Zabbix trigger.get configured batches must stay within the configured batch size.");
+
+    var batchedHosts = await batchClient.GetHostsByIdsAsync(manyHostIds, batchSize: 10, cancellationToken: CancellationToken.None);
+    Assert(batchedHosts.Count == 1 && batchedHosts.Single().HostId == "30011",
+        "Zabbix host.get by hostids must return existing hosts.");
+    Assert(batchHandler.HostGetPayloads.Count == 6,
+        "Zabbix host.get by hostids must be split into batches.");
+    Assert(batchHandler.HostGetPayloads.All(payload => TriggerGetLookupCount(payload, "hostids") <= 10),
+        "Zabbix host.get batches must stay within the configured batch size.");
 
     var applied = await client.UpdateTriggerDependenciesAsync(
         "60002",
@@ -1255,6 +1381,46 @@ static async Task AssertZabbixClientAppliesSuppressionAggregateAsync()
         "Zabbix aggregate item diagnostics must query by aggregate host name.");
     Assert(itemGetParameters.GetProperty("filter").GetProperty("key_").GetArrayLength() == 1,
         "Zabbix aggregate item diagnostics must query unique item keys.");
+
+    var adoptHandler = new DiagnosticZabbixHandler
+    {
+        ExistingAggregateHost = true,
+        ExistingAggregateItem = true,
+        ExistingAggregateTriggerByName = true
+    };
+    var adoptClient = new ZabbixClient(
+        new HttpClient(adoptHandler),
+        new StaticOptionsMonitor<ZabbixOptions>(new ZabbixOptions
+        {
+            ApiEndpoint = "http://zabbix.local/api_jsonrpc.php",
+            AuthMode = "Login",
+            User = "Admin",
+            Password = "zabbix",
+            RequestTimeoutMs = 5000
+        }));
+    var adopted = await adoptClient.ApplySuppressionAggregateAsync(
+        new ZabbixSuppressionAggregateDefinition
+        {
+            TargetManagedKey = "suppression:vpn-hubs:city04",
+            TargetClass = "C2M_SuppressionNetworkAccessZone",
+            TargetCardId = "611269",
+            TargetName = "ВПН Хабы / City04",
+            AggregationType = "any",
+            HostGroupName = "CMDB2Monitoring",
+            HostName = "cmdb2monitoring-suppression-aggregates",
+            HostVisibleName = "CMDB2Monitoring suppression aggregates",
+            ItemKey = "cmdb2monitoring.suppression.aggregate.abc",
+            ItemName = "CMDB2M suppression state: ВПН Хабы / City04",
+            CalculationFormula = "max(/cmdb-vpn-hub-001/icmpping,#3)+max(/cmdb-vpn-hub-002/icmpping,#3)",
+            TriggerName = "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
+            TriggerExpression = "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate.abc)<1",
+            TriggerPriority = 3
+        },
+        CancellationToken.None);
+    Assert(adopted.TriggerId == "45001", "Zabbix aggregate trigger adoption by name must keep the existing trigger id.");
+    Assert(adopted.TriggerAction == "updated", "Zabbix aggregate trigger adoption by name must update the existing trigger.");
+    Assert(adoptHandler.TriggerCreatePayload is null,
+        "Zabbix aggregate trigger adoption by name must not create a duplicated trigger.");
 }
 
 static async Task AssertZabbixSuppressionAggregateThresholdUsesSelectedHostsAsync()
@@ -1403,8 +1569,18 @@ static AggregationCommand BuildMembershipCommand(
     string targetKey,
     string city,
     string zabbixHostId,
-    string sourceCardId = "1001")
+    string sourceCardId = "1001",
+    string isCritical = "")
 {
+    var attributes = new Dictionary<string, object?>(StringComparer.Ordinal)
+    {
+        ["name"] = city
+    };
+    if (!string.IsNullOrWhiteSpace(isCritical))
+    {
+        attributes["is_critical"] = isCritical;
+    }
+
     return new AggregationCommand
     {
         CommandId = Guid.NewGuid().ToString("N"),
@@ -1429,10 +1605,36 @@ static AggregationCommand BuildMembershipCommand(
             IdempotencyKey = targetKey,
             CardDescription = $"{layer} {city}",
             CreateInstance = true,
-            Attributes = new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["name"] = city
-            }
+            Attributes = attributes
+        }
+    };
+}
+
+static AggregationCommand BuildSuppressionRelationCommand(
+    string targetKey,
+    string name,
+    string relationTargetKey,
+    string sourceCardId)
+{
+    var command = BuildMembershipCommand(
+        "suppression",
+        targetKey,
+        name,
+        $"3{sourceCardId}",
+        sourceCardId);
+    return command with
+    {
+        Target = command.Target with
+        {
+            Relations =
+            [
+                new AggregationTargetRelation
+                {
+                    DomainCode = "C2M_SuppressionResourceSuppressesResource",
+                    TargetClassCode = "C2M_SuppressionResource",
+                    TargetLookup = relationTargetKey
+                }
+            ]
         }
     };
 }
@@ -2022,13 +2224,15 @@ static void AssertOperationalFlagHelp(CmdbuildSchemaDefinition schema)
     var serviceSuperclass = schema.Classes.Single(c => c.Code == "C2M_ServiceManagedObject");
     var objectIsActiveHelp = serviceSuperclass.Attributes.Single(attribute => attribute.Code == "is_active").Help;
     Assert(objectIsActiveHelp.Contains("исключается из желаемой модели Zabbix", StringComparison.Ordinal)
-        && objectIsActiveHelp.Contains("all/any/threshold/n-of-m", StringComparison.Ordinal),
+        && objectIsActiveHelp.Contains("service-tree child algorithms", StringComparison.Ordinal)
+        && objectIsActiveHelp.Contains("aggregate-политик", StringComparison.Ordinal),
         "object is_active help must explain generation and aggregation behavior.");
 
     var isCriticalHelp = serviceSuperclass.Attributes.Single(attribute => attribute.Code == "is_critical").Help;
-    Assert(isCriticalHelp.Contains("не делает неактивный объект активным", StringComparison.Ordinal)
-        && isCriticalHelp.Contains("ранжировании первопричины/подавления", StringComparison.Ordinal),
-        "is_critical help must explain impact behavior.");
+    Assert(isCriticalHelp.Contains("не влияет на расчет доступности", StringComparison.Ordinal)
+        && isCriticalHelp.Contains("severity trigger-а", StringComparison.Ordinal)
+        && isCriticalHelp.Contains("cmdb2monitoring:is_critical", StringComparison.Ordinal),
+        "is_critical help must explain metadata-only behavior.");
 
     var suppressionDomain = schema.Domains.Single(domain => domain.Code == "C2M_SuppressionResourceMonitoredViaProxyGroup");
     var relationIsActiveHelp = suppressionDomain.Attributes.Single(attribute => attribute.Code == "is_active").Help;
@@ -2251,6 +2455,8 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     public bool ExistingAggregateItem { get; init; }
 
+    public bool ExistingAggregateTriggerByName { get; init; }
+
     public bool ExistingSla { get; init; }
 
     public string? CreatePayload { get; private set; }
@@ -2271,6 +2477,8 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     public IReadOnlyList<string> TriggerGetPayloads => triggerGetPayloads;
 
+    public IReadOnlyList<string> HostGetPayloads => hostGetPayloads;
+
     public string? TriggerCreatePayload { get; private set; }
 
     public string? TriggerUpdatePayload { get; private set; }
@@ -2282,6 +2490,7 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
     public string? SlaUpdatePayload { get; private set; }
 
     private readonly List<string> triggerGetPayloads = [];
+    private readonly List<string> hostGetPayloads = [];
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -2462,9 +2671,10 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
 
     private HttpResponseMessage CaptureHostGet(string body)
     {
+        hostGetPayloads.Add(body);
         if (!body.Contains("cmdb2monitoring-suppression-aggregates", StringComparison.Ordinal))
         {
-            return HostGetResponse();
+            return HostGetResponse(body);
         }
 
         return ExistingAggregateHost
@@ -2559,8 +2769,13 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
         """);
     }
 
-    private static HttpResponseMessage HostGetResponse()
+    private static HttpResponseMessage HostGetResponse(string body)
     {
+        if (!body.Contains("30011", StringComparison.Ordinal))
+        {
+            return EmptyArrayResponse();
+        }
+
         return Json(HttpStatusCode.OK, """
         {
           "jsonrpc": "2.0",
@@ -2586,9 +2801,17 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
     {
         TriggerGetPayload = body;
         triggerGetPayloads.Add(body);
-        if (body.Contains("cmdb2monitoring:aggregate", StringComparison.Ordinal))
+        if (body.Contains("cmdb2monitoring", StringComparison.Ordinal)
+            && body.Contains("aggregate", StringComparison.Ordinal)
+            && body.Contains("suppression_state", StringComparison.Ordinal))
         {
             return EmptyArrayResponse();
+        }
+
+        if (body.Contains("CMDB2M suppression", StringComparison.Ordinal)
+            && body.Contains("City04", StringComparison.Ordinal))
+        {
+            return ExistingAggregateTriggerByName ? AggregateTriggerResponse() : EmptyArrayResponse();
         }
 
         return Json(HttpStatusCode.OK, """
@@ -2648,6 +2871,36 @@ public sealed class DiagnosticZabbixHandler : HttpMessageHandler
             }
           ],
           "id": 7
+        }
+        """);
+    }
+
+    private static HttpResponseMessage AggregateTriggerResponse()
+    {
+        return Json(HttpStatusCode.OK, """
+        {
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "triggerid": "45001",
+              "description": "CMDB2M suppression: ВПН Хабы / City04 недоступен как группа",
+              "status": "0",
+              "priority": "3",
+              "value": "0",
+              "expression": "last(/cmdb2monitoring-suppression-aggregates/cmdb2monitoring.suppression.aggregate.abc)<1",
+              "recovery_expression": "",
+              "tags": [],
+              "hosts": [
+                {
+                  "hostid": "43001",
+                  "host": "cmdb2monitoring-suppression-aggregates",
+                  "name": "CMDB2Monitoring suppression aggregates"
+                }
+              ],
+              "dependencies": []
+            }
+          ],
+          "id": 25
         }
         """);
     }

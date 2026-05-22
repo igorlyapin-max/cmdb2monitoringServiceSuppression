@@ -20,6 +20,13 @@ Operational documentation:
 - [RULES_AND_MODELS_EDITOR_GUIDE.md](RULES_AND_MODELS_EDITOR_GUIDE.md):
   operator workflow for schema/model preparation, rule editing, population
   templates, synchronization, and diagnostics.
+- [SYSTEM_STABILIZATION_ALGORITHMS.md](SYSTEM_STABILIZATION_ALGORITHMS.md):
+  high-level stabilization algorithms for streaming card changes, dirty scopes,
+  membership-state, scoped reconcile, and full recovery runs.
+- [UI_DEVELOPMENT_PLAN.md](UI_DEVELOPMENT_PLAN.md): planned simplification of
+  the operator UI: synchronization traffic lights, unified model control,
+  rule preparation pipeline, compact Zabbix publication, and gradual
+  convergence of service/suppression screens.
 
 Diagnostic autotests are intentionally launched by a separate command:
 
@@ -34,6 +41,21 @@ rules, CMDBuild apply payloads, and the router-core population scenario. Add
 ```bash
 LIVE=1 ./scripts/test-diagnostics.sh
 ```
+
+Integration profiles can also be selected explicitly:
+
+```bash
+INTEGRATION_PROFILE=redis ./scripts/test-diagnostics.sh
+./scripts/test-integration.sh redis
+./scripts/test-integration.sh redis-kafka
+./scripts/test-integration.sh all
+```
+
+`redis` requires a reachable Redis endpoint, defaults to
+`REDIS_E2E_CONNECTION_STRING=127.0.0.1:6379`, and starts temporary services on
+non-production ports. `redis-kafka` additionally requires a reachable Kafka
+broker and a Kafka container for temporary topic create/delete operations
+(`KAFKA_E2E_CONTAINER=kafka` by default).
 
 ## Runtime pipeline
 
@@ -260,7 +282,7 @@ links:
   `threshold`, and `n` according to the service/suppression runtime described
   above.
 - Manual service objects that are not produced by source aggregation are
-  managed in `Сервисный слой -> Объекты сервиса`. The page creates concrete
+  managed in `Модель -> Объекты сервиса` with layer `Сервис`. The page creates concrete
   CMDBuild cards for services, SLA policies, SLA calendars, and regular SLA
   downtime windows. It also creates direct relations between those manual
   objects: service-to-service dependency, service-to-aggregate containment,
@@ -281,7 +303,7 @@ links:
   `Шаблон из текущих правил` so those already-created aggregates can still be
   linked without recreating them. Template
   links and rule links remain in the standard
-  `Сервисный слой -> Управление связями` block. The service-object relation
+  `Модель -> Связи` editor with layer `Сервис`. The service-object relation
   editor filters generated template aggregate cards by default with
   `Фильтровать правила и классы из шаблонов`; clear it to select generated
   aggregates such as `Рабочие места / City14`. Option labels include the
@@ -324,12 +346,13 @@ links:
   when a service has no explicit `has_sla_policy` relation. These `ZabbixSla`
   settings are managed from `Administration -> SLA` in the Monitoring UI through
   the same config-file write plus Bearer-protected reload flow.
-- SLA publication is launched from `Сервисный слой -> Применить в Zabbix`,
+- SLA publication is launched from `Модель -> Применить в Zabbix`
+  with layer `Сервис`,
   directly after `Опубликовать граф сервиса в Zabbix`; `Administration -> SLA` keeps
   settings only. Dry-run shows which CMDBuild services will be tagged with
   `cmdb2monitoring:sla_policy`, which SLA objects will be created/updated, and
   how many managed downtime windows will be sent. Publish the service topology
-  first through `Сервисный слой -> Применить в Zabbix -> Опубликовать граф сервиса в Zabbix`; SLA
+  first through `Модель -> Применить в Zabbix -> Опубликовать граф сервиса в Zabbix`; SLA
   publication then updates SLA tags only on existing managed Zabbix Services and
   creates or updates Zabbix SLA objects selected by those tags. The SLA
   publisher does not create standalone Zabbix Service nodes. If a service is
@@ -410,9 +433,10 @@ Suppression schema is intentionally uniform:
   `Целевой класс\экземпляр класса`, each managed class is followed immediately
   by its existing target cards as `Класс -> экземпляр`, so search/filter keeps
   the instance attached to its class.
-- `Статические правила` is the manual rule editor for service and suppression
-  layers. It is the place where an operator may select either a target class or
-  a concrete existing target card; templates select only target classes.
+- `Модель -> Статические правила` is the manual rule editor for service and
+  suppression layers; choose the layer in the selector at the top of the page.
+  It is the place where an operator may select either a target class or a
+  concrete existing target card; templates select only target classes.
 - CMDBuild cache key `cmdbuild.catalogs.v3` stores prototype/superclass nodes
   for sorting, while rule source selection still exposes only non-prototype
   customer classes.
@@ -532,6 +556,14 @@ Suppression schema is intentionally uniform:
   display name after the `Dimension name template`; inside that same template
   it means the base display name before rendering. `dimension.regexKey` is
   `dimension.key` escaped for embedding into a generated regex condition.
+- For lookup/reference/domain leaf values the system separates stable and
+  display values. Lookup code/key/id is used for `dimension.key`, identity,
+  relation matching, dirty/stale comparison, and idempotency. Lookup
+  display/name/description is used only for `dimension.name`, target
+  name/description, UI labels, and diagnostics. Renaming a lookup display value
+  does not structurally move membership; existing managed objects can keep the
+  old label until the affected object is rebuilt or an operator runs
+  scoped/full reconcile. Using lookup display/name as a key is a bad practice.
 - The template editor shows a live `dimension.*` preview inside the
   `What is dimension.*` help block. It renders the first calculated
   `dimension.key`, `dimension.value`, `dimension.name`, `dimension.regexKey`,
@@ -794,8 +826,8 @@ The top-level `Синхронизация с источниками данных
   on demand before template materialization.
 - `Zabbix` checks the configured Zabbix API through `zabbixconfig2api` and
   shows connection version, endpoint, and error details.
-- `Сервисный слой -> Применить в Zabbix` and
-  `Каскадное подавление -> Применить в Zabbix` run the same current-card
+- `Модель -> Применить в Zabbix` runs the same current-card
+  evaluation for the selected layer. The technical service/suppression apply screens run the same
   evaluation only for one layer. `Проверить изменения ...` builds the desired
   graph without writes and, with direct apply configured, shows the diff against
   the last applied graph snapshot. `Опубликовать изменения ...` sends only
@@ -879,8 +911,8 @@ The top-level `Синхронизация с источниками данных
   Zabbix Services can associate real host problems with managed service objects.
   Technical leaf services such as `NTbook / ctest2-NTbook-003` are expected only
   under their aggregate, for example `Рабочие места (Сервис) / City31`; if they
-  appear in the root, refresh the stale report in `Сервисный слой -> Применить в
-  Zabbix` and rerun service publication after fixing the reported missing
+  appear in the root, refresh the stale report in `Модель -> Применить в
+  Zabbix` with layer `Сервис` and rerun service publication after fixing the reported missing
   children. The same report also shows visible non-root managed services without
   parents; those nodes must be connected to a business service or explicitly
   marked internal before the topology is considered clean.
@@ -910,7 +942,7 @@ The top-level `Синхронизация с источниками данных
   dependent problem events. Active event suppression from our side is not used.
   The suppression model is reflected in Zabbix through technical aggregate
   triggers and trigger dependencies, not through a parallel Zabbix Services
-  tree. In `Каскадное подавление -> Применить в Zabbix`, first run
+  tree. In `Модель -> Применить в Zabbix` with layer `Каскадное подавление`, first run
   `Опубликовать граф подавления в Zabbix`; then the `Зависимости триггеров` block
   ensures managed aggregate triggers and calculated items for suppression
   objects and builds dependencies from persisted membership:
@@ -958,7 +990,7 @@ The top-level `Синхронизация с источниками данных
   server folder. The current format writes
   separate JSON files for service rules, suppression rules, service templates,
   suppression templates, shared templates, and a manifest; relations created by
-  `Создать/обновить правила по шаблонам и связям` are stored as
+  `Подготовить и сохранить правила` are stored as
   `managed_relations` inside the rule/template documents, while pending
   service links to aggregate templates are stored in `service-templates.json` as
   `serviceObjectTemplateRelations`. This folder can later be placed under Git
@@ -968,7 +1000,7 @@ The top-level `Синхронизация с источниками данных
   configuration: applier services reread that shared folder on reload, and the
   same workflow will later use a Git-backed folder. CMDBuild webhook
   publication is a separate Webhooks action.
-- `Управление правилами -> Создать/обновить правила по шаблонам и связям`
+- `Управление правилами -> Подготовить и сохранить правила`
   contains the `Проверить шаблоны` preflight step before materializing
   templates. It loads the needed source cards, calculates `dimension.*`, shows
   generated-rule and managed-relation create/update/remove counts, target
@@ -983,12 +1015,13 @@ The top-level `Синхронизация с источниками данных
   potentially large source. The UI shows the last cache update timestamp for
   each source. For conversion configurations the primary action is
   `Сохранить в папку`, with separate `Загрузить из папки` and
-  `Загрузить локальный кэш` actions. After
-  `Создать/обновить правила по шаблонам и связям`, folder save persists the
-  generated rules, templates, and their managed links, but it does not execute
-  those rules against existing CMDBuild cards. Service/suppression target cards
-  are created after matching source-class webhooks are processed; successful
-  folder load/save also turns on the top `Конвертация загружена` indicator. When
+  `Загрузить локальный кэш` actions. In the main operator path,
+  `Подготовить и сохранить правила` now materializes generated rules,
+  templates, and their managed links and immediately persists the same
+  configuration to the folder/manifest, but it does not execute those rules
+  against existing CMDBuild cards. Service/suppression target cards are created
+  after matching source-class webhooks are processed; successful folder
+  load/save also turns on the top `Конвертация загружена` indicator. When
   service and suppression documents are assembled for runtime reading, runtime
   `rule_id` values must be globally unique. Generated template rules include
   the layer in new IDs; if older documents still contain the same `rule_id` in

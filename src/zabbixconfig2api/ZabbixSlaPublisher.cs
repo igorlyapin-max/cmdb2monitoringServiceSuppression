@@ -135,6 +135,11 @@ public sealed class ZabbixSlaPublisher(
                 SlaActions = slaResults
                     .GroupBy(sla => sla.Action, StringComparer.Ordinal)
                     .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal),
+                AppliedServiceManagedKeys = serviceResults
+                    .Select(service => service.Definition.ManagedKey)
+                    .Where(key => !string.IsNullOrWhiteSpace(key))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray(),
                 SampleServices = serviceResults.Take(currentOptions.SampleLimit).ToArray(),
                 SampleSlas = slaResults.Take(currentOptions.SampleLimit).ToArray(),
                 Message = $"SLA опубликованы: сервисов промаркировано {serviceResults.Count}, SLA применено {slaResults.Count}."
@@ -1016,6 +1021,8 @@ public sealed record ZabbixSlaPublishResult
         new Dictionary<string, int>(StringComparer.Ordinal);
 
     public IReadOnlyList<ZabbixSlaServiceApplySample> SampleServices { get; init; } = [];
+
+    public IReadOnlyList<string> AppliedServiceManagedKeys { get; init; } = [];
 
     public IReadOnlyList<ZabbixSlaApplySample> SampleSlas { get; init; } = [];
 

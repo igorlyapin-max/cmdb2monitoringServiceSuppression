@@ -385,6 +385,8 @@ const state = {
   templateApplyMessage: '',
   templateApplyError: '',
   templateApplyLastResult: null,
+  templateApplyPlanPage: 1,
+  templateApplyPlanFilter: 'all',
   templateAudit: {
     checking: false,
     checkedAt: '',
@@ -397,6 +399,9 @@ const state = {
   linkRelationStatus: { message: '', type: '' },
   linkRelationHideTemplateLinks: true,
   linkRelationDerivedFrom: null,
+  modelWorkspace: {
+    layer: 'service'
+  },
   relationGraph: {
     layer: 'service',
     direction: 'configured',
@@ -415,6 +420,12 @@ const state = {
     layer: 'all',
     direction: 'effect'
   },
+  diagnosticFilters: {
+    zabbixPreflight: 'all',
+    relationGraph: 'all',
+    zabbixSla: 'all',
+    zabbixTriggerDependencies: 'all'
+  },
   zabbixApply: {
     service: {
       applying: false,
@@ -427,6 +438,7 @@ const state = {
       scopePreview: null,
       scopePreviewError: '',
       scopePreviewLoading: false,
+      dirtyScopeDefaultApplied: false,
       lastGraphCheckOk: false,
       lastGraphCheckAt: '',
       planPage: 1,
@@ -435,7 +447,8 @@ const state = {
       loadingStaleReport: false,
       cleanupStateApplying: false,
       deletingStaleCmdbuild: false,
-      deletingStaleZabbix: false
+      deletingStaleZabbix: false,
+      planFilter: 'all'
     },
     suppression: {
       applying: false,
@@ -456,7 +469,8 @@ const state = {
       loadingStaleReport: false,
       cleanupStateApplying: false,
       deletingStaleCmdbuild: false,
-      deletingStaleZabbix: false
+      deletingStaleZabbix: false,
+      planFilter: 'all'
     }
   },
   zabbixDirtyScope: {
@@ -494,9 +508,19 @@ const state = {
   zabbixConfigSettings: {
     loading: false,
     applying: false,
+    loadingRuntimeStorage: false,
+    migratingState: false,
+    runningCoverageSnapshot: false,
     message: '',
     error: '',
+    runtimeStorageError: '',
     settings: null,
+    runtimeStorageStatus: null,
+    migrationResult: null,
+    redisCheckResult: null,
+    builderRedisCheckResult: null,
+    coverageSnapshotResult: null,
+    coverageSnapshotHistory: null,
     configFile: '',
     resolvedConfigFile: '',
     reload: null,
@@ -578,6 +602,13 @@ const state = {
   conversionConfigStorageUpdatedAt: '',
   conversionConfigCacheUpdatedAt: '',
   defaultTemplateDeleteMode: DEFAULT_TEMPLATE_DELETE_MODE,
+  zabbixPublishPreferences: {
+    layer: 'service',
+    scope: 'changes',
+    includeSla: true,
+    includeDependencies: true,
+    manualScope: ''
+  },
   templateDeletionApplying: {
     service: false,
     suppression: false
@@ -751,6 +782,37 @@ document.querySelector('#applyZabbixGeneralSettingsButton')?.addEventListener('c
   void applyZabbixConfigSettings('general');
 });
 
+document.querySelector('#refreshStorageAuditSettingsButton')?.addEventListener('click', () => {
+  void (async () => {
+    await loadZabbixConfigSettings();
+    await loadRuntimeStorageStatus();
+  })();
+});
+
+document.querySelector('#applyStorageAuditSettingsButton')?.addEventListener('click', () => {
+  void applyZabbixConfigSettings('storageAudit');
+});
+
+document.querySelector('#checkRedisRuntimeButton')?.addEventListener('click', () => {
+  void checkRedisRuntime();
+});
+
+document.querySelector('#checkBuilderRedisRuntimeButton')?.addEventListener('click', () => {
+  void checkBuilderRedisRuntime();
+});
+
+document.querySelector('#dryRunStateMigrationButton')?.addEventListener('click', () => {
+  void runRuntimeStorageMigration({ dryRun: true });
+});
+
+document.querySelector('#applyStateMigrationButton')?.addEventListener('click', () => {
+  void runRuntimeStorageMigration({ dryRun: false });
+});
+
+document.querySelector('#runMonitoringCoverageSnapshotButton')?.addEventListener('click', () => {
+  void runMonitoringCoverageSnapshot();
+});
+
 document.querySelector('#syncSourcesButton').addEventListener('click', async () => {
   await syncDataSources();
 });
@@ -794,6 +856,41 @@ document.querySelector('#dashboardHealthList').addEventListener('click', async (
   }
 
   await reloadApplierConfiguration(button.dataset.applierReload);
+});
+
+document.querySelector('#dashboardSyncLights')?.addEventListener('click', (event) => {
+  void handleDashboardSyncLightClick(event);
+});
+
+document.querySelector('#modelWorkspaceLayerSelect')?.addEventListener('change', (event) => {
+  state.modelWorkspace.layer = event.target.value === 'suppression' ? 'suppression' : 'service';
+  renderModelWorkspaceView();
+});
+
+document.querySelector('#modelWorkspaceActions')?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-model-workspace-view]');
+  if (!button) {
+    return;
+  }
+
+  void activateView(button.dataset.modelWorkspaceView);
+});
+
+document.querySelector('#modelZabbixApplyTechnicalActions')?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-model-zabbix-technical-view]');
+  if (!button) {
+    return;
+  }
+
+  void activateView(button.dataset.modelZabbixTechnicalView);
+});
+
+document.querySelectorAll('[data-model-layer-select]').forEach((select) => {
+  select.addEventListener('change', (event) => {
+    state.modelWorkspace.layer = event.target.value === 'suppression' ? 'suppression' : 'service';
+    const activeView = event.target.id === 'modelTemplatesLayerSelect' ? 'modelTemplates' : 'modelRules';
+    void activateView(activeView);
+  });
 });
 
 document.querySelector('#refreshKafkaTopicsButton').addEventListener('click', async () => {
@@ -1129,7 +1226,50 @@ document.querySelector('#runTemplateAuditButton')?.addEventListener('click', () 
   void runTemplateAudit();
 });
 
+document.querySelector('#modelControlRefreshButton')?.addEventListener('click', () => {
+  void refreshModelControl();
+});
+
+document.querySelector('#modelControlDetails')?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-model-control-action]');
+  if (!button) {
+    return;
+  }
+
+  void handleModelControlAction(button.dataset.modelControlAction);
+});
+
+document.querySelector('#templateApplyPlanFilter')?.addEventListener('change', (event) => {
+  state.templateApplyPlanFilter = ['all', 'errors', 'warnings'].includes(event.target.value)
+    ? event.target.value
+    : 'all';
+  state.templateApplyPlanPage = 1;
+  renderTemplateApplyView();
+});
+
 document.addEventListener('click', (event) => {
+  const copyButton = event.target.closest?.('[data-copy-container-text]');
+  if (copyButton) {
+    void copyContainerText(copyButton.dataset.copyContainerText, copyButton);
+    return;
+  }
+
+  const copyJsonButton = event.target.closest?.('[data-copy-json]');
+  if (copyJsonButton) {
+    void copyDiagnosticJson(copyJsonButton.dataset.copyJson, copyJsonButton);
+    return;
+  }
+
+  const templatePlanPageButton = event.target.closest?.('[data-template-plan-page]');
+  if (templatePlanPageButton) {
+    const page = Number(templatePlanPageButton.dataset.templatePlanPage);
+    if (Number.isInteger(page) && page > 0) {
+      state.templateApplyPlanPage = page;
+      renderTemplateApplyView();
+    }
+    return;
+  }
+
   const applyButton = event.target.closest?.('[data-template-deletion-apply]');
   if (applyButton) {
     void applyTemplateDeletionPlans(applyButton.dataset.templateDeletionApply);
@@ -1146,24 +1286,6 @@ document.addEventListener('click', (event) => {
 
 document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
   const layerKey = panel.dataset.zabbixApplyLayer;
-  panel.querySelector('[data-zabbix-apply-refresh]')?.addEventListener('click', () => {
-    void loadZabbixApplyStatus(layerKey);
-  });
-  panel.querySelector('[data-zabbix-apply-dry-run]')?.addEventListener('click', () => {
-    void applyZabbixLayer(layerKey, { dryRun: true, publishMode: 'changes' });
-  });
-  panel.querySelector('[data-zabbix-apply-publish]')?.addEventListener('click', () => {
-    void applyZabbixLayer(layerKey, { dryRun: false, publishMode: 'changes' });
-  });
-  panel.querySelector('[data-zabbix-apply-full-dry-run]')?.addEventListener('click', () => {
-    void applyZabbixLayer(layerKey, { dryRun: true, publishMode: 'full' });
-  });
-  panel.querySelector('[data-zabbix-apply-full-publish]')?.addEventListener('click', () => {
-    void applyZabbixLayer(layerKey, { dryRun: false, publishMode: 'full' });
-  });
-  panel.querySelector('[data-zabbix-apply-cancel]')?.addEventListener('click', () => {
-    void cancelZabbixApply(layerKey);
-  });
   panel.addEventListener('click', (event) => {
     const dirtyScopeUseButton = event.target.closest?.('[data-zabbix-dirty-scope-use]');
     if (dirtyScopeUseButton && panel.contains(dirtyScopeUseButton)) {
@@ -1208,17 +1330,61 @@ document.querySelectorAll('[data-zabbix-apply-layer]').forEach((panel) => {
     }
 
     const button = event.target.closest?.('[data-zabbix-plan-page]');
-    if (!button || !panel.contains(button)) {
+    if (button && panel.contains(button)) {
+      const page = Number(button.dataset.zabbixPlanPage);
+      if (!Number.isInteger(page) || page < 1) {
+        return;
+      }
+
+      zabbixApplyState(layerKey).planPage = page;
+      renderZabbixApplyView(layerKey);
       return;
     }
 
-    const page = Number(button.dataset.zabbixPlanPage);
-    if (!Number.isInteger(page) || page < 1) {
+    const filterSelect = event.target.closest?.('[data-zabbix-plan-filter]');
+    if (!filterSelect || !panel.contains(filterSelect)) {
       return;
     }
 
-    zabbixApplyState(layerKey).planPage = page;
+    zabbixApplyState(layerKey).planFilter = ['all', 'errors', 'warnings'].includes(filterSelect.value)
+      ? filterSelect.value
+      : 'all';
+    zabbixApplyState(layerKey).planPage = 1;
     renderZabbixApplyView(layerKey);
+  });
+});
+
+document.querySelectorAll('[data-zabbix-publish-console]').forEach((panel) => {
+  const defaultLayer = panel.dataset.defaultLayer === 'suppression' ? 'suppression' : 'service';
+  const layerSelect = panel.querySelector('[data-zabbix-publish-layer]');
+  if (layerSelect) {
+    layerSelect.value = defaultLayer;
+  }
+  panel.querySelector('[data-zabbix-publish-check]')?.addEventListener('click', () => {
+    void runCompactZabbixPublication(panel, { dryRun: true });
+  });
+  panel.querySelector('[data-zabbix-publish-apply]')?.addEventListener('click', () => {
+    void runCompactZabbixPublication(panel, { dryRun: false });
+  });
+  panel.querySelector('[data-zabbix-publish-layer]')?.addEventListener('change', () => {
+    rememberCompactZabbixPublicationPreferences(panel);
+    renderCompactZabbixPublicationConsole(panel);
+  });
+  panel.querySelector('[data-zabbix-publish-scope]')?.addEventListener('change', () => {
+    rememberCompactZabbixPublicationPreferences(panel);
+    renderCompactZabbixPublicationConsole(panel);
+  });
+  panel.querySelector('[data-zabbix-publish-manual-scope]')?.addEventListener('input', () => {
+    rememberCompactZabbixPublicationPreferences(panel);
+    renderCompactZabbixPublicationConsole(panel);
+  });
+  panel.querySelector('[data-zabbix-publish-include-sla]')?.addEventListener('change', () => {
+    rememberCompactZabbixPublicationPreferences(panel);
+    renderCompactZabbixPublicationConsole(panel);
+  });
+  panel.querySelector('[data-zabbix-publish-include-dependencies]')?.addEventListener('change', () => {
+    rememberCompactZabbixPublicationPreferences(panel);
+    renderCompactZabbixPublicationConsole(panel);
   });
 });
 
@@ -1240,14 +1406,6 @@ document.querySelector('#zabbixSlaRefreshButton')?.addEventListener('click', () 
 
 document.querySelector('#zabbixSlaApplyButton')?.addEventListener('click', () => {
   void applyZabbixConfigSettings('sla');
-});
-
-document.querySelector('#zabbixSlaDryRunButton')?.addEventListener('click', () => {
-  void runZabbixSlaPublication({ dryRun: true });
-});
-
-document.querySelector('#zabbixSlaPublishButton')?.addEventListener('click', () => {
-  void runZabbixSlaPublication({ dryRun: false });
 });
 
 document.querySelector('#relationAddButton')?.addEventListener('click', () => {
@@ -1311,6 +1469,11 @@ document.querySelector('#relationGraphFilterInput')?.addEventListener('input', (
   renderRelationsGraphView();
 });
 
+document.querySelector('#relationGraphDiagnosticFilter')?.addEventListener('change', (event) => {
+  state.diagnosticFilters.relationGraph = normalizeDiagnosticFilter(event.target.value);
+  renderRelationsGraphView();
+});
+
 document.querySelector('#zabbixPreflightLayerSelect')?.addEventListener('change', (event) => {
   state.zabbixPreflight.layer = ['all', 'service', 'suppression'].includes(event.target.value)
     ? event.target.value
@@ -1327,11 +1490,34 @@ document.querySelector('#zabbixPreflightRefreshButton')?.addEventListener('click
   renderZabbixPreflightView();
 });
 
+document.querySelector('#zabbixPreflightDetailFilter')?.addEventListener('change', (event) => {
+  state.diagnosticFilters.zabbixPreflight = normalizeDiagnosticFilter(event.target.value);
+  renderZabbixPreflightView();
+});
+
+document.querySelector('#zabbixSlaDetailFilter')?.addEventListener('change', (event) => {
+  state.diagnosticFilters.zabbixSla = normalizeDiagnosticFilter(event.target.value);
+  renderZabbixSlaPublicationPanel();
+});
+
+document.querySelector('#zabbixTriggerDependenciesDetailFilter')?.addEventListener('change', (event) => {
+  state.diagnosticFilters.zabbixTriggerDependencies = normalizeDiagnosticFilter(event.target.value);
+  renderZabbixTriggerDependenciesView();
+});
+
 document.querySelector('#relationManagementView')?.addEventListener('input', (event) => {
   handleLinkRelationFilterInput(event.target);
 });
 
 document.querySelector('#relationManagementView')?.addEventListener('change', (event) => {
+  if (event.target?.matches?.('#relationManagementLayerSelect, #relationManagementKindSelect')) {
+    state.linkRelationContext = relationManagementContextFromControls();
+    state.modelWorkspace.layer = state.linkRelationContext.layer;
+    state.linkRelationStatus = { message: '', type: '' };
+    renderLinkRelationEditor();
+    return;
+  }
+
   handleLinkRelationFilterInput(event.target);
 });
 
@@ -1356,6 +1542,7 @@ document.addEventListener('click', (event) => {
 await loadInitialConfig();
 loadGeneralSettings({ silent: true });
 loadZabbixDirtyScopeJournal();
+void loadServerZabbixDirtyScopes();
 await loadCmdbSourceCache({ silent: true });
 await loadZabbixSourceCache({ silent: true });
 await loadWebhooksSourceCache({ silent: true });
@@ -1368,6 +1555,7 @@ async function activateView(view, activeButton = null) {
   document.querySelectorAll('.nav-item').forEach((button) => {
     button.classList.toggle('active', activeButton ? button === activeButton : button.dataset.view === view);
   });
+  openActiveNavParents(view);
 
   document.querySelectorAll('.view').forEach((section) => {
     section.classList.add('hidden');
@@ -1388,6 +1576,53 @@ async function activateView(view, activeButton = null) {
     return;
   }
 
+  if (view === 'modelRules') {
+    const layerKey = state.modelWorkspace.layer === 'suppression' ? 'suppression' : 'service';
+    document.querySelector('#modelRulesView')?.classList.remove('hidden');
+    document.querySelector(`#${layerKey}RulesEditView`)?.classList.remove('hidden');
+    renderUnifiedModelLayerSelects();
+    renderRuleEditor(layerKey);
+    return;
+  }
+
+  if (view === 'modelTemplates') {
+    const layerKey = state.modelWorkspace.layer === 'suppression' ? 'suppression' : 'service';
+    document.querySelector('#modelTemplatesView')?.classList.remove('hidden');
+    document.querySelector(`#${layerKey}TemplatesView`)?.classList.remove('hidden');
+    renderUnifiedModelLayerSelects();
+    renderTemplateEditor(layerKey);
+    return;
+  }
+
+  if (view === 'modelRelations') {
+    state.linkRelationContext = {
+      layer: state.modelWorkspace.layer === 'suppression' ? 'suppression' : 'service',
+      kind: state.linkRelationContext?.kind || 'template_template'
+    };
+    state.linkRelationStatus = { message: '', type: '' };
+    document.querySelector('#relationManagementView')?.classList.remove('hidden');
+    renderLinkRelationEditor();
+    return;
+  }
+
+  if (view === 'modelZabbixApply') {
+    document.querySelector('#modelZabbixApplyView')?.classList.remove('hidden');
+    renderModelZabbixApplyView();
+    if (!state.zabbixApply.service.status && !state.zabbixApply.service.loadingStatus) {
+      void loadZabbixApplyStatus('service');
+    }
+    if (!state.zabbixApply.suppression.status && !state.zabbixApply.suppression.loadingStatus) {
+      void loadZabbixApplyStatus('suppression');
+    }
+    if (!state.zabbixSla.status && !state.zabbixSla.loadingStatus) {
+      void loadZabbixSlaStatus();
+    }
+    if (!state.zabbixTriggerDependencies.status && !state.zabbixTriggerDependencies.loadingStatus) {
+      void loadZabbixTriggerDependenciesStatus({ renderDependenciesView: false });
+    }
+    return;
+  }
+
   const linkContext = linkRelationViewContext(view);
   if (linkContext) {
     state.linkRelationContext = linkContext;
@@ -1398,7 +1633,9 @@ async function activateView(view, activeButton = null) {
   }
 
   document.querySelector(`#${view}View`).classList.remove('hidden');
-  if (view === 'serviceTemplates') {
+  if (view === 'modelWorkspace') {
+    renderModelWorkspaceView();
+  } else if (view === 'serviceTemplates') {
     renderTemplateEditor('service');
   } else if (view === 'suppressionTemplates') {
     renderTemplateEditor('suppression');
@@ -1417,6 +1654,17 @@ async function activateView(view, activeButton = null) {
     }
     if (!state.zabbixTriggerDependencies.status && !state.zabbixTriggerDependencies.loadingStatus) {
       void loadZabbixTriggerDependenciesStatus({ renderDependenciesView: false });
+    }
+  } else if (view === 'storageAuditSettings') {
+    renderStorageAuditSettingsView();
+    if (!state.zabbixConfigSettings.settings && !state.zabbixConfigSettings.loading) {
+      void loadZabbixConfigSettings();
+    }
+    if (!state.zabbixConfigSettings.runtimeStorageStatus && !state.zabbixConfigSettings.loadingRuntimeStorage) {
+      void loadRuntimeStorageStatus();
+    }
+    if (!state.zabbixConfigSettings.coverageSnapshotHistory) {
+      void loadMonitoringCoverageSnapshotHistory();
     }
   } else if (view === 'slaSettings') {
     renderSlaSettingsView();
@@ -1444,6 +1692,25 @@ async function activateView(view, activeButton = null) {
     void checkHealthServices({ silent: true });
   } else if (view === 'events' && state.kafkaTopics.length === 0 && !state.loadingKafkaTopics) {
     void loadKafkaTopics({ refreshEvents: true });
+  }
+}
+
+function openActiveNavParents(view) {
+  const activeNavItem = Array.from(document.querySelectorAll('.nav-item'))
+    .find((button) => button.dataset.view === String(view ?? ''));
+  if (!activeNavItem) {
+    return;
+  }
+
+  activeNavItem.closest?.('.nav-group')?.classList.add('open');
+  activeNavItem.closest?.('.nav-group')?.querySelector(':scope > [data-nav-toggle]')?.setAttribute('aria-expanded', 'true');
+  let parent = activeNavItem.parentElement;
+  while (parent) {
+    if (parent.classList?.contains('nav-subgroup')) {
+      parent.classList.add('open');
+      parent.querySelector(':scope > [data-nav-toggle]')?.setAttribute('aria-expanded', 'true');
+    }
+    parent = parent.parentElement;
   }
 }
 
@@ -2243,12 +2510,15 @@ async function loadWebhooksSourceCache(options = {}) {
   }
 }
 
-async function saveConversionConfigsToFolder() {
+async function saveConversionConfigsToFolder(options = {}) {
+  const renderFinal = options.renderFinal !== false;
+  const throwOnError = options.throwOnError === true;
   state.syncingConversionConfigs = true;
   state.syncConversionConfigMessage = 'Сохранение правил, шаблонов и связей конвертации в папку...';
   state.syncConversionConfigError = '';
   renderConversionConfigSyncView();
 
+  let result = null;
   try {
     const payload = currentConversionConfigPayload();
     const response = await fetch('/api/conversion-config/deploy', {
@@ -2259,7 +2529,7 @@ async function saveConversionConfigsToFolder() {
       },
       body: JSON.stringify(payload)
     });
-    const result = await response.json();
+    result = await response.json();
     if (!response.ok || result.success === false) {
       throw new Error(result.message || result.error || `запись конфигураций конвертации не выполнена: ${response.status}`);
     }
@@ -2276,12 +2546,19 @@ async function saveConversionConfigsToFolder() {
       : '';
     state.syncConversionConfigMessage = `${conversionConfigStatsMessage('Сохранено и опубликовано')} Папка: ${conversionConfigFolderLabel()}.${runtime}${cacheMessage}`;
     state.syncConversionConfigError = '';
+    return result;
   } catch (error) {
     state.syncConversionConfigMessage = '';
     state.syncConversionConfigError = error.message;
+    if (throwOnError) {
+      throw error;
+    }
+    return null;
   } finally {
     state.syncingConversionConfigs = false;
-    render();
+    if (renderFinal) {
+      render();
+    }
   }
 }
 
@@ -2412,13 +2689,17 @@ function currentGeneralSettingsPayload() {
   return {
     version: 1,
     maxTraversalDepth: state.maxTraversalDepth,
-    defaultTemplateDeleteMode: state.defaultTemplateDeleteMode
+    defaultTemplateDeleteMode: state.defaultTemplateDeleteMode,
+    modelWorkspaceLayer: state.modelWorkspace.layer,
+    zabbixPublishPreferences: normalizeZabbixPublishPreferences(state.zabbixPublishPreferences)
   };
 }
 
 function applyGeneralSettingsPayload(payload, options = {}) {
   state.maxTraversalDepth = clampNumber(Number(payload?.maxTraversalDepth), 2, 2, 5);
   state.defaultTemplateDeleteMode = normalizeTemplateDeleteMode(payload?.defaultTemplateDeleteMode);
+  state.modelWorkspace.layer = payload?.modelWorkspaceLayer === 'suppression' ? 'suppression' : 'service';
+  state.zabbixPublishPreferences = normalizeZabbixPublishPreferences(payload?.zabbixPublishPreferences);
   const maxDepth = document.querySelector('#maxTraversalDepthSelect');
   if (maxDepth) {
     maxDepth.value = String(state.maxTraversalDepth);
@@ -2428,13 +2709,27 @@ function applyGeneralSettingsPayload(payload, options = {}) {
     templateDeleteMode.value = state.defaultTemplateDeleteMode;
   }
   applyTemplateDeleteModeDefaultToEditors();
+  applyZabbixPublishPreferencesToPanels();
 
   if (options.render !== false) {
     renderRuleEditors();
     renderTemplateEditors();
+    renderModelWorkspaceView();
     renderConversionConfigSyncView();
     renderZabbixTriggerDependenciesView();
   }
+}
+
+function normalizeZabbixPublishPreferences(value = {}) {
+  const layer = ['service', 'suppression', 'all'].includes(value?.layer) ? value.layer : 'service';
+  const scope = ['changes', 'full', 'manual'].includes(value?.scope) ? value.scope : 'changes';
+  return {
+    layer,
+    scope,
+    includeSla: value?.includeSla !== false,
+    includeDependencies: value?.includeDependencies !== false,
+    manualScope: String(value?.manualScope ?? '').trim()
+  };
 }
 
 function normalizeTemplateDeleteMode(value) {
@@ -2466,10 +2761,7 @@ function renderTemplateEditors() {
 
 function saveGeneralSettings() {
   try {
-    localStorage.setItem(GENERAL_SETTINGS_STORAGE_KEY, JSON.stringify({
-      savedAt: new Date().toISOString(),
-      settings: currentGeneralSettingsPayload()
-    }));
+    writeGeneralSettingsStorage();
     state.generalSettingsMessage = 'Настройки сохранены в локальном браузерном хранилище.';
     state.generalSettingsError = '';
   } catch (error) {
@@ -2478,6 +2770,21 @@ function saveGeneralSettings() {
   }
 
   renderGeneralSettingsView();
+}
+
+function writeGeneralSettingsStorage() {
+  localStorage.setItem(GENERAL_SETTINGS_STORAGE_KEY, JSON.stringify({
+    savedAt: new Date().toISOString(),
+    settings: currentGeneralSettingsPayload()
+  }));
+}
+
+function persistGeneralSettingsSilently() {
+  try {
+    writeGeneralSettingsStorage();
+  } catch (error) {
+    console.warn('General settings were not saved:', error);
+  }
 }
 
 function loadGeneralSettings(options = {}) {
@@ -2720,6 +3027,403 @@ function renderMicroserviceSettingsView() {
   status.classList.toggle('error', Boolean(configState.error));
 }
 
+function renderStorageAuditSettingsView() {
+  const summary = document.querySelector('#storageAuditSummary');
+  const status = document.querySelector('#storageAuditSettingsStatus');
+  const migrationResult = document.querySelector('#storageMigrationResult');
+  const redisCheckResult = document.querySelector('#redisRuntimeCheckResult');
+  const builderRedisCheckResult = document.querySelector('#builderRedisRuntimeCheckResult');
+  const coverageSnapshotResult = document.querySelector('#monitoringCoverageSnapshotResult');
+  const coverageSnapshotHistory = document.querySelector('#monitoringCoverageSnapshotHistory');
+  const refreshButton = document.querySelector('#refreshStorageAuditSettingsButton');
+  const applyButton = document.querySelector('#applyStorageAuditSettingsButton');
+  const checkRedisButton = document.querySelector('#checkRedisRuntimeButton');
+  const checkBuilderRedisButton = document.querySelector('#checkBuilderRedisRuntimeButton');
+  const dryRunMigrationButton = document.querySelector('#dryRunStateMigrationButton');
+  const applyMigrationButton = document.querySelector('#applyStateMigrationButton');
+  const runCoverageSnapshotButton = document.querySelector('#runMonitoringCoverageSnapshotButton');
+  const inputs = {
+    redisEnabled: document.querySelector('#redisEnabledInput'),
+    redisEndpoint: document.querySelector('#redisEndpointInput'),
+    redisKeyPrefix: document.querySelector('#redisKeyPrefixInput'),
+    redisFailureMode: document.querySelector('#redisFailureModeInput'),
+    redisOperationTtl: document.querySelector('#redisOperationTtlInput'),
+    redisLockTtl: document.querySelector('#redisLockTtlInput'),
+    redisLockExtend: document.querySelector('#redisLockExtendInput'),
+    redisCacheTtl: document.querySelector('#redisCacheTtlInput'),
+    durableProvider: document.querySelector('#durableStoreProviderInput'),
+    durableEndpoint: document.querySelector('#durableStoreEndpointInput'),
+    durableMigrationsEnabled: document.querySelector('#durableStoreMigrationsEnabledInput'),
+    coverageEnabled: document.querySelector('#coverageAuditEnabledInput'),
+    coverageTriggerMode: document.querySelector('#coverageTriggerModeInput'),
+    coverageExpectedPolicy: document.querySelector('#coverageExpectedPolicyInput'),
+    coverageHostIdAttribute: document.querySelector('#coverageHostIdAttributeInput'),
+    coverageRetentionDays: document.querySelector('#coverageRetentionDaysInput'),
+    coverageAllowOperationalDelta: document.querySelector('#coverageAllowOperationalDeltaInput'),
+    coverageMaxDeltaMinutes: document.querySelector('#coverageMaxDeltaMinutesInput'),
+    coverageAutoAfterFullGraph: document.querySelector('#coverageAutoAfterFullGraphInput'),
+    coverageAutoAfterScoped: document.querySelector('#coverageAutoAfterScopedInput')
+  };
+  if (!summary || !status || !refreshButton || !applyButton) {
+    return;
+  }
+
+  const configState = state.zabbixConfigSettings;
+  const runtime = configState.runtimeStorageStatus ?? {};
+  const settings = configState.settings ?? {};
+  const redis = runtime.redis ?? settings.redis ?? {};
+  const runtimeCoordination = runtime.runtimeCoordination ?? {};
+  const lookupCache = runtime.lookupCache ?? {};
+  const durable = runtime.durableStore ?? settings.durableStore ?? {};
+  const coverage = runtime.monitoringCoverageSnapshot ?? settings.monitoringCoverageAudit ?? {};
+  const storageState = durable.state ?? {};
+  const hasSettings = Boolean(configState.settings || configState.runtimeStorageStatus);
+  const busy = configState.loading || configState.applying || configState.migratingState || configState.runningCoverageSnapshot;
+  const placeholder = hasSettings ? '-' : 'ожидание настроек zabbixconfig2api';
+  const values = {
+    redisEnabled: redis.enabled === true ? 'true' : 'false',
+    redisEndpoint: hasSettings ? (redis.endpoint || (redis.connectionConfigured ? 'настроено' : 'не настроено')) : placeholder,
+    redisKeyPrefix: hasSettings ? (redis.keyPrefix || 'cmdb2m:test') : placeholder,
+    redisFailureMode: hasSettings ? (redis.failureMode || 'fallback') : 'fallback',
+    redisOperationTtl: hasSettings ? (redis.operationTtlSeconds ?? 86400) : '',
+    redisLockTtl: hasSettings ? (redis.lockTtlSeconds ?? 300) : '',
+    redisLockExtend: hasSettings ? (redis.lockExtendSeconds ?? 120) : '',
+    redisCacheTtl: hasSettings ? (redis.cacheDefaultTtlSeconds ?? 300) : '',
+    durableProvider: hasSettings ? (durable.provider || 'sqlite') : 'sqlite',
+    durableEndpoint: hasSettings ? (durable.endpoint || (durable.connectionConfigured ? 'настроено' : 'не настроено')) : placeholder,
+    durableMigrationsEnabled: durable.migrationsEnabled === false ? 'false' : 'true',
+    coverageEnabled: coverage.enabled === false ? 'false' : 'true',
+    coverageTriggerMode: hasSettings ? (coverage.triggerMode || 'manual') : 'manual',
+    coverageExpectedPolicy: hasSettings ? (coverage.defaultExpectedPolicy || 'rules_matched') : 'rules_matched',
+    coverageHostIdAttribute: hasSettings ? (coverage.hostIdAttribute || 'zabbix_main_hostid') : placeholder,
+    coverageRetentionDays: hasSettings ? (coverage.snapshotRetentionDays ?? 180) : '',
+    coverageAllowOperationalDelta: coverage.allowOperationalDelta === false ? 'false' : 'true',
+    coverageMaxDeltaMinutes: hasSettings ? (coverage.maxOperationalDeltaMinutes ?? 30) : '',
+    coverageAutoAfterFullGraph: coverage.autoSnapshotAfterFullGraphApply === true ? 'true' : 'false',
+    coverageAutoAfterScoped: coverage.autoSnapshotAfterScopedReconcile === true ? 'true' : 'false'
+  };
+
+  for (const [key, input] of Object.entries(inputs)) {
+    if (input) {
+      input.value = String(values[key] ?? '');
+    }
+  }
+
+  toggleInputsDisabled({
+    redisEnabled: inputs.redisEnabled,
+    redisKeyPrefix: inputs.redisKeyPrefix,
+    redisFailureMode: inputs.redisFailureMode,
+    redisOperationTtl: inputs.redisOperationTtl,
+    redisLockTtl: inputs.redisLockTtl,
+    redisLockExtend: inputs.redisLockExtend,
+    redisCacheTtl: inputs.redisCacheTtl,
+    durableProvider: inputs.durableProvider,
+    durableMigrationsEnabled: inputs.durableMigrationsEnabled,
+    coverageEnabled: inputs.coverageEnabled,
+    coverageTriggerMode: inputs.coverageTriggerMode,
+    coverageExpectedPolicy: inputs.coverageExpectedPolicy,
+    coverageHostIdAttribute: inputs.coverageHostIdAttribute,
+    coverageRetentionDays: inputs.coverageRetentionDays,
+    coverageAllowOperationalDelta: inputs.coverageAllowOperationalDelta,
+    coverageMaxDeltaMinutes: inputs.coverageMaxDeltaMinutes,
+    coverageAutoAfterFullGraph: inputs.coverageAutoAfterFullGraph,
+    coverageAutoAfterScoped: inputs.coverageAutoAfterScoped
+  }, busy);
+  refreshButton.disabled = busy;
+  applyButton.disabled = busy;
+  if (checkRedisButton) {
+    checkRedisButton.disabled = busy;
+  }
+  if (checkBuilderRedisButton) {
+    checkBuilderRedisButton.disabled = busy;
+  }
+  if (dryRunMigrationButton) {
+    dryRunMigrationButton.disabled = busy;
+  }
+  if (applyMigrationButton) {
+    applyMigrationButton.disabled = busy;
+  }
+  if (runCoverageSnapshotButton) {
+    runCoverageSnapshotButton.disabled = busy;
+  }
+
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Redis</span>
+      <strong>${escapeHtml(hasSettings ? (redis.enabled ? 'включен' : 'выключен') : '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Redis failure mode</span>
+      <strong>${escapeHtml(values.redisFailureMode)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Runtime coordination</span>
+      <strong>${escapeHtml(runtimeCoordination.backend || (redis.enabled ? 'local-memory-fallback' : 'local-memory'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Active runtime locks</span>
+      <strong>${escapeHtml(runtimeCoordination.activeLockCount ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Active operations</span>
+      <strong>${escapeHtml(runtimeCoordination.activeOperationCount ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Last runtime operation</span>
+      <strong>${escapeHtml(runtimeOperationSummary(runtimeCoordination.recentOperations?.[0]))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Lookup cache</span>
+      <strong>${escapeHtml(lookupCache.backend || (redis.enabled ? 'pending' : 'no-cache'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Durable provider</span>
+      <strong>${escapeHtml(values.durableProvider)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Membership backend</span>
+      <strong>${escapeHtml(`${durable.currentMembershipBackend || storageState.activeMembershipBackend || 'file'} сейчас`)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Membership targets</span>
+      <strong>${escapeHtml(storageState.targetMembershipCount ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Source membership</span>
+      <strong>${escapeHtml(storageState.sourceMembershipCount ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Pending hostid</span>
+      <strong>${escapeHtml(storageState.pendingSourceCount ?? '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Migration</span>
+      <strong>${escapeHtml(durable.migrationStatus || storageState.migrationStatus || '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Срезы покрытия</span>
+      <strong>${escapeHtml(hasSettings ? (coverage.enabled === false ? 'выключены' : 'включены') : '-')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Режим snapshot</span>
+      <strong>${escapeHtml(values.coverageTriggerMode)}</strong>
+    </div>
+  `;
+  if (migrationResult) {
+    migrationResult.innerHTML = renderRuntimeStorageMigrationResult(configState.migrationResult);
+  }
+  if (redisCheckResult) {
+    redisCheckResult.innerHTML = renderRedisRuntimeCheckResult(configState.redisCheckResult);
+  }
+  if (builderRedisCheckResult) {
+    builderRedisCheckResult.innerHTML = renderBuilderRedisRuntimeCheckResult(configState.builderRedisCheckResult);
+  }
+  if (coverageSnapshotResult) {
+    coverageSnapshotResult.innerHTML = renderMonitoringCoverageSnapshotResult(configState.coverageSnapshotResult);
+  }
+  if (coverageSnapshotHistory) {
+    coverageSnapshotHistory.innerHTML = renderMonitoringCoverageSnapshotHistory(configState.coverageSnapshotHistory);
+  }
+
+  status.textContent = configState.error
+    || configState.runtimeStorageError
+    || (configState.loading ? 'Загрузка настроек хранилищ и срезов покрытия из zabbixconfig2api...' : '')
+    || (configState.loadingRuntimeStorage ? 'Загрузка runtime-статуса membership-state...' : '')
+    || (configState.migratingState ? 'Выполняется операция migration dry-run/apply...' : '')
+    || (configState.runningCoverageSnapshot ? 'Формируется разовый срез покрытия мониторингом...' : '')
+    || (configState.applying ? 'Применение настроек хранилищ и reload zabbixconfig2api...' : '')
+    || configState.message
+    || runtimeCoordination.message
+    || 'Нажмите "Обновить из zabbixconfig2api", чтобы перечитать настройки. Срез покрытия считает текущие rules_matched membership-объекты и проверяет их hostid в Zabbix.';
+  status.classList.toggle('error', Boolean(configState.error || configState.runtimeStorageError));
+}
+
+function renderRuntimeStorageMigrationResult(result) {
+  if (!result) {
+    return `
+      <div class="rule-summary">
+        <span class="structure-mark">миграция state</span>
+        <span>Dry-run покажет, сколько membership targets, source bindings, trigger dependencies и graph objects будет перенесено в выбранный DurableStore. Apply уже пишет SQLite.</span>
+      </div>
+    `;
+  }
+
+  const layers = Array.isArray(result.layers) ? result.layers : [];
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">${escapeHtml(result.dryRun ? 'dry-run migration' : 'migration')}</span>
+      <strong>${escapeHtml(result.status || 'planned')}</strong>
+      <span>${escapeHtml(result.sourceBackend || '-')} -> ${escapeHtml(result.targetProvider || '-')}</span>
+      <span>targets ${escapeHtml(result.membershipCount ?? 0)} · sources ${escapeHtml(result.sourceMembershipCount ?? 0)} · pending ${escapeHtml(result.pendingSourceCount ?? 0)} · dependencies ${escapeHtml(result.triggerDependencyCount ?? 0)} · graph objects ${escapeHtml(result.appliedGraphObjectCount ?? 0)}</span>
+      ${result.message ? `<span>${escapeHtml(result.message)}</span>` : ''}
+    </div>
+    ${layers.length > 0 ? `
+      <div class="details-list">
+        ${layers.map((item) => `
+          <div class="rule-summary">
+            <span class="structure-mark">${escapeHtml(layerHumanLabel(item.layer || ''))}</span>
+            <span>targets ${escapeHtml(item.membershipCount ?? 0)} · sources ${escapeHtml(item.sourceMembershipCount ?? 0)} · pending ${escapeHtml(item.pendingSourceCount ?? 0)}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+  `;
+}
+
+function runtimeOperationSummary(operation) {
+  if (!operation) {
+    return '-';
+  }
+
+  const key = operation.operationKey || 'operation';
+  const status = operation.status || 'unknown';
+  const completedAt = operation.completedAtUtc || operation.updatedAtUtc || operation.startedAtUtc;
+  return `${status}: ${key}${completedAt ? ` · ${formatCacheTimestamp(completedAt)}` : ''}`;
+}
+
+function renderRedisRuntimeCheckResult(result) {
+  if (!result) {
+    return '';
+  }
+
+  const status = result.success === false ? 'ошибка' : (result.configured ? 'проверено' : 'Redis выключен');
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">Redis runtime</span>
+      <strong>${escapeHtml(status)}</strong>
+      <span>backend ${escapeHtml(result.backend || '-')}</span>
+      <span>redis ${escapeHtml(result.redisAvailable ? 'доступен' : 'недоступен/выключен')}</span>
+      <span>fallback ${escapeHtml(result.fallbackActive ? 'активен' : 'нет')}</span>
+      <span>locks ${escapeHtml(result.activeLockCount ?? 0)} · operations ${escapeHtml(result.activeOperationCount ?? 0)}</span>
+      ${result.message ? `<span>${escapeHtml(result.message)}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderBuilderRedisRuntimeCheckResult(result) {
+  if (!result) {
+    return '';
+  }
+
+  const status = result.success === false ? 'ошибка' : (result.configured ? 'проверено' : 'Redis выключен');
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">Redis semantic dedup</span>
+      <strong>${escapeHtml(status)}</strong>
+      <span>backend ${escapeHtml(result.backend || '-')}</span>
+      <span>redis ${escapeHtml(result.redisAvailable ? 'доступен' : 'недоступен/выключен')}</span>
+      <span>fallback ${escapeHtml(result.fallbackActive ? 'активен' : 'нет')}</span>
+      <span>окно dedup ${escapeHtml(result.semanticDeduplicationWindowSeconds ?? '-')} сек.</span>
+      ${result.message ? `<span>${escapeHtml(result.message)}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderMonitoringCoverageSnapshotResult(result) {
+  if (!result) {
+    return `
+      <div class="rule-summary">
+        <span class="structure-mark">срез покрытия</span>
+        <span>Кнопка формирует one-shot отчет по текущему membership-state: ожидаемые объекты, заполненный hostid, реально найденные Zabbix hosts и присутствие в service/suppression membership.</span>
+      </div>
+    `;
+  }
+
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">coverage snapshot</span>
+      <strong>${escapeHtml(result.status || 'completed')}</strong>
+      <span>ожидается ${escapeHtml(result.expectedObjects ?? 0)} · hostid ${escapeHtml(result.withHostId ?? 0)} (${escapeHtml(percentText(result.hostIdCoveragePercent))}) · найдено в Zabbix ${escapeHtml(result.existingZabbixHosts ?? 0)} (${escapeHtml(percentText(result.zabbixCoveragePercent))})</span>
+      <span>service ${escapeHtml(result.serviceMembershipObjects ?? 0)} · suppression ${escapeHtml(result.suppressionMembershipObjects ?? 0)} · оба слоя ${escapeHtml(result.bothLayerMembershipObjects ?? 0)}</span>
+      <span>без hostid ${escapeHtml(result.missingHostId ?? 0)} · hostid не найден в Zabbix ${escapeHtml(result.missingZabbixHosts ?? 0)}</span>
+      <span>${escapeHtml(formatCoverageSnapshotWindow(result))}</span>
+    </div>
+    ${warnings.length > 0 ? renderMonitoringCoverageSnapshotMessages('Предупреждения', warnings) : ''}
+    ${errors.length > 0 ? renderMonitoringCoverageSnapshotMessages('Ошибки', errors) : ''}
+    ${renderMonitoringCoverageSampleBlock('Без hostid', result.missingHostIdSamples)}
+    ${renderMonitoringCoverageSampleBlock('Hostid не найден в Zabbix', result.missingZabbixHostSamples)}
+    ${renderMonitoringCoverageSampleBlock('Только service membership', result.serviceOnlySamples)}
+    ${renderMonitoringCoverageSampleBlock('Только suppression membership', result.suppressionOnlySamples)}
+  `;
+}
+
+function renderMonitoringCoverageSnapshotHistory(history) {
+  if (!history) {
+    return `
+      <div class="rule-summary">
+        <span class="structure-mark">история срезов</span>
+        <span>После формирования snapshot история сохраняется в durable store и будет видна здесь.</span>
+      </div>
+    `;
+  }
+
+  const snapshots = Array.isArray(history.snapshots) ? history.snapshots : [];
+  return `
+    <details class="details-section" open>
+      <summary>История срезов покрытия (${escapeHtml(snapshots.length)}) · ${escapeHtml(history.backend || 'unknown')}</summary>
+      <div class="details-list">
+        ${history.error ? `<div class="rule-summary error-text">${escapeHtml(history.error)}</div>` : ''}
+        ${snapshots.length === 0 ? '<div class="rule-summary">Сохраненных срезов пока нет.</div>' : snapshots.map((item) => `
+          <div class="rule-summary">
+            <span class="structure-mark">${escapeHtml(item.status || 'completed')}</span>
+            <strong>${escapeHtml(formatCacheTimestamp(item.finishedAtUtc || item.finished_at_utc || ''))}</strong>
+            <span>ожидается ${escapeHtml(item.expectedObjects ?? 0)} · hostid ${escapeHtml(item.withHostId ?? 0)} (${escapeHtml(percentText(item.hostIdCoveragePercent))}) · найдено в Zabbix ${escapeHtml(item.existingZabbixHosts ?? 0)} (${escapeHtml(percentText(item.zabbixCoveragePercent))})</span>
+            <span>без hostid ${escapeHtml(item.missingHostId ?? 0)} · hostid не найден ${escapeHtml(item.missingZabbixHosts ?? 0)} · service ${escapeHtml(item.serviceMembershipObjects ?? 0)} · suppression ${escapeHtml(item.suppressionMembershipObjects ?? 0)}</span>
+            <span>${escapeHtml(item.snapshotId || '')}</span>
+          </div>
+        `).join('')}
+      </div>
+    </details>
+  `;
+}
+
+function renderMonitoringCoverageSnapshotMessages(title, items) {
+  return `
+    <details class="details-section" open>
+      <summary>${escapeHtml(title)} (${escapeHtml(items.length)})</summary>
+      <div class="details-list">
+        ${items.map((item) => `<div class="rule-summary">${escapeHtml(item)}</div>`).join('')}
+      </div>
+    </details>
+  `;
+}
+
+function renderMonitoringCoverageSampleBlock(title, samples) {
+  const rows = Array.isArray(samples) ? samples : [];
+  if (rows.length === 0) {
+    return '';
+  }
+
+  return `
+    <details class="details-section">
+      <summary>${escapeHtml(title)}: примеры ${escapeHtml(rows.length)}</summary>
+      <div class="details-list">
+        ${rows.map((item) => `
+          <div class="rule-summary">
+            <span class="structure-mark">${escapeHtml(item.sourceClass || '-')}</span>
+            <span>#${escapeHtml(item.sourceCardId || '-')}</span>
+            <span>hostid: ${escapeHtml((item.zabbixHostIds ?? []).join(', ') || '-')}</span>
+            <span>${escapeHtml(item.inServiceMembership ? 'service' : '')} ${escapeHtml(item.inSuppressionMembership ? 'suppression' : '')}</span>
+          </div>
+        `).join('')}
+      </div>
+    </details>
+  `;
+}
+
+function formatCoverageSnapshotWindow(result) {
+  const started = result.startedAtUtc ? formatCacheTimestamp(result.startedAtUtc) : '-';
+  const finished = result.finishedAtUtc ? formatCacheTimestamp(result.finishedAtUtc) : '-';
+  return `период среза ${started} -> ${finished}, policy=${result.expectedPolicy || '-'}`;
+}
+
+function percentText(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(2)}%` : '-';
+}
+
 function renderSlaSettingsView() {
   const summary = document.querySelector('#zabbixSlaSummary');
   const status = document.querySelector('#zabbixSlaStatus');
@@ -2802,35 +3506,53 @@ function renderSlaSettingsView() {
     || (stateItem.applying ? stateItem.message : '')
     || (stateItem.loadingStatus ? 'Загрузка настроек SLA...' : stateItem.message)
     || configState.message
-    || 'Настройки SLA будут загружены из zabbixconfig2api. Публикация SLA находится в "Сервисный слой -> Применить в Zabbix".';
+    || 'Настройки SLA будут загружены из zabbixconfig2api. Публикация SLA находится в "Модель -> Применить в Zabbix" при выбранном слое "Сервис".';
   status.classList.toggle('error', Boolean(configState.error || stateItem.error));
 }
 
 function renderZabbixSlaPublicationPanel() {
   const status = document.querySelector('#zabbixSlaPublicationStatus');
   const list = document.querySelector('#zabbixSlaPublicationPlanList');
-  const dryRunButton = document.querySelector('#zabbixSlaDryRunButton');
-  const publishButton = document.querySelector('#zabbixSlaPublishButton');
-  if (!status || !list || !dryRunButton || !publishButton) {
+  const detailFilter = document.querySelector('#zabbixSlaDetailFilter');
+  if (!status || !list) {
     return;
   }
 
   const stateItem = state.zabbixSla;
+  if (detailFilter) {
+    detailFilter.value = normalizeDiagnosticFilter(state.diagnosticFilters.zabbixSla);
+  }
   const configState = state.zabbixConfigSettings;
-  const serviceApplyState = zabbixApplyState('service');
-  const busy = stateItem.applying || stateItem.loadingStatus || configState.loading || configState.applying || serviceApplyState.applying;
-  dryRunButton.disabled = busy;
-  publishButton.disabled = busy;
+  const payloadProblems = topZabbixSlaProblems(stateItem.result);
   status.textContent = stateItem.error
+    || payloadProblems
     || (stateItem.applying ? stateItem.message : '')
     || (stateItem.loadingStatus ? 'Загрузка настроек SLA...' : '')
     || stateItem.message
     || 'Сначала опубликуйте сервисную модель в Zabbix, затем выполните dry-run SLA.';
   status.classList.toggle('error', Boolean(stateItem.error));
-  list.innerHTML = renderZabbixSlaPublicationDetails(stateItem.result);
+  list.innerHTML = renderZabbixSlaPublicationDetails(stateItem.result, state.diagnosticFilters.zabbixSla);
 }
 
-function renderZabbixSlaPublicationDetails(payload) {
+function topZabbixSlaProblems(payload) {
+  const items = [
+    ...(Array.isArray(payload?.errors) ? payload.errors : []),
+    ...(Array.isArray(payload?.warnings) ? payload.warnings : []),
+    Number(payload?.topologyServicesMissing ?? 0) > 0
+      ? `сервисов SLA не найдено в topology: ${payload.topologyServicesMissing}`
+      : '',
+    Number(payload?.topologyServicesWithoutLinks ?? 0) > 0
+      ? `сервисов SLA без parents/children: ${payload.topologyServicesWithoutLinks}`
+      : ''
+  ].filter(Boolean);
+  if (items.length === 0) {
+    return '';
+  }
+
+  return `Главные проблемы SLA: ${items.slice(0, 5).join('; ')}${items.length > 5 ? `; еще ${items.length - 5}` : ''}.`;
+}
+
+function renderZabbixSlaPublicationDetails(payload, filter = 'all') {
   if (!payload) {
     return `
       <div class="rule-summary">
@@ -2846,7 +3568,9 @@ function renderZabbixSlaPublicationDetails(payload) {
   const slas = Array.isArray(payload.sampleSlas) ? payload.sampleSlas : [];
   const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
   const errors = Array.isArray(payload.errors) ? payload.errors : [];
-  return `
+  const blocks = [];
+  if (diagnosticItemVisible('info', filter)) {
+    blocks.push(`
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(payload.dryRun ? 'dry-run SLA' : 'публикация SLA')}</span>
       <strong>${escapeHtml(zabbixApplyStatusLabel(payload.status || '-'))}</strong>
@@ -2855,35 +3579,46 @@ function renderZabbixSlaPublicationDetails(payload) {
       <span>топология: найдено ${escapeHtml(payload.topologyServicesFound ?? 0)} · не найдено ${escapeHtml(payload.topologyServicesMissing ?? 0)} · без parents/children ${escapeHtml(payload.topologyServicesWithoutLinks ?? 0)}</span>
       <span>действия сервисов: ${escapeHtml(serviceActions || '-')} · действия SLA: ${escapeHtml(slaActions || '-')}</span>
     </div>
-    ${slas.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('info', filter) && slas.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">SLA</span>
         <strong>${escapeHtml(slas.length)} примеров</strong>
         <span>${escapeHtml(slas.map((item) => `${item.slaName || item.policyKey}: ${item.slo}% · services ${item.serviceCount ?? 0} · schedule ${item.schedulePeriodCount ?? 0} · downtime ${item.managedExcludedDowntimeCount ?? 0} · ${item.action || 'planned'}`).join('; '))}</span>
       </div>
-    ` : ''}
-    ${services.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('info', filter) && services.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">сервисы</span>
         <strong>${escapeHtml(services.length)} примеров</strong>
         <span>${escapeHtml(services.map((item) => `${item.serviceName || '-'} (${item.classCode || '-'}#${item.cardId || '-'}) -> ${item.policyKey || '-'} · ${zabbixSlaServiceTopologyText(item)} · ${item.action || 'planned'}`).join('; '))}</span>
       </div>
-    ` : ''}
-    ${warnings.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('warn', filter) && warnings.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">предупреждения</span>
         <strong>${escapeHtml(warnings.length)}</strong>
         <span>${escapeHtml(warnings.join('; '))}</span>
       </div>
-    ` : ''}
-    ${errors.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('error', filter) && errors.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">ошибки</span>
         <strong>${escapeHtml(errors.length)}</strong>
         <span>${escapeHtml(errors.join('; '))}</span>
       </div>
-    ` : ''}
-  `;
+    `);
+  }
+
+  return blocks.length > 0 ? blocks.join('') : renderEmptyDiagnosticFilterResult(filter);
 }
 
 function keyValueCountersText(value) {
@@ -3913,6 +4648,8 @@ function setSourceLamp(selector, options) {
 }
 
 function renderDashboardView() {
+  renderDashboardSyncLights();
+
   const total = document.querySelector('#dashboardServiceCount');
   const healthy = document.querySelector('#dashboardHealthyCount');
   const failed = document.querySelector('#dashboardFailedCount');
@@ -3944,6 +4681,401 @@ function renderDashboardView() {
   list.innerHTML = services.length > 0
     ? services.map(renderHealthServiceCard).join('')
     : '<div class="empty-state">Нет данных проверки состояния.</div>';
+}
+
+function renderModelWorkspaceView() {
+  const layerSelect = document.querySelector('#modelWorkspaceLayerSelect');
+  const hint = document.querySelector('#modelWorkspaceLayerHint');
+  const summary = document.querySelector('#modelWorkspaceSummary');
+  const actions = document.querySelector('#modelWorkspaceActions');
+  if (!layerSelect || !hint || !summary || !actions) {
+    return;
+  }
+
+  const layerKey = state.modelWorkspace.layer === 'suppression' ? 'suppression' : 'service';
+  layerSelect.value = layerKey;
+  const stats = modelWorkspaceStats(layerKey);
+  hint.textContent = layerKey === 'service'
+    ? 'Service-слой: сервисные агрегаты, объекты сервиса, SLA и публикация service graph.'
+    : 'Suppression-слой: группы подавления, связи причин и trigger dependencies.';
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Классы схемы</span>
+      <strong>${escapeHtml(stats.schemaClasses)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Домены схемы</span>
+      <strong>${escapeHtml(stats.schemaDomains)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Статические правила</span>
+      <strong>${escapeHtml(stats.rules)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Шаблоны</span>
+      <strong>${escapeHtml(stats.templates)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Управляемые связи</span>
+      <strong>${escapeHtml(stats.relations)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Pending scope</span>
+      <strong>${escapeHtml(stats.dirtyScopes)}</strong>
+    </div>
+  `;
+  actions.innerHTML = modelWorkspaceActions(layerKey).map(renderModelWorkspaceAction).join('');
+}
+
+function renderUnifiedModelLayerSelects() {
+  const layerKey = state.modelWorkspace.layer === 'suppression' ? 'suppression' : 'service';
+  for (const selector of ['#modelRulesLayerSelect', '#modelTemplatesLayerSelect']) {
+    const field = document.querySelector(selector);
+    if (field) {
+      field.value = layerKey;
+    }
+  }
+}
+
+function modelWorkspaceStats(layerKey) {
+  const schemaLayer = schemaLayerForRuleLayer(layerKey);
+  const parsedRules = parseRuleDocument(layerKey);
+  const rules = parsedRules.ok ? parsedRules.document.rules ?? [] : [];
+  const templates = normalizeTemplateDocument(state.templateDocuments[layerKey], layerKey).templates;
+  const relationCounts = conversionConfigManagedRelationCounts();
+  return {
+    schemaClasses: state.classes.filter((item) => item.layer === schemaLayer || item.origin === 'model_root_superclass').length,
+    schemaDomains: state.domains.concat(state.suggestedDomains).filter((item) => item.layer === schemaLayer).length,
+    rules: rules.length,
+    templates: templates.length,
+    relations: relationCounts[layerKey] ?? 0,
+    dirtyScopes: zabbixDirtyScopeState(layerKey).entries.length
+  };
+}
+
+function modelWorkspaceActions(layerKey) {
+  const isService = layerKey === 'service';
+  return [
+    {
+      title: 'Схема',
+      summary: 'Классы и домены CMDBuild для выбранного слоя.',
+      view: isService ? 'serviceSchema' : 'suppressionSchema',
+      primary: true
+    },
+    ...(isService ? [{
+      title: 'Объекты сервиса',
+      summary: 'Ручные сервисы, SLA policy, calendar, downtime и их связи.',
+      view: 'serviceObjects'
+    }] : []),
+    {
+      title: 'Статические правила',
+      summary: 'Ручные правила автонаполнения выбранного слоя.',
+      view: 'modelRules'
+    },
+    {
+      title: 'Шаблоны',
+      summary: 'Шаблоны, которые разворачиваются в статические правила.',
+      view: 'modelTemplates'
+    },
+    {
+      title: 'Связи',
+      summary: 'Единый редактор связей: шаблон-шаблон, шаблон-правило и правило-правило.',
+      view: 'modelRelations'
+    },
+    {
+      title: 'Подготовить и сохранить правила',
+      summary: 'Проверка, материализация шаблонов и сохранение конфигурации.',
+      view: 'templateApply',
+      primary: true
+    },
+    {
+      title: 'Применить в Zabbix',
+      summary: isService
+        ? 'Единая публикация service graph, SLA, suppression graph и dependencies.'
+        : 'Единая публикация suppression graph, dependencies, service graph и SLA.',
+      view: 'modelZabbixApply',
+      primary: true
+    }
+  ];
+}
+
+function renderModelWorkspaceAction(action) {
+  return `
+    <button class="model-workspace-card ${action.primary ? 'primary' : ''}" type="button" data-model-workspace-view="${escapeHtml(action.view)}">
+      <strong>${escapeHtml(action.title)}</strong>
+      <span>${escapeHtml(action.summary)}</span>
+    </button>
+  `;
+}
+
+function renderModelZabbixApplyView() {
+  renderCompactZabbixPublicationConsoles();
+  renderModelZabbixApplySummary();
+}
+
+function renderModelZabbixApplySummary() {
+  const summary = document.querySelector('#modelZabbixApplySummary');
+  if (!summary) {
+    return;
+  }
+
+  const service = zabbixApplyState('service');
+  const suppression = zabbixApplyState('suppression');
+  const serviceStatus = service.status ?? {};
+  const suppressionStatus = suppression.status ?? {};
+  const serviceErrors = Number(serviceStatus.errorCommands ?? 0) + (service.error ? 1 : 0);
+  const suppressionErrors = Number(suppressionStatus.errorCommands ?? 0) + (suppression.error ? 1 : 0);
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Service graph</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(serviceStatus.lastStatus || serviceStatus.status || '-'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Service проверка</span>
+      <strong>${escapeHtml(service.lastGraphCheckOk ? 'успешна' : 'требуется')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Service ошибки</span>
+      <strong>${escapeHtml(serviceErrors)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">SLA</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(state.zabbixSla.status?.status || state.zabbixSla.result?.status || '-'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Suppression graph</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(suppressionStatus.lastStatus || suppressionStatus.status || '-'))}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Suppression проверка</span>
+      <strong>${escapeHtml(suppression.lastGraphCheckOk ? 'успешна' : 'требуется')}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Suppression ошибки</span>
+      <strong>${escapeHtml(suppressionErrors)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Dependencies</span>
+      <strong>${escapeHtml(zabbixApplyStatusLabel(state.zabbixTriggerDependencies.status?.status || state.zabbixTriggerDependencies.result?.status || '-'))}</strong>
+    </div>
+  `;
+}
+
+function renderDashboardSyncLights() {
+  const container = document.querySelector('#dashboardSyncLights');
+  if (!container) {
+    return;
+  }
+
+  const items = dashboardSyncLightItems();
+  container.innerHTML = items.map((item) => `
+    <button class="sync-light-card ${escapeHtml(item.state)}" type="button" data-sync-light="${escapeHtml(item.id)}" title="${escapeHtml(item.tooltip)}">
+      <span class="sync-light-dot" aria-hidden="true"></span>
+      <span class="sync-light-body">
+        <strong>${escapeHtml(item.title)}</strong>
+        <span>${escapeHtml(item.summary)}</span>
+        <small>${escapeHtml(item.actionLabel)}</small>
+      </span>
+    </button>
+  `).join('');
+}
+
+function dashboardSyncLightItems() {
+  const catalogError = cmdbCatalogError();
+  const uiRules = uiConversionRulesVersionInfo();
+  const relationCounts = conversionConfigManagedRelationCounts();
+  const serviceTemplates = normalizeTemplateDocument(state.templateDocuments.service, 'service').templates.length;
+  const suppressionTemplates = normalizeTemplateDocument(state.templateDocuments.suppression, 'suppression').templates.length;
+  const sharedTemplates = normalizeTemplateDocument(state.templateDocuments.shared, 'shared').templates.length;
+  const templatesTotal = serviceTemplates + suppressionTemplates + sharedTemplates;
+  const dirtyServiceCount = zabbixDirtyScopeState('service').entries.length;
+  const dirtySuppressionCount = zabbixDirtyScopeState('suppression').entries.length;
+  const dirtyTotal = dirtyServiceCount + dirtySuppressionCount;
+  const failedHealthCount = state.healthServices.filter((service) => service.status !== 'ok').length;
+  const microserviceRules = dashboardMicroserviceRulesSummary(uiRules);
+  const webhooksMissingCount = Array.isArray(state.webhookRuleCoverage?.missing)
+    ? state.webhookRuleCoverage.missing.length
+    : 0;
+  const conversionUpdatedAt = state.conversionConfigStorageUpdatedAt || state.conversionConfigCacheUpdatedAt;
+
+  return [
+    {
+      id: 'cmdbuild',
+      title: 'CMDBuild',
+      state: dashboardSyncState({
+        loading: state.syncingSources || state.loadingSourcesCache,
+        error: state.syncError || catalogError,
+        ok: Boolean(state.cmdbCacheUpdatedAt)
+      }),
+      summary: state.syncError || catalogError || dashboardUpdatedSummary(state.cmdbCacheUpdatedAt, 'кэш не загружен'),
+      actionLabel: 'Нажмите, чтобы синхронизировать каталог и карточки.',
+      tooltip: 'Синхронизировать CMDBuild с источником данных.'
+    },
+    {
+      id: 'zabbix',
+      title: 'Zabbix',
+      state: dashboardSyncState({
+        loading: state.checkingZabbix || state.loadingZabbixCache,
+        error: state.zabbixCheckError,
+        ok: Boolean(state.zabbixCacheUpdatedAt && state.zabbixCheck)
+      }),
+      summary: state.zabbixCheckError || dashboardUpdatedSummary(state.zabbixCacheUpdatedAt, 'кэш не загружен'),
+      actionLabel: 'Нажмите, чтобы обновить проверку Zabbix.',
+      tooltip: 'Проверить доступность Zabbix и обновить локальный кэш.'
+    },
+    {
+      id: 'webhooks',
+      title: 'Webhooks',
+      state: dashboardSyncState({
+        loading: state.checkingWebhooks || state.checkingWebhookRuleCoverage || state.loadingWebhooksCache,
+        error: state.webhooksCheckError || state.webhookRuleCoverageError,
+        warn: webhooksMissingCount > 0,
+        ok: Boolean(state.webhooksCacheUpdatedAt && state.webhooksCheck)
+      }),
+      summary: state.webhooksCheckError
+        || state.webhookRuleCoverageError
+        || (webhooksMissingCount > 0 ? `не покрыто source-классов: ${webhooksMissingCount}` : dashboardUpdatedSummary(state.webhooksCacheUpdatedAt, 'кэш не загружен')),
+      actionLabel: 'Нажмите, чтобы проверить webhooks и покрытие правил.',
+      tooltip: 'Проверить managed webhooks и покрытие source-классов.'
+    },
+    {
+      id: 'rules',
+      title: 'Правила',
+      state: dashboardSyncState({
+        loading: state.syncingConversionConfigs || state.loadingStoredConversionConfigs || state.loadingConversionConfigCache,
+        error: uiRules.ok ? state.syncConversionConfigError : 'ошибка локальных правил',
+        ok: Boolean(conversionUpdatedAt)
+      }),
+      summary: uiRules.ok
+        ? `${uiRules.totalRuleCount} правил; ${dashboardUpdatedSummary(conversionUpdatedAt, 'не сохранены')}`
+        : 'локальные правила содержат ошибку',
+      actionLabel: 'Нажмите, чтобы сохранить конфигурацию конвертации.',
+      tooltip: 'Сохранить правила, шаблоны и связи в папку конфигураций.'
+    },
+    {
+      id: 'templates',
+      title: 'Шаблоны',
+      state: dashboardSyncState({
+        loading: state.syncingConversionConfigs || state.loadingStoredConversionConfigs || state.loadingConversionConfigCache,
+        error: state.syncConversionConfigError,
+        ok: Boolean(conversionUpdatedAt),
+        warn: templatesTotal === 0
+      }),
+      summary: `${templatesTotal} шаблонов; ${dashboardUpdatedSummary(conversionUpdatedAt, 'не сохранены')}`,
+      actionLabel: 'Нажмите, чтобы сохранить шаблоны вместе с конфигурацией.',
+      tooltip: 'Сохранить шаблоны сервиса, подавления и общие шаблоны.'
+    },
+    {
+      id: 'relations',
+      title: 'Связи',
+      state: dashboardSyncState({
+        loading: state.syncingConversionConfigs || state.loadingStoredConversionConfigs || state.loadingConversionConfigCache,
+        error: state.syncConversionConfigError,
+        ok: Boolean(conversionUpdatedAt),
+        warn: relationCounts.total === 0
+      }),
+      summary: `${relationCounts.total} связей; сервис ${relationCounts.service}, подавление ${relationCounts.suppression}`,
+      actionLabel: 'Нажмите, чтобы сохранить связи вместе с конфигурацией.',
+      tooltip: 'Сохранить управляемые связи шаблонов и статических правил.'
+    },
+    {
+      id: 'microservices',
+      title: 'Микросервисы',
+      state: dashboardSyncState({
+        loading: state.checkingHealth,
+        error: state.healthCheckError || state.applierReloadError,
+        warn: failedHealthCount > 0 || microserviceRules.hasMismatch,
+        ok: state.healthServices.length > 0
+      }),
+      summary: state.healthCheckError
+        || state.applierReloadError
+        || (state.healthServices.length > 0
+          ? `доступно ${state.healthServices.length - failedHealthCount}, ошибок ${failedHealthCount}${microserviceRules.summary ? `; ${microserviceRules.summary}` : ''}`
+          : 'проверка еще не выполнялась'),
+      actionLabel: 'Нажмите, чтобы обновить состояние микросервисов.',
+      tooltip: 'Проверить состояние микросервисов и версии загруженной конфигурации.'
+    },
+    {
+      id: 'dirtyScopes',
+      title: 'Dirty scopes',
+      state: dashboardSyncState({
+        loading: false,
+        warn: dirtyTotal > 0,
+        ok: Boolean(zabbixDirtyScopeState('service').updatedAt || zabbixDirtyScopeState('suppression').updatedAt)
+      }),
+      summary: dirtyTotal > 0
+        ? `ожидают публикации: сервис ${dirtyServiceCount}, подавление ${dirtySuppressionCount}`
+        : 'нет локальных отложенных областей публикации',
+      actionLabel: 'Нажмите, чтобы обновить журнал dirty scopes с сервера.',
+      tooltip: 'Загрузить серверный журнал dirty scopes для scoped reconcile.'
+    }
+  ];
+}
+
+function dashboardMicroserviceRulesSummary(uiRules) {
+  const statuses = state.healthServices
+    .map((service) => readServiceConversionRulesStatus(service.payload))
+    .filter(Boolean);
+  if (statuses.length === 0) {
+    return { summary: '', hasMismatch: false };
+  }
+
+  const errors = statuses.filter((status) => status.error).length;
+  const mismatches = uiRules.ok
+    ? statuses.filter((status) => !compareConversionRulesVersions(uiRules, status)?.matches).length
+    : statuses.length;
+  if (errors > 0) {
+    return { summary: `ошибки правил ${errors}/${statuses.length}`, hasMismatch: true };
+  }
+  if (mismatches > 0) {
+    return { summary: `расхождения правил ${mismatches}/${statuses.length}`, hasMismatch: true };
+  }
+
+  return { summary: `правила совпали ${statuses.length}/${statuses.length}`, hasMismatch: false };
+}
+
+function dashboardSyncState({ loading = false, error = '', warn = false, ok = false }) {
+  if (loading) {
+    return 'loading';
+  }
+  if (error) {
+    return 'error';
+  }
+  if (warn) {
+    return 'warn';
+  }
+  if (ok) {
+    return 'ok';
+  }
+  return 'unknown';
+}
+
+function dashboardUpdatedSummary(updatedAt, fallback) {
+  return updatedAt ? `обновлено ${formatCacheTimestamp(updatedAt)}` : fallback;
+}
+
+async function handleDashboardSyncLightClick(event) {
+  const button = event.target.closest('[data-sync-light]');
+  if (!button) {
+    return;
+  }
+
+  const id = button.dataset.syncLight;
+  if (id === 'cmdbuild') {
+    await syncDataSources();
+  } else if (id === 'zabbix') {
+    await checkZabbixSource();
+  } else if (id === 'webhooks') {
+    await checkWebhooksSource();
+    await checkWebhooksAgainstConversionRules();
+  } else if (id === 'rules' || id === 'templates' || id === 'relations') {
+    await saveConversionConfigsToFolder();
+  } else if (id === 'microservices') {
+    await checkHealthServices();
+  } else if (id === 'dirtyScopes') {
+    await loadServerZabbixDirtyScopes();
+    renderDashboardView();
+  }
 }
 
 function renderHealthServiceCard(service) {
@@ -4589,6 +5721,11 @@ function conversionRuleSourceClasses() {
         requiredFields: new Set(),
         payloadFields: new Set()
       };
+      const readinessField = zabbixHostIdAttributeName();
+      if (readinessField) {
+        current.requiredFields.add(readinessField);
+        current.payloadFields.add(readinessField);
+      }
       current.layers.add(layerKey === 'service' ? 'service' : 'suppression');
       current.ruleCount += 1;
       if (rule.rule_id || rule.name) {
@@ -6846,6 +7983,7 @@ function renderTemplatePopulationDimensionPreview(layerKey) {
           <th>dimension.key</th>
           <th>dimension.value</th>
           <th>dimension.name</th>
+          <th>stable/display</th>
           <th>dimension.regexKey</th>
           <th>ключ цели</th>
         </tr>
@@ -6856,6 +7994,7 @@ function renderTemplatePopulationDimensionPreview(layerKey) {
             <td><code>${escapeHtml(row.key)}</code></td>
             <td><code>${escapeHtml(row.value)}</code></td>
             <td><code>${escapeHtml(row.name)}</code></td>
+            <td><code>${escapeHtml(row.stableValue)}</code> / <code>${escapeHtml(row.displayValue)}</code></td>
             <td><code>${escapeHtml(row.regexKey)}</code></td>
             <td><code>${escapeHtml(row.targetKey)}</code></td>
           </tr>
@@ -6992,6 +8131,8 @@ function templatePopulationDimensionPreviewRow(template, candidate, dimension, v
     key: dimensionContext.key,
     value: dimensionContext.value,
     name: dimensionContext.name,
+    stableValue: dimensionContext.stableValue,
+    displayValue: dimensionContext.displayValue,
     regexKey: dimensionContext.regexKey,
     targetKey: renderTemplateString(dimension.key_template || DEFAULT_TEMPLATE_POPULATION_DIMENSION.key_template, context)
   };
@@ -7164,6 +8305,127 @@ async function copyText(text) {
   if (!copied) {
     throw new Error('clipboard API недоступен');
   }
+}
+
+async function copyContainerText(selector, button = null) {
+  const container = document.querySelector(selector);
+  const text = String(container?.innerText || container?.textContent || '').trim();
+  if (!text) {
+    if (button) {
+      const previous = button.textContent;
+      button.textContent = 'Нет текста';
+      window.setTimeout(() => {
+        button.textContent = previous;
+      }, 1200);
+    }
+    return;
+  }
+
+  await copyText(text);
+  if (button) {
+    const previous = button.textContent;
+    button.textContent = 'Скопировано';
+    window.setTimeout(() => {
+      button.textContent = previous;
+    }, 1200);
+  }
+}
+
+async function copyDiagnosticJson(kind, button = null) {
+  const payload = diagnosticJsonPayload(kind);
+  await copyText(JSON.stringify(payload, diagnosticJsonReplacer(), 2));
+  if (button) {
+    const previous = button.textContent;
+    button.textContent = 'JSON скопирован';
+    window.setTimeout(() => {
+      button.textContent = previous;
+    }, 1200);
+  }
+}
+
+function diagnosticJsonPayload(kind) {
+  if (kind === 'zabbixSla') {
+    return state.zabbixSla.result ?? state.zabbixSla.status ?? {};
+  }
+  if (kind === 'zabbixTriggerDependencies') {
+    return state.zabbixTriggerDependencies.result ?? state.zabbixTriggerDependencies.status ?? {};
+  }
+  if (kind === 'zabbixPreflight') {
+    return zabbixPreflightReport(state.zabbixPreflight);
+  }
+  if (kind === 'relationGraph') {
+    const graph = relationGraphData(state.relationGraph.layer);
+    if (graph.error) {
+      return graph;
+    }
+
+    const filteredGraph = relationGraphFilter(graph, state.relationGraph.filter);
+    const online = relationGraphOnlineSnapshot(filteredGraph, state.relationGraph);
+    return {
+      layer: state.relationGraph.layer,
+      direction: state.relationGraph.direction,
+      filter: state.relationGraph.filter,
+      graph: filteredGraph,
+      findings: relationGraphFindings(filteredGraph, online),
+      online: state.relationGraph.showOnline ? online : null
+    };
+  }
+
+  return {};
+}
+
+function diagnosticJsonReplacer() {
+  const seen = new WeakSet();
+  return (_key, value) => {
+    if (value instanceof Map) {
+      return Object.fromEntries(value);
+    }
+    if (value instanceof Set) {
+      return [...value];
+    }
+    if (value && typeof value === 'object') {
+      if (seen.has(value)) {
+        return '[Circular]';
+      }
+      seen.add(value);
+    }
+    return value;
+  };
+}
+
+function normalizeDiagnosticFilter(value) {
+  return ['all', 'errors', 'warnings'].includes(value) ? value : 'all';
+}
+
+function diagnosticItemVisible(severity, filter) {
+  const normalized = normalizeDiagnosticFilter(filter);
+  if (normalized === 'all') {
+    return true;
+  }
+  if (normalized === 'errors') {
+    return severity === 'error' || severity === 'blocked';
+  }
+  return severity === 'warn' || severity === 'warning';
+}
+
+function renderEmptyDiagnosticFilterResult(filter) {
+  return `
+    <div class="rule-summary">
+      <span class="structure-mark">фильтр: ${escapeHtml(diagnosticFilterLabel(filter))}</span>
+      <span>Нет записей для выбранного фильтра.</span>
+    </div>
+  `;
+}
+
+function diagnosticFilterLabel(filter) {
+  const normalized = normalizeDiagnosticFilter(filter);
+  if (normalized === 'errors') {
+    return 'ошибки';
+  }
+  if (normalized === 'warnings') {
+    return 'предупреждения';
+  }
+  return 'все';
 }
 
 function selectionFilterRowTemplate(row, fieldOptions) {
@@ -8909,7 +10171,7 @@ function saveTemplateEditorChange(layerKey, options = {}) {
             : '';
       setTemplateEditorStatus(
         layerKey,
-        `Шаблон ${template.name} сохранен в текущей конфигурации. Далее: Создать/обновить правила по шаблонам и связям, затем Синхронизация -> Конфигурации конвертации -> Сохранить правила, шаблоны и связи в папку.${lifecycleMessage}`);
+        `Шаблон ${template.name} сохранен в текущей конфигурации. Далее: Подготовить и сохранить правила.${lifecycleMessage}`);
     }
 
     if (options.render !== false) {
@@ -9261,6 +10523,7 @@ async function loadZabbixApplyStatus(layerKey) {
   } finally {
     stateItem.loadingStatus = false;
     renderZabbixApplyView(layerKey);
+    renderCompactZabbixPublicationConsoles();
   }
 }
 
@@ -9685,6 +10948,7 @@ async function loadZabbixConfigSettings(options = {}) {
     configState.error = '';
     configState.message = 'Загрузка настроек zabbixconfig2api из файла конфигурации...';
     renderMicroserviceSettingsView();
+    renderStorageAuditSettingsView();
     renderSlaSettingsView();
 
     const response = await fetch('/api/admin/zabbixconfig2api/settings', {
@@ -9705,6 +10969,7 @@ async function loadZabbixConfigSettings(options = {}) {
   } finally {
     configState.loading = false;
     renderMicroserviceSettingsView();
+    renderStorageAuditSettingsView();
     renderSlaSettingsView();
   }
 }
@@ -9721,9 +10986,172 @@ function applyZabbixConfigSettingsPayload(result) {
   }
 }
 
+async function loadRuntimeStorageStatus() {
+  const configState = state.zabbixConfigSettings;
+  try {
+    configState.loadingRuntimeStorage = true;
+    configState.runtimeStorageError = '';
+    renderStorageAuditSettingsView();
+
+    const response = await fetch('/api/zabbix/runtime-storage/status', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `статус хранилищ не получен: ${response.status}`);
+    }
+
+    configState.runtimeStorageStatus = result;
+  } catch (error) {
+    configState.runtimeStorageError = error.message;
+  } finally {
+    configState.loadingRuntimeStorage = false;
+    renderStorageAuditSettingsView();
+  }
+}
+
+async function checkRedisRuntime() {
+  const configState = state.zabbixConfigSettings;
+  try {
+    configState.loadingRuntimeStorage = true;
+    configState.runtimeStorageError = '';
+    renderStorageAuditSettingsView();
+
+    const response = await fetch('/api/zabbix/redis/check', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `проверка Redis не выполнена: ${response.status}`);
+    }
+
+    configState.redisCheckResult = result;
+    configState.message = result.message || 'Проверка Redis выполнена.';
+    await loadRuntimeStorageStatus();
+  } catch (error) {
+    configState.runtimeStorageError = error.message;
+  } finally {
+    configState.loadingRuntimeStorage = false;
+    renderStorageAuditSettingsView();
+  }
+}
+
+async function checkBuilderRedisRuntime() {
+  const configState = state.zabbixConfigSettings;
+  try {
+    configState.loadingRuntimeStorage = true;
+    configState.runtimeStorageError = '';
+    renderStorageAuditSettingsView();
+
+    const response = await fetch('/api/rules/redis/check', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `проверка Redis builder не выполнена: ${response.status}`);
+    }
+
+    configState.builderRedisCheckResult = result;
+    configState.message = result.message || 'Проверка Redis builder выполнена.';
+  } catch (error) {
+    configState.runtimeStorageError = error.message;
+  } finally {
+    configState.loadingRuntimeStorage = false;
+    renderStorageAuditSettingsView();
+  }
+}
+
+async function runRuntimeStorageMigration(options = {}) {
+  const configState = state.zabbixConfigSettings;
+  const dryRun = options.dryRun !== false;
+  try {
+    configState.migratingState = true;
+    configState.runtimeStorageError = '';
+    configState.message = dryRun
+      ? 'Проверка миграции membership-state...'
+      : 'Запуск миграции membership-state...';
+    renderStorageAuditSettingsView();
+
+    const response = await fetch(
+      dryRun ? '/api/zabbix/runtime-storage/migration/dry-run' : '/api/zabbix/runtime-storage/migration/apply',
+      {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    const result = await response.json();
+    configState.migrationResult = result;
+    if (!response.ok) {
+      throw new Error(result.detail || result.message || result.error || `миграция state не выполнена: ${response.status}`);
+    }
+
+    configState.message = result.message || (dryRun ? 'Dry-run миграции state завершен.' : 'Миграция state завершена.');
+    await loadRuntimeStorageStatus();
+  } catch (error) {
+    configState.runtimeStorageError = error.message;
+  } finally {
+    configState.migratingState = false;
+    renderStorageAuditSettingsView();
+  }
+}
+
+async function runMonitoringCoverageSnapshot() {
+  const configState = state.zabbixConfigSettings;
+  try {
+    configState.runningCoverageSnapshot = true;
+    configState.runtimeStorageError = '';
+    configState.message = 'Формируется разовый срез покрытия мониторингом...';
+    renderStorageAuditSettingsView();
+
+    const response = await fetch('/api/zabbix/monitoring-coverage/snapshot', {
+      method: 'POST',
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    configState.coverageSnapshotResult = result;
+    if (!response.ok) {
+      throw new Error(result.detail || result.message || result.error || `срез покрытия не сформирован: ${response.status}`);
+    }
+
+    await loadMonitoringCoverageSnapshotHistory({ render: false });
+    configState.message = `Срез покрытия сформирован: найдено в Zabbix ${result.existingZabbixHosts ?? 0} из ${result.expectedObjects ?? 0}.`;
+  } catch (error) {
+    configState.runtimeStorageError = error.message;
+  } finally {
+    configState.runningCoverageSnapshot = false;
+    renderStorageAuditSettingsView();
+  }
+}
+
+async function loadMonitoringCoverageSnapshotHistory(options = {}) {
+  const shouldRender = options.render !== false;
+  const configState = state.zabbixConfigSettings;
+  try {
+    const response = await fetch('/api/zabbix/monitoring-coverage/snapshots?limit=20', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.message || result.error || `история срезов не загружена: ${response.status}`);
+    }
+
+    configState.coverageSnapshotHistory = result;
+  } catch (error) {
+    configState.coverageSnapshotHistory = {
+      backend: 'unknown',
+      error: error.message,
+      snapshots: []
+    };
+  } finally {
+    if (shouldRender) {
+      renderStorageAuditSettingsView();
+    }
+  }
+}
+
 async function applyZabbixConfigSettings(section) {
   const configState = state.zabbixConfigSettings;
   const isSla = section === 'sla';
+  const isStorageAudit = section === 'storageAudit';
   try {
     configState.applying = true;
     configState.error = '';
@@ -9733,11 +11161,14 @@ async function applyZabbixConfigSettings(section) {
       state.zabbixSla.message = 'Применение настроек SLA...';
     }
     renderMicroserviceSettingsView();
+    renderStorageAuditSettingsView();
     renderSlaSettingsView();
 
     const payload = isSla
       ? collectZabbixSlaSettingsPayload()
-      : collectZabbixGeneralSettingsPayload();
+      : isStorageAudit
+        ? collectStorageAuditSettingsPayload()
+        : collectZabbixGeneralSettingsPayload();
     const response = await fetch('/api/admin/zabbixconfig2api/settings', {
       method: 'PUT',
       headers: {
@@ -9752,7 +11183,7 @@ async function applyZabbixConfigSettings(section) {
     }
 
     applyZabbixConfigSettingsPayload(result);
-    if (!isSla) {
+    if (!isSla && !isStorageAudit) {
       clearZabbixConfigUiOverrides();
     }
     const reloadText = result.reload?.configurationVersion
@@ -9762,6 +11193,9 @@ async function applyZabbixConfigSettings(section) {
     if (isSla) {
       await loadZabbixSlaStatus();
       state.zabbixSla.message = configState.message;
+    } else if (isStorageAudit) {
+      configState.message = `Настройки хранилищ и срезов покрытия сохранены и применены:${reloadText}.`;
+      await loadRuntimeStorageStatus();
     } else {
       await loadZabbixTriggerDependenciesStatus({ renderDependenciesView: false });
     }
@@ -9774,6 +11208,7 @@ async function applyZabbixConfigSettings(section) {
   } finally {
     configState.applying = false;
     renderMicroserviceSettingsView();
+    renderStorageAuditSettingsView();
     renderSlaSettingsView();
   }
 }
@@ -9795,6 +11230,35 @@ function collectZabbixGeneralSettingsPayload() {
     },
     zabbix: {
       requestTimeoutMs: numericInputValue('#zabbixRequestTimeoutMsInput')
+    }
+  };
+}
+
+function collectStorageAuditSettingsPayload() {
+  return {
+    redis: {
+      enabled: (document.querySelector('#redisEnabledInput')?.value ?? 'false') === 'true',
+      keyPrefix: document.querySelector('#redisKeyPrefixInput')?.value ?? '',
+      failureMode: document.querySelector('#redisFailureModeInput')?.value ?? 'fallback',
+      operationTtlSeconds: numericInputValue('#redisOperationTtlInput'),
+      lockTtlSeconds: numericInputValue('#redisLockTtlInput'),
+      lockExtendSeconds: numericInputValue('#redisLockExtendInput'),
+      cacheDefaultTtlSeconds: numericInputValue('#redisCacheTtlInput')
+    },
+    durableStore: {
+      provider: document.querySelector('#durableStoreProviderInput')?.value ?? 'sqlite',
+      migrationsEnabled: (document.querySelector('#durableStoreMigrationsEnabledInput')?.value ?? 'true') === 'true'
+    },
+    monitoringCoverageAudit: {
+      enabled: (document.querySelector('#coverageAuditEnabledInput')?.value ?? 'true') === 'true',
+      triggerMode: document.querySelector('#coverageTriggerModeInput')?.value ?? 'manual',
+      defaultExpectedPolicy: document.querySelector('#coverageExpectedPolicyInput')?.value ?? 'rules_matched',
+      hostIdAttribute: document.querySelector('#coverageHostIdAttributeInput')?.value ?? 'zabbix_main_hostid',
+      snapshotRetentionDays: numericInputValue('#coverageRetentionDaysInput'),
+      allowOperationalDelta: (document.querySelector('#coverageAllowOperationalDeltaInput')?.value ?? 'true') === 'true',
+      maxOperationalDeltaMinutes: numericInputValue('#coverageMaxDeltaMinutesInput'),
+      autoSnapshotAfterFullGraphApply: (document.querySelector('#coverageAutoAfterFullGraphInput')?.value ?? 'false') === 'true',
+      autoSnapshotAfterScopedReconcile: (document.querySelector('#coverageAutoAfterScopedInput')?.value ?? 'false') === 'true'
     }
   };
 }
@@ -9953,14 +11417,15 @@ function collectZabbixTriggerDependencyRunPayload() {
 }
 
 async function previewZabbixApplyScope(layerKey) {
-  const scope = collectZabbixApplyScope(layerKey);
   const stateItem = zabbixApplyState(layerKey);
   try {
+    const defaultScope = ensureZabbixDirtyScopeDefault(layerKey, 'preview');
+    const scope = collectZabbixApplyScope(layerKey);
     stateItem.scopePreviewLoading = true;
     stateItem.scopePreviewError = '';
     stateItem.error = '';
     stateItem.message = scope.scopeKeys.length > 0
-      ? `Проверяю scope ${zabbixLayerTitle(layerKey, 'genitive')} без чтения source-карточек...`
+      ? `Проверяю scope ${zabbixLayerTitle(layerKey, 'genitive')} без чтения source-карточек${defaultScope.applied ? ' (подставлен из dirty scopes)' : ''}...`
       : 'Scope пуст: следующий запуск будет готовить весь слой.';
     renderZabbixApplyView(layerKey);
 
@@ -10004,6 +11469,7 @@ async function previewZabbixApplyScope(layerKey) {
 async function applyZabbixLayer(layerKey, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const publishMode = options.publishMode === 'full' ? 'full' : 'changes';
+  const defaultScope = ensureZabbixDirtyScopeDefault(layerKey, dryRun ? 'preview' : 'apply');
   const scope = collectZabbixApplyScope(layerKey);
   const stateItem = zabbixApplyState(layerKey);
   if (!dryRun && !stateItem.lastGraphCheckOk) {
@@ -10030,8 +11496,8 @@ async function applyZabbixLayer(layerKey, options = {}) {
       dryRun
     };
     stateItem.message = dryRun
-      ? `Проверка ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''} перед публикацией в Zabbix...`
-      : `Публикация ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''} в Zabbix...`;
+      ? `Проверка ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''}${defaultScope.applied ? ' из dirty scopes' : ''} перед публикацией в Zabbix...`
+      : `Публикация ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''}${defaultScope.applied ? ' из dirty scopes' : ''} в Zabbix...`;
     renderZabbixApplyView(layerKey);
 
     progressTimer = window.setInterval(() => {
@@ -10107,6 +11573,288 @@ async function applyZabbixLayer(layerKey, options = {}) {
   }
 }
 
+async function runCompactZabbixPublication(panel, options = {}) {
+  const dryRun = Boolean(options.dryRun);
+  const targets = compactZabbixPublicationTargets(panel);
+  const mode = compactZabbixPublicationMode(panel);
+  const substeps = compactZabbixPublicationSubsteps(panel, targets);
+  const status = panel.querySelector('[data-zabbix-publish-status]');
+  if (targets.length === 0) {
+    if (status) {
+      status.textContent = 'Не выбран слой публикации.';
+      status.classList.add('error');
+    }
+    return;
+  }
+
+  applyCompactZabbixManualScope(panel, targets, mode);
+  if (mode.scopeMode === 'manual') {
+    const missingManualScope = targets.filter((layerKey) => collectZabbixApplyScope(layerKey).scopeKeys.length === 0);
+    if (missingManualScope.length > 0) {
+      if (status) {
+        status.textContent = `Для ручного scope заполните поле scope в технических деталях слоя: ${missingManualScope.map((item) => zabbixLayerTitle(item)).join(', ')}.`;
+        status.classList.add('error');
+      }
+      return;
+    }
+  }
+
+  if (!dryRun) {
+    const uncheckedLayers = targets.filter((layerKey) => !zabbixApplyState(layerKey).lastGraphCheckOk);
+    if (uncheckedLayers.length > 0) {
+      if (status) {
+        status.textContent = `Перед публикацией выполните успешную проверку: ${uncheckedLayers.map((item) => zabbixLayerTitle(item)).join(', ')}.`;
+        status.classList.add('error');
+      }
+      return;
+    }
+  }
+
+  if (status) {
+    status.textContent = dryRun
+      ? `Проверка: ${compactZabbixPublicationTargetsText(targets)}, ${compactZabbixScopeText(mode.scopeMode)}${compactZabbixSubstepsText(substeps)}...`
+      : `Публикация: ${compactZabbixPublicationTargetsText(targets)}, ${compactZabbixScopeText(mode.scopeMode)}${compactZabbixSubstepsText(substeps)}...`;
+    status.classList.remove('error');
+  }
+
+  for (const layerKey of targets) {
+    if (status) {
+      status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: ${zabbixLayerTitle(layerKey)}, ${compactZabbixScopeText(mode.scopeMode)}...`;
+    }
+    await applyZabbixLayer(layerKey, { dryRun, publishMode: mode.publishMode });
+    if (zabbixApplyState(layerKey).error) {
+      break;
+    }
+    if (layerKey === 'service' && substeps.sla) {
+      if (status) {
+        status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: SLA после service-графа...`;
+      }
+      await runZabbixSlaPublication({ dryRun });
+      if (state.zabbixSla.error) {
+        break;
+      }
+    }
+    if (layerKey === 'suppression' && substeps.dependencies) {
+      if (status) {
+        status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: trigger dependencies после suppression-графа...`;
+      }
+      await runZabbixTriggerDependencies({ dryRun });
+      if (state.zabbixTriggerDependencies.error) {
+        break;
+      }
+    }
+  }
+
+  renderCompactZabbixPublicationConsole(panel);
+}
+
+function renderCompactZabbixPublicationConsoles() {
+  document.querySelectorAll('[data-zabbix-publish-console]').forEach((panel) => {
+    renderCompactZabbixPublicationConsole(panel);
+  });
+  renderModelZabbixApplySummary();
+}
+
+function renderCompactZabbixPublicationConsole(panel) {
+  const status = panel.querySelector('[data-zabbix-publish-status]');
+  const progress = panel.querySelector('[data-zabbix-publish-progress]');
+  const checkButton = panel.querySelector('[data-zabbix-publish-check]');
+  const applyButton = panel.querySelector('[data-zabbix-publish-apply]');
+  if (!status || !checkButton || !applyButton) {
+    return;
+  }
+
+  const targets = compactZabbixPublicationTargets(panel);
+  const mode = compactZabbixPublicationMode(panel);
+  const substeps = compactZabbixPublicationSubsteps(panel, targets);
+  const manualScopeBlock = panel.querySelector('.zabbix-publish-manual-scope');
+  const manualScopeInput = panel.querySelector('[data-zabbix-publish-manual-scope]');
+  if (manualScopeBlock) {
+    manualScopeBlock.classList.toggle('hidden', mode.scopeMode !== 'manual');
+  }
+  const busy = targets.some((layerKey) => {
+    const stateItem = zabbixApplyState(layerKey);
+    return stateItem.applying || stateItem.loadingStatus || stateItem.scopePreviewLoading;
+  }) || state.zabbixSla.applying || state.zabbixTriggerDependencies.applying;
+  applyCompactZabbixManualScope(panel, targets, mode);
+  const unchecked = targets.filter((layerKey) => !zabbixApplyState(layerKey).lastGraphCheckOk);
+  const errors = targets
+    .map((layerKey) => zabbixApplyState(layerKey).error)
+    .concat(substeps.sla ? [state.zabbixSla.error] : [])
+    .concat(substeps.dependencies ? [state.zabbixTriggerDependencies.error] : [])
+    .filter(Boolean);
+  const manualScopeMissing = mode.scopeMode === 'manual'
+    && !String(manualScopeInput?.value || '').trim()
+    && targets.some((layerKey) => collectZabbixApplyScope(layerKey).scopeKeys.length === 0);
+  checkButton.disabled = busy || targets.length === 0;
+  applyButton.disabled = busy || targets.length === 0 || unchecked.length > 0 || manualScopeMissing;
+  applyButton.title = manualScopeMissing
+    ? 'Для ручного scope заполните поле в компактной консоли или в техническом блоке слоя.'
+    : unchecked.length > 0
+    ? `Сначала выполните успешную проверку: ${unchecked.map((item) => zabbixLayerTitle(item)).join(', ')}.`
+    : '';
+  const readyText = unchecked.length > 0
+    ? `к публикации не готово: ${unchecked.map((item) => zabbixLayerTitle(item)).join(', ')}`
+    : manualScopeMissing
+      ? 'для ручного scope нужно заполнить поле'
+    : 'проверка пройдена для выбранных слоев';
+  status.textContent = errors[0]
+    || `${compactZabbixPublicationTargetsText(targets)} · ${compactZabbixScopeText(mode.scopeMode)}${compactZabbixSubstepsText(substeps)} · ${readyText}`;
+  status.classList.toggle('error', errors.length > 0);
+  if (progress) {
+    progress.innerHTML = renderCompactZabbixPublicationProgress(targets, substeps);
+  }
+}
+
+function applyZabbixPublishPreferencesToPanels() {
+  const preferences = normalizeZabbixPublishPreferences(state.zabbixPublishPreferences);
+  document.querySelectorAll('[data-zabbix-publish-console]').forEach((panel) => {
+    const layer = panel.querySelector('[data-zabbix-publish-layer]');
+    const scope = panel.querySelector('[data-zabbix-publish-scope]');
+    const manualScope = panel.querySelector('[data-zabbix-publish-manual-scope]');
+    const includeSla = panel.querySelector('[data-zabbix-publish-include-sla]');
+    const includeDependencies = panel.querySelector('[data-zabbix-publish-include-dependencies]');
+    if (layer) {
+      layer.value = preferences.layer;
+    }
+    if (scope) {
+      scope.value = preferences.scope;
+    }
+    if (manualScope) {
+      manualScope.value = preferences.manualScope;
+    }
+    if (includeSla) {
+      includeSla.checked = preferences.includeSla;
+    }
+    if (includeDependencies) {
+      includeDependencies.checked = preferences.includeDependencies;
+    }
+  });
+}
+
+function rememberCompactZabbixPublicationPreferences(panel) {
+  const preferences = normalizeZabbixPublishPreferences({
+    layer: panel.querySelector('[data-zabbix-publish-layer]')?.value,
+    scope: panel.querySelector('[data-zabbix-publish-scope]')?.value,
+    includeSla: panel.querySelector('[data-zabbix-publish-include-sla]')?.checked !== false,
+    includeDependencies: panel.querySelector('[data-zabbix-publish-include-dependencies]')?.checked !== false,
+    manualScope: panel.querySelector('[data-zabbix-publish-manual-scope]')?.value || ''
+  });
+  state.zabbixPublishPreferences = preferences;
+  applyZabbixPublishPreferencesToPanels();
+  persistGeneralSettingsSilently();
+}
+
+function renderCompactZabbixPublicationProgress(targets, substeps) {
+  const rows = [];
+  if (targets.includes('service')) {
+    rows.push(compactZabbixPublicationProgressRow('service', 'Service graph', zabbixApplyState('service')));
+    if (substeps.sla) {
+      rows.push(compactZabbixPublicationProgressRow('sla', 'SLA', state.zabbixSla));
+    }
+  }
+  if (targets.includes('suppression')) {
+    rows.push(compactZabbixPublicationProgressRow('suppression', 'Suppression graph', zabbixApplyState('suppression')));
+    if (substeps.dependencies) {
+      rows.push(compactZabbixPublicationProgressRow('dependencies', 'Trigger dependencies', state.zabbixTriggerDependencies));
+    }
+  }
+  return rows.length > 0 ? rows.join('') : '';
+}
+
+function compactZabbixPublicationProgressRow(kind, label, stateItem) {
+  const payload = stateItem?.result ?? stateItem?.status ?? {};
+  const status = stateItem?.applying
+    ? 'выполняется'
+    : stateItem?.error
+      ? 'ошибка'
+      : zabbixApplyStatusLabel(payload?.status || payload?.lastStatus || (kind === 'service' || kind === 'suppression' ? payload?.lastStatus : '') || '-');
+  const details = compactZabbixPublicationProgressDetails(kind, payload);
+  return `
+    <div class="zabbix-publish-progress-row ${stateItem?.error ? 'error' : stateItem?.applying ? 'running' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(status)}</strong>
+      <small>${escapeHtml(details || '-')}</small>
+    </div>
+  `;
+}
+
+function compactZabbixPublicationProgressDetails(kind, payload) {
+  if (kind === 'sla') {
+    return `SLA к публикации ${payload?.slasPlanned ?? 0}, сервисов ${payload?.serviceCandidates ?? 0}, применено SLA ${payload?.slasApplied ?? 0}`;
+  }
+  if (kind === 'dependencies') {
+    return `dependencies ${payload?.desiredDependencyCount ?? 0}, aggregate ${payload?.aggregateCount ?? 0}, к обновлению ${payload?.triggersToUpdate ?? 0}`;
+  }
+  return `команд ${payload?.commandsReceived ?? payload?.commandsBuilt ?? 0}, применено ${payload?.appliedCommands ?? payload?.commandsAppliedDirect ?? payload?.commandsPublished ?? 0}, ошибки ${payload?.errorCommands ?? 0}`;
+}
+
+function compactZabbixPublicationTargets(panel) {
+  const layer = panel.querySelector('[data-zabbix-publish-layer]')?.value ?? panel.dataset.defaultLayer ?? 'service';
+  if (layer === 'all') {
+    return ['service', 'suppression'];
+  }
+  return [layer === 'suppression' ? 'suppression' : 'service'];
+}
+
+function compactZabbixPublicationMode(panel) {
+  const scopeMode = panel.querySelector('[data-zabbix-publish-scope]')?.value ?? 'changes';
+  return {
+    scopeMode,
+    publishMode: scopeMode === 'full' ? 'full' : 'changes'
+  };
+}
+
+function compactZabbixPublicationSubsteps(panel, targets) {
+  return {
+    sla: targets.includes('service') && panel.querySelector('[data-zabbix-publish-include-sla]')?.checked === true,
+    dependencies: targets.includes('suppression') && panel.querySelector('[data-zabbix-publish-include-dependencies]')?.checked === true
+  };
+}
+
+function applyCompactZabbixManualScope(panel, targets, mode) {
+  if (mode.scopeMode !== 'manual') {
+    return;
+  }
+
+  const value = String(panel.querySelector('[data-zabbix-publish-manual-scope]')?.value || '').trim();
+  if (!value) {
+    return;
+  }
+
+  for (const layerKey of targets) {
+    const targetPanel = document.querySelector(`[data-zabbix-apply-layer="${layerKey}"]`);
+    const input = targetPanel?.querySelector('[data-zabbix-apply-scope-keys]');
+    if (input && input.value !== value) {
+      input.value = value;
+    }
+  }
+}
+
+function compactZabbixPublicationTargetsText(targets) {
+  return targets.length === 2
+    ? 'Сервис + каскадное подавление'
+    : zabbixLayerTitle(targets[0] ?? 'service');
+}
+
+function compactZabbixScopeText(scopeMode) {
+  if (scopeMode === 'full') {
+    return 'полный граф';
+  }
+  if (scopeMode === 'manual') {
+    return 'ручной scope';
+  }
+  return 'изменения';
+}
+
+function compactZabbixSubstepsText(substeps) {
+  const items = [
+    substeps.sla ? 'SLA' : '',
+    substeps.dependencies ? 'trigger dependencies' : ''
+  ].filter(Boolean);
+  return items.length > 0 ? ` + ${items.join(' + ')}` : '';
+}
+
 async function cancelZabbixApply(layerKey) {
   const stateItem = zabbixApplyState(layerKey);
   const operationId = stateItem.progress?.operationId;
@@ -10156,6 +11904,9 @@ async function finishZabbixApplyResult(layerKey, result, dryRun, operationId, op
   const finalMessage = zabbixApplyFinalMessage(layerKey, result, dryRun);
   await loadZabbixApplyStatus(layerKey);
   stateItem.message = finalMessage;
+  if (!dryRun && !resultErrors.length) {
+    await loadServerZabbixDirtyScopes();
+  }
   const status = String(result.status || '').toLowerCase();
   if (dryRun) {
     stateItem.lastGraphCheckOk = resultErrors.length === 0
@@ -10301,6 +12052,111 @@ function saveZabbixDirtyScopeJournal() {
   }
 }
 
+async function loadServerZabbixDirtyScopes() {
+  try {
+    const response = await fetch('/api/zabbix/runtime-storage/dirty-scopes', {
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.error || `server dirty scope не загружен: ${response.status}`);
+    }
+
+    mergeServerZabbixDirtyScopeSnapshot(result);
+  } catch (error) {
+    console.warn('Server Zabbix dirty scope journal was not loaded:', error);
+  }
+}
+
+function mergeServerZabbixDirtyScopeSnapshot(snapshot) {
+  const layers = Array.isArray(snapshot?.layers) ? snapshot.layers : [];
+  for (const layerKey of ['service', 'suppression']) {
+    const layer = layers.find((item) => String(item?.layer ?? '').toLowerCase() === layerKey);
+    if (!layer) {
+      continue;
+    }
+
+    const serverEntries = (Array.isArray(layer.entries) ? layer.entries : [])
+      .map((entry) => ({
+        key: String(entry?.scopeKey ?? entry?.key ?? '').trim(),
+        status: String(entry?.status ?? 'pending').trim().toLowerCase(),
+        reason: String(entry?.reason ?? '').trim(),
+        lastResult: String(entry?.lastReconcileResult ?? '').trim(),
+        updatedAt: String(entry?.updatedAtUtc ?? entry?.updatedAt ?? '').trim()
+      }))
+      .filter((entry) => entry.key);
+    const pendingEntries = serverEntries.filter((entry) => entry.status !== 'processed');
+    const failedEntries = serverEntries.filter((entry) => entry.status === 'failed');
+    const localScope = zabbixDirtyScopeState(layerKey);
+    const merged = normalizeZabbixDirtyScope({
+      entries: pendingEntries.concat(localScope.entries ?? []),
+      updatedAt: String(layer.updatedAtUtc ?? localScope.updatedAt ?? '').trim(),
+      lastReason: pendingEntries.find((entry) => entry.reason)?.reason || localScope.lastReason,
+      omittedCount: localScope.omittedCount,
+      warnings: [
+        ...(snapshot?.error ? [`Server dirty scope: ${snapshot.error}`] : []),
+        ...failedEntries.slice(0, 5).map((entry) => `Dirty scope failed: ${entry.key}${entry.lastResult ? ` - ${entry.lastResult}` : ''}`),
+        ...(localScope.warnings ?? [])
+      ]
+    });
+    localScope.entries = merged.entries;
+    localScope.updatedAt = merged.updatedAt;
+    localScope.lastReason = merged.lastReason;
+    localScope.omittedCount = merged.omittedCount;
+    localScope.warnings = merged.warnings;
+    renderZabbixDirtyScope(layerKey);
+  }
+
+  saveZabbixDirtyScopeJournal();
+}
+
+async function persistZabbixDirtyScopeToServer(layerKey, entries, reason) {
+  try {
+    const response = await fetch('/api/zabbix/runtime-storage/dirty-scopes', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        layer: layerKey,
+        reason,
+        entries: (entries ?? []).map((entry) => ({
+          scopeType: 'target',
+          scopeKey: entry.key,
+          reason: entry.reason || reason,
+          status: 'pending'
+        }))
+      })
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.message || result.error || `server dirty scope не сохранен: ${response.status}`);
+    }
+
+    mergeServerZabbixDirtyScopeSnapshot(result.snapshot);
+  } catch (error) {
+    console.warn('Server Zabbix dirty scope journal was not saved:', error);
+  }
+}
+
+async function clearServerZabbixDirtyScope(layerKey) {
+  try {
+    const response = await fetch(`/api/zabbix/runtime-storage/dirty-scopes/${encodeURIComponent(layerKey)}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' }
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || result.message || result.error || `server dirty scope не очищен: ${response.status}`);
+    }
+
+    mergeServerZabbixDirtyScopeSnapshot(result.snapshot);
+  } catch (error) {
+    console.warn('Server Zabbix dirty scope journal was not cleared:', error);
+  }
+}
+
 function markZabbixDirtyScope(layerKey, keys, reason = '', options = {}) {
   const normalizedLayer = layerKey === 'suppression' ? 'suppression' : 'service';
   const rawKeys = Array.isArray(keys) ? keys : [keys];
@@ -10356,6 +12212,11 @@ function markZabbixDirtyScope(layerKey, keys, reason = '', options = {}) {
   applyState.lastGraphCheckAt = '';
   saveZabbixDirtyScopeJournal();
   renderZabbixDirtyScope(normalizedLayer);
+  void persistZabbixDirtyScopeToServer(normalizedLayer, uniqueKeys.map((key) => ({
+    key,
+    reason: String(reason ?? '').trim(),
+    updatedAt: now
+  })), String(reason ?? '').trim());
 }
 
 function markZabbixDirtyScopeFromRules(layerKey, rules, reason = '', options = {}) {
@@ -10383,7 +12244,7 @@ function markZabbixDirtyScopeFromTemplateApplyResult(layerKey, result) {
   markZabbixDirtyScopeFromRules(
     layerKey,
     result?.reconcile?.generatedRules ?? [],
-    `Создать/обновить правила по шаблонам и связям: изменено ${changedCount}`,
+    `Подготовить и сохранить правила: изменено ${changedCount}`,
     { warning });
 }
 
@@ -10447,7 +12308,7 @@ function markZabbixDirtyScopeForLinkRelationChange(
   const affectedRules = zabbixRulesForLinkEntity(layerKey, sourceType, sourceId)
     .concat(zabbixRulesForLinkEntity(layerKey, targetType, targetId));
   const warning = sourceType === 'template' || targetType === 'template'
-    ? 'Связь затрагивает шаблон: перед публикацией в Zabbix выполните "Создать/обновить правила по шаблонам и связям".'
+    ? 'Связь затрагивает шаблон: перед публикацией в Zabbix выполните "Подготовить и сохранить правила".'
     : '';
   markZabbixDirtyScopeFromRules(layerKey, affectedRules, reason, { warning });
 }
@@ -10486,6 +12347,38 @@ function applyZabbixDirtyScopeToInput(layerKey) {
   renderZabbixApplyView(layerKey);
 }
 
+function pendingZabbixDirtyScopeKeys(layerKey) {
+  const scope = zabbixDirtyScopeState(layerKey);
+  return uniqueStrings((scope.entries ?? [])
+    .map((entry) => String(entry?.key ?? '').trim())
+    .filter(Boolean));
+}
+
+function zabbixApplyScopeInput(layerKey) {
+  const panel = document.querySelector(`[data-zabbix-apply-layer="${layerKey}"]`);
+  return panel?.querySelector('[data-zabbix-apply-scope-keys]') ?? null;
+}
+
+function ensureZabbixDirtyScopeDefault(layerKey, reason = 'apply') {
+  const input = zabbixApplyScopeInput(layerKey);
+  if (!input || String(input.value || '').trim()) {
+    return { applied: false, count: 0 };
+  }
+
+  const keys = pendingZabbixDirtyScopeKeys(layerKey);
+  if (keys.length === 0) {
+    return { applied: false, count: 0 };
+  }
+
+  input.value = keys.join('\n');
+  const stateItem = zabbixApplyState(layerKey);
+  stateItem.dirtyScopeDefaultApplied = true;
+  stateItem.message = reason === 'preview'
+    ? `Scope из server-side dirty scopes подставлен автоматически для проверки: ${keys.length} ключей.`
+    : `Scope из server-side dirty scopes подставлен автоматически: ${keys.length} ключей.`;
+  return { applied: true, count: keys.length };
+}
+
 function clearZabbixDirtyScope(layerKey) {
   const scope = zabbixDirtyScopeState(layerKey);
   scope.entries = [];
@@ -10493,8 +12386,10 @@ function clearZabbixDirtyScope(layerKey) {
   scope.lastReason = '';
   scope.omittedCount = 0;
   scope.warnings = [];
+  zabbixApplyState(layerKey).dirtyScopeDefaultApplied = false;
   saveZabbixDirtyScopeJournal();
   renderZabbixDirtyScope(layerKey);
+  void clearServerZabbixDirtyScope(layerKey);
 }
 
 function renderZabbixDirtyScope(layerKey) {
@@ -10517,7 +12412,7 @@ function renderZabbixDirtyScope(layerKey) {
   }
 
   if (entries.length === 0 && warnings.length === 0) {
-    summary.innerHTML = '<span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>';
+    summary.innerHTML = '<span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка синхронизируется с server-side dirty scopes и локальным журналом браузера.</span>';
     return;
   }
 
@@ -10531,7 +12426,8 @@ function renderZabbixDirtyScope(layerKey) {
   summary.innerHTML = `
     <strong>Pending scope: ${escapeHtml(entries.length)} ключей${omittedText}</strong>
     <span>${escapeHtml(scope.lastReason || 'Последние изменения правил/шаблонов')}</span>
-    <span>${escapeHtml(scope.updatedAt ? `сохранено в локальном журнале: ${formatCacheTimestamp(scope.updatedAt)}` : 'сохраняется в локальном журнале браузера')}</span>
+    <span>Если поле scope пустое, dry-run/apply возьмет эти ключи автоматически.</span>
+    <span>${escapeHtml(scope.updatedAt ? `обновлено: ${formatCacheTimestamp(scope.updatedAt)}` : 'синхронизируется с server-side dirty scopes')}</span>
     ${examples ? `<span>Примеры: ${escapeHtml(examples)}</span>` : ''}
     ${warnings.map((warning) => `<span class="error-text">${escapeHtml(warning)}</span>`).join('')}
   `;
@@ -10609,40 +12505,19 @@ function renderZabbixApplyView(layerKey) {
   const summary = panel.querySelector('[data-zabbix-apply-summary]');
   const status = panel.querySelector('[data-zabbix-apply-status]');
   const list = panel.querySelector('[data-zabbix-apply-list]');
-  const refreshButton = panel.querySelector('[data-zabbix-apply-refresh]');
-  const dryRunButton = panel.querySelector('[data-zabbix-apply-dry-run]');
-  const publishButton = panel.querySelector('[data-zabbix-apply-publish]');
-  const fullDryRunButton = panel.querySelector('[data-zabbix-apply-full-dry-run]');
-  const fullPublishButton = panel.querySelector('[data-zabbix-apply-full-publish]');
-  const cancelButton = panel.querySelector('[data-zabbix-apply-cancel]');
+  const planFilter = panel.querySelector('[data-zabbix-plan-filter]');
   const scopePreviewButton = panel.querySelector('[data-zabbix-scope-preview]');
-  if (!summary || !status || !list || !refreshButton || !dryRunButton || !publishButton || !cancelButton) {
+  if (!summary || !status || !list) {
     return;
+  }
+  if (planFilter) {
+    planFilter.value = stateItem.planFilter || 'all';
   }
 
   const busy = stateItem.applying || stateItem.loadingStatus || stateItem.scopePreviewLoading;
-  refreshButton.disabled = busy;
-  dryRunButton.disabled = busy;
-  publishButton.disabled = busy || !stateItem.lastGraphCheckOk;
   if (scopePreviewButton) {
     scopePreviewButton.disabled = busy;
   }
-  if (fullDryRunButton) {
-    fullDryRunButton.disabled = busy;
-  }
-
-  if (fullPublishButton) {
-    fullPublishButton.disabled = busy || !stateItem.lastGraphCheckOk;
-    fullPublishButton.title = stateItem.lastGraphCheckOk
-      ? ''
-      : 'Сначала выполните успешную проверку графа без ошибок.';
-  }
-
-  publishButton.title = stateItem.lastGraphCheckOk
-    ? ''
-    : 'Сначала выполните успешную проверку графа без ошибок.';
-  cancelButton.disabled = !stateItem.applying && !['running', 'starting', 'configured', 'canceling']
-    .includes(String(stateItem.progress?.status || '').toLowerCase());
 
   const layerStatus = stateItem.status ?? {};
   const reconcile = layerStatus.reconcile ?? {};
@@ -10716,6 +12591,7 @@ function renderZabbixApplyView(layerKey) {
 
   renderZabbixDirtyScope(layerKey);
   list.innerHTML = renderZabbixApplyDetails(layerKey, stateItem);
+  renderCompactZabbixPublicationConsoles();
   if (layerKey === 'service') {
     renderZabbixSlaPublicationPanel();
   }
@@ -10731,6 +12607,7 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
   const operationErrors = Array.isArray(result?.errors) ? result.errors.filter((item) => item) : [];
   const errors = Array.isArray(layerStatus.errors) ? layerStatus.errors : [];
   const warnings = Array.isArray(layerStatus.warnings) ? layerStatus.warnings : [];
+  const topProblems = operationErrors.concat(errors).concat(warnings).slice(0, 5);
   const membershipTargets = Array.isArray(layerStatus.membershipTargets) ? layerStatus.membershipTargets : [];
   const operationPerformance = progress?.performance ?? result?.performance;
   return `
@@ -10747,6 +12624,7 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
       <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
       <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : zabbixApplyLastRunLabel(layerKey)) : 'ожидание запуска')}</strong>
       <span>правил ${escapeHtml(result?.ruleCount ?? 0)} · классов-источников ${escapeHtml(result?.sourceClassCount ?? 0)} · карточек ${escapeHtml(result?.cardsScanned ?? 0)} · команд ${escapeHtml(result?.commandsBuilt ?? 0)}</span>
+      ${topProblems.length > 0 ? `<span class="error-text">главные проблемы: ${escapeHtml(topProblems.join('; '))}</span>` : ''}
       <span>топики: ${escapeHtml((result?.topics ?? (result?.topic ? [result.topic] : [])).join(', ') || '-')}</span>
       <span>последняя команда: ${escapeHtml(layerStatus.lastRuleName || layerStatus.lastRuleId || '-')} -> ${escapeHtml(layerStatus.lastTargetClass || '-')}:${escapeHtml(layerStatus.lastTargetKey || '-')}</span>
     </div>
@@ -11052,6 +12930,7 @@ function renderZabbixTriggerDependenciesView() {
   const summary = document.querySelector('#zabbixTriggerDependenciesSummary');
   const status = document.querySelector('#zabbixTriggerDependenciesStatus');
   const list = document.querySelector('#zabbixTriggerDependenciesList');
+  const detailFilter = document.querySelector('#zabbixTriggerDependenciesDetailFilter');
   const refreshButton = document.querySelector('#zabbixTriggerDependenciesRefreshButton');
   const dryRunButton = document.querySelector('#zabbixTriggerDependenciesDryRunButton');
   const applyButton = document.querySelector('#zabbixTriggerDependenciesApplyButton');
@@ -11060,6 +12939,9 @@ function renderZabbixTriggerDependenciesView() {
   }
 
   const stateItem = state.zabbixTriggerDependencies;
+  if (detailFilter) {
+    detailFilter.value = normalizeDiagnosticFilter(state.diagnosticFilters.zabbixTriggerDependencies);
+  }
   const busy = stateItem.applying || stateItem.loadingStatus;
   refreshButton.disabled = busy;
   dryRunButton.disabled = busy;
@@ -11175,21 +13057,48 @@ function renderZabbixTriggerDependenciesView() {
   `;
 
   status.textContent = stateItem.error
+    || topZabbixTriggerDependencyProblems(payload)
     || stateItem.message
     || payload.message
     || payload.lastMessage
     || 'Сначала примените suppression-модель в Zabbix, затем выполните dry-run dependencies.';
   status.classList.toggle('error', Boolean(stateItem.error) || (payload.status || payload.lastStatus) === 'error');
-  list.innerHTML = renderZabbixTriggerDependenciesDetails(payload);
+  list.innerHTML = renderZabbixTriggerDependenciesDetails(payload, state.diagnosticFilters.zabbixTriggerDependencies);
 }
 
-function renderZabbixTriggerDependenciesDetails(payload) {
+function topZabbixTriggerDependencyProblems(payload) {
+  const items = [
+    ...(Array.isArray(payload?.errors) ? payload.errors : []),
+    ...(Array.isArray(payload?.warnings) ? payload.warnings : []),
+    Number(payload?.unsupportedTriggerExpressionCount ?? 0) > 0
+      ? `trigger expressions не приняты: ${payload.unsupportedTriggerExpressionCount}`
+      : '',
+    Number(payload?.unsupportedAggregateItemCount ?? 0) > 0
+      ? `unsupported aggregate items: ${payload.unsupportedAggregateItemCount}`
+      : '',
+    Number(payload?.hostsWithoutSelectedSourceTriggers ?? 0) > 0
+      ? `hosts без выбранных trigger-ов: ${payload.hostsWithoutSelectedSourceTriggers}`
+      : '',
+    Number(payload?.aggregateComplexityErrorCount ?? 0) > 0
+      ? `ошибок сложности aggregate formula: ${payload.aggregateComplexityErrorCount}`
+      : ''
+  ].filter(Boolean);
+  if (items.length === 0) {
+    return '';
+  }
+
+  return `Главные проблемы dependencies: ${items.slice(0, 5).join('; ')}${items.length > 5 ? `; еще ${items.length - 5}` : ''}.`;
+}
+
+function renderZabbixTriggerDependenciesDetails(payload, filter = 'all') {
   const samples = Array.isArray(payload?.sampleDependencies) ? payload.sampleDependencies : [];
   const aggregates = Array.isArray(payload?.sampleAggregates) ? payload.sampleAggregates : [];
   const unsupportedAggregateItems = Array.isArray(payload?.unsupportedAggregateItems) ? payload.unsupportedAggregateItems : [];
   const warnings = Array.isArray(payload?.warnings) ? payload.warnings : [];
   const errors = Array.isArray(payload?.errors) ? payload.errors : [];
-  return `
+  const blocks = [];
+  if (diagnosticItemVisible('info', filter)) {
+    blocks.push(`
     <div class="rule-summary">
       <span class="structure-mark">параметры Zabbix API</span>
       <span>таймаут=${escapeHtml(zabbixRequestTimeoutText(payload?.zabbixRequestTimeoutMs))} · размер trigger.get=${escapeHtml(payload?.triggerGetBatchSize ?? '-')} · пачек=${escapeHtml(payload?.triggerGetBatchCount ?? '-')} · время=${escapeHtml(zabbixElapsedText(payload?.triggerGetElapsedMs))}</span>
@@ -11221,38 +13130,51 @@ function renderZabbixTriggerDependenciesDetails(payload) {
       <span>${escapeHtml(payload?.dependencyTriggerSelector || payload?.dependencyTriggerSelectorSummary || '-')}</span>
       <span>Определяет, какие leaf/source trigger-ы получают Zabbix dependencies от ближайшей suppression-группы.</span>
     </div>
-    ${unsupportedAggregateItems.length > 0 ? renderUnsupportedAggregateItems(unsupportedAggregateItems) : ''}
-    ${aggregates.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('error', filter) && unsupportedAggregateItems.length > 0) {
+    blocks.push(renderUnsupportedAggregateItems(unsupportedAggregateItems));
+  }
+  if (diagnosticItemVisible('info', filter) && aggregates.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">aggregate triggers</span>
         <strong>${escapeHtml(aggregates.length)} примеров</strong>
         <span>Каждый suppression-объект получает calculated item и trigger причины; текущее состояние считает Zabbix.</span>
       </div>
       ${aggregates.slice(0, 100).map(renderZabbixSuppressionAggregateSample).join('')}
-    ` : ''}
-    ${samples.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('info', filter) && samples.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">примеры dependencies</span>
         <strong>${escapeHtml(samples.length)} примеров</strong>
         <span>${escapeHtml(payload?.hasMoreSamples ? 'Список ограничен лимитом.' : 'Показаны рассчитанные примеры.')}</span>
       </div>
       ${samples.slice(0, 100).map(renderZabbixTriggerDependencySample).join('')}
-    ` : ''}
-    ${warnings.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('warn', filter) && warnings.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">предупреждения</span>
         <strong>${escapeHtml(warnings.length)}</strong>
         <span>${escapeHtml(warnings.join('; '))}</span>
       </div>
-    ` : ''}
-    ${errors.length > 0 ? `
+    `);
+  }
+  if (diagnosticItemVisible('error', filter) && errors.length > 0) {
+    blocks.push(`
       <div class="rule-summary">
         <span class="structure-mark">ошибки</span>
         <strong>${escapeHtml(errors.length)}</strong>
         <span>${escapeHtml(errors.join('; '))}</span>
       </div>
-    ` : ''}
-  `;
+    `);
+  }
+
+  return blocks.length > 0 ? blocks.join('') : renderEmptyDiagnosticFilterResult(filter);
 }
 
 function zabbixRequestTimeoutText(value) {
@@ -11550,14 +13472,16 @@ function renderZabbixObjectPlan(plan, layerKey) {
   }
 
   const suppressionMode = layerKey === 'suppression';
-  const pageSize = 25;
-  const pageCount = Math.max(1, Math.ceil(objects.length / pageSize));
   const stateItem = zabbixApplyState(layerKey);
+  const filter = stateItem.planFilter || 'all';
+  const filteredObjects = zabbixObjectPlanFilteredObjects(objects, filter);
+  const pageSize = 25;
+  const pageCount = Math.max(1, Math.ceil(filteredObjects.length / pageSize));
   const page = Math.min(Math.max(1, Number(stateItem.planPage) || 1), pageCount);
   stateItem.planPage = page;
   const start = (page - 1) * pageSize;
-  const visibleObjects = objects.slice(start, start + pageSize);
-  const shownFrom = objects.length === 0 ? 0 : start + 1;
+  const visibleObjects = filteredObjects.slice(start, start + pageSize);
+  const shownFrom = filteredObjects.length === 0 ? 0 : start + 1;
   const shownTo = start + visibleObjects.length;
   const hasMore = Boolean(plan.hasMoreObjects);
   const rootServices = Array.isArray(plan.rootServices) ? plan.rootServices : [];
@@ -11566,7 +13490,7 @@ function renderZabbixObjectPlan(plan, layerKey) {
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(suppressionMode ? 'план suppression membership' : 'план объектов Zabbix')}</span>
       <strong>${escapeHtml(plan.objectCount ?? objects.length)} ${escapeHtml(suppressionMode ? 'membership-объектов' : 'объектов')} · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
-      <span>${escapeHtml(`страница ${page} из ${pageCount}; показаны ${shownFrom}-${shownTo} из ${objects.length}`)}${hasMore ? escapeHtml(`; полный список ограничен первыми ${plan.objectSamplesLimit ?? objects.length}`) : ''}</span>
+      <span>${escapeHtml(`фильтр: ${zabbixPlanFilterLabel(filter)}; страница ${page} из ${pageCount}; показаны ${shownFrom}-${shownTo} из ${filteredObjects.length}`)}${hasMore ? escapeHtml(`; полный список ограничен первыми ${plan.objectSamplesLimit ?? objects.length}`) : ''}</span>
       ${!suppressionMode ? `<span>root services: ${escapeHtml(plan.rootServiceCount ?? rootServices.length)} · orphan visible nodes: ${escapeHtml(plan.orphanVisibleNodeCount ?? orphanVisibleNodes.length)}</span>` : ''}
       ${orphanVisibleNodes.length > 0 ? `<span class="error-text">${escapeHtml(orphanVisibleNodes.slice(0, 6).map((item) => `${item.name || item.managedKey || '-'} (${item.role || '-'})`).join('; '))}</span>` : ''}
       ${pageCount > 1 ? `
@@ -11578,6 +13502,39 @@ function renderZabbixObjectPlan(plan, layerKey) {
     </div>
     ${visibleObjects.map((item) => renderZabbixObjectPlanItem(item, layerKey)).join('')}
   `;
+}
+
+function zabbixObjectPlanFilteredObjects(objects, filter) {
+  if (filter === 'errors') {
+    return objects.filter(zabbixObjectPlanItemHasError);
+  }
+  if (filter === 'warnings') {
+    return objects.filter(zabbixObjectPlanItemHasWarning);
+  }
+  return objects;
+}
+
+function zabbixObjectPlanItemHasError(item) {
+  return Boolean(item?.error)
+    || Boolean(item?.isOrphanVisibleNode)
+    || String(item?.action || '').toLowerCase() === 'delete';
+}
+
+function zabbixObjectPlanItemHasWarning(item) {
+  return !zabbixObjectPlanItemHasError(item)
+    && (Boolean(item?.warning)
+      || Number(item?.parentCount ?? item?.parents?.length ?? 0) === 0
+      || String(item?.action || '').toLowerCase() === 'update');
+}
+
+function zabbixPlanFilterLabel(filter) {
+  if (filter === 'errors') {
+    return 'ошибки';
+  }
+  if (filter === 'warnings') {
+    return 'предупреждения';
+  }
+  return 'все';
 }
 
 function renderZabbixObjectPlanItem(item, layerKey = 'service') {
@@ -11872,9 +13829,12 @@ function formatZabbixMs(value) {
 }
 
 function renderZabbixPreflightView() {
+  renderModelControlView();
+
   const layerSelect = document.querySelector('#zabbixPreflightLayerSelect');
   const directionSelect = document.querySelector('#zabbixPreflightDirectionSelect');
   const refreshButton = document.querySelector('#zabbixPreflightRefreshButton');
+  const detailFilter = document.querySelector('#zabbixPreflightDetailFilter');
   const summary = document.querySelector('#zabbixPreflightSummary');
   const status = document.querySelector('#zabbixPreflightStatus');
   const list = document.querySelector('#zabbixPreflightList');
@@ -11885,13 +13845,445 @@ function renderZabbixPreflightView() {
   const config = state.zabbixPreflight;
   layerSelect.value = ['all', 'service', 'suppression'].includes(config.layer) ? config.layer : 'all';
   directionSelect.value = config.direction === 'configured' ? 'configured' : 'effect';
+  if (detailFilter) {
+    detailFilter.value = normalizeDiagnosticFilter(state.diagnosticFilters.zabbixPreflight);
+  }
   refreshButton.disabled = false;
 
   const report = zabbixPreflightReport(config);
   summary.innerHTML = renderZabbixPreflightSummary(report);
   status.textContent = zabbixPreflightStatusText(report);
   status.classList.toggle('error', report.blockerCount > 0 || report.cycleCount > 0);
-  list.innerHTML = renderZabbixPreflightList(report);
+  list.innerHTML = renderZabbixPreflightList(report, state.diagnosticFilters.zabbixPreflight);
+}
+
+async function refreshModelControl() {
+  await runTemplateAudit({ syncDrafts: true, render: false });
+  await Promise.all([
+    loadZabbixApplyStatus('service'),
+    loadZabbixApplyStatus('suppression')
+  ]);
+  renderTemplateApplyView();
+  renderTemplateAuditView();
+  renderZabbixPreflightView();
+}
+
+function renderModelControlView() {
+  const summary = document.querySelector('#modelControlSummary');
+  const status = document.querySelector('#modelControlStatus');
+  const details = document.querySelector('#modelControlDetails');
+  const graphSummary = document.querySelector('#modelControlGraphSummary');
+  const graphFindings = document.querySelector('#modelControlGraphFindings');
+  const button = document.querySelector('#modelControlRefreshButton');
+  if (!summary || !status || !details || !button) {
+    return;
+  }
+
+  const report = modelControlReport();
+  button.disabled = state.templateAudit.checking;
+  button.textContent = state.templateAudit.checking ? 'Проверка...' : 'Проверить модель';
+  summary.innerHTML = renderModelControlSummary(report);
+  status.textContent = modelControlStatusText(report);
+  status.classList.toggle('error', report.status === 'blocked');
+  details.innerHTML = renderModelControlDetails(report);
+  renderModelControlGraphDetails(report, graphSummary, graphFindings);
+}
+
+function modelControlReport() {
+  const audit = state.templateAudit.result;
+  const auditBlocking = templateAuditBlockingErrors(audit);
+  const auditStale = Boolean(audit && isTemplateAuditStale());
+  const staleGeneratedRules = (audit?.service?.staleRules ?? 0) + (audit?.suppression?.staleRules ?? 0);
+  const detachedRules = (audit?.service?.detachedRules ?? 0) + (audit?.suppression?.detachedRules ?? 0);
+  const deletionPlans = (audit?.service?.deletionPlans ?? 0) + (audit?.suppression?.deletionPlans ?? 0);
+  const graphReport = zabbixPreflightReport(state.zabbixPreflight);
+  const relationReport = modelControlRelationReport();
+  const zabbixLive = modelControlZabbixLiveReport();
+  const dirtyServiceCount = zabbixDirtyScopeState('service').entries.length;
+  const dirtySuppressionCount = zabbixDirtyScopeState('suppression').entries.length;
+  const dirtyTotal = dirtyServiceCount + dirtySuppressionCount;
+  const webhooksMissing = Array.isArray(state.webhookRuleCoverage?.missing)
+    ? state.webhookRuleCoverage.missing.length
+    : 0;
+  const readinessErrors = [
+    state.syncError || cmdbCatalogError(),
+    state.zabbixCheckError,
+    state.webhooksCheckError,
+    state.webhookRuleCoverageError
+  ].filter(Boolean);
+  const blocked = auditBlocking.length > 0
+    || graphReport.blockerCount > 0
+    || graphReport.cycleCount > 0
+    || readinessErrors.length > 0;
+  const warnings = [
+    !audit ? 1 : 0,
+    auditStale ? 1 : 0,
+    audit?.warnings?.length ?? 0,
+    staleGeneratedRules,
+    detachedRules,
+    deletionPlans,
+    relationReport.warningCount,
+    zabbixLive.warningCount,
+    dirtyTotal,
+    webhooksMissing,
+    !state.cmdbCacheUpdatedAt ? 1 : 0,
+    !state.zabbixCacheUpdatedAt ? 1 : 0
+  ].reduce((sum, value) => sum + value, 0);
+  const statusValue = blocked ? 'blocked' : warnings > 0 ? 'warn' : 'ok';
+
+  return {
+    status: statusValue,
+    audit,
+    auditBlocking,
+    auditStale,
+    staleGeneratedRules,
+    detachedRules,
+    deletionPlans,
+    graphReport,
+    relationReport,
+    zabbixLive,
+    dirty: {
+      total: dirtyTotal,
+      service: dirtyServiceCount,
+      suppression: dirtySuppressionCount
+    },
+    readiness: {
+      errors: readinessErrors,
+      webhooksMissing,
+      cmdbReady: Boolean(state.cmdbCacheUpdatedAt) && !cmdbCatalogError(),
+      zabbixReady: Boolean(state.zabbixCacheUpdatedAt && state.zabbixCheck) && zabbixLive.blockerCount === 0,
+      webhooksReady: Boolean(state.webhooksCacheUpdatedAt && state.webhooksCheck && webhooksMissing === 0)
+    },
+    warningCount: warnings,
+    blockerCount: auditBlocking.length + graphReport.blockerCount + graphReport.cycleCount + readinessErrors.length + zabbixLive.blockerCount
+  };
+}
+
+function modelControlZabbixLiveReport() {
+  const layers = ['service', 'suppression'].map((layerKey) => {
+    const stateItem = zabbixApplyState(layerKey);
+    const layerStatus = stateItem.status ?? {};
+    const lastStatus = String(layerStatus.lastStatus || layerStatus.status || '').trim();
+    const errorCommands = Number(layerStatus.errorCommands ?? 0);
+    const pendingManual = Number(layerStatus.pendingManualCommands ?? 0);
+    const dirtyCount = zabbixDirtyScopeState(layerKey).entries.length;
+    const progressStatus = String(stateItem.progress?.status || '').toLowerCase();
+    const running = Boolean(stateItem.applying || stateItem.loadingStatus || ['running', 'starting', 'configured', 'canceling'].includes(progressStatus));
+    const blocked = Boolean(stateItem.error)
+      || errorCommands > 0
+      || ['error', 'blocked', 'failed', 'canceled', 'cancelled'].includes(lastStatus.toLowerCase());
+    const warning = !blocked && (
+      running
+      || pendingManual > 0
+      || dirtyCount > 0
+      || !stateItem.lastGraphCheckOk
+      || !lastStatus
+    );
+    return {
+      layerKey,
+      lastStatus,
+      topic: layerStatus.topic || '-',
+      error: stateItem.error || '',
+      errorCommands,
+      pendingManual,
+      dirtyCount,
+      running,
+      graphCheckOk: Boolean(stateItem.lastGraphCheckOk),
+      graphCheckAt: stateItem.lastGraphCheckAt || '',
+      appliedCommands: Number(layerStatus.appliedCommands ?? 0),
+      dryRunCommands: Number(layerStatus.dryRunCommands ?? 0),
+      blocked,
+      warning
+    };
+  });
+
+  return {
+    layers,
+    blockerCount: layers.filter((item) => item.blocked).length,
+    warningCount: layers.filter((item) => item.warning).length
+  };
+}
+
+function modelControlRelationReport() {
+  const layers = ['service', 'suppression'].map((layerKey) => {
+    const graph = relationGraphData(layerKey);
+    if (graph.error) {
+      return {
+        layerKey,
+        graph,
+        errorCount: 1,
+        warningCount: 0,
+        infoCount: 0,
+        okCount: 0,
+        findings: [{ severity: 'error', title: graph.error, detail: '' }]
+      };
+    }
+
+    const findings = relationGraphFindings(graph);
+    return {
+      layerKey,
+      graph,
+      errorCount: findings.filter((item) => item.severity === 'error').length,
+      warningCount: findings.filter((item) => item.severity === 'warn').length,
+      infoCount: findings.filter((item) => item.severity === 'info').length,
+      okCount: findings.filter((item) => item.severity === 'ok').length,
+      findings
+    };
+  });
+
+  return {
+    layers,
+    errorCount: layers.reduce((sum, item) => sum + item.errorCount, 0),
+    warningCount: layers.reduce((sum, item) => sum + item.warningCount, 0),
+    infoCount: layers.reduce((sum, item) => sum + item.infoCount, 0)
+  };
+}
+
+function renderModelControlSummary(report) {
+  const statusLabel = report.status === 'blocked'
+    ? 'Blocked'
+    : report.status === 'warn'
+      ? 'Warning'
+      : 'OK';
+  return `
+    <div>
+      <span class="metric-label">Итог</span>
+      <strong class="${escapeHtml(report.status)}">${escapeHtml(statusLabel)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Шаблоны</span>
+      <strong>${escapeHtml(report.audit?.templates ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Generated rules</span>
+      <strong>${escapeHtml(report.audit?.generatedRules ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Связи</span>
+      <strong>${escapeHtml(report.audit?.generatedRelations ?? 0)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Циклы</span>
+      <strong>${escapeHtml(report.graphReport.cycleCount)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Блокеры</span>
+      <strong>${escapeHtml(report.blockerCount)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Предупреждения</span>
+      <strong>${escapeHtml(report.warningCount)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Dirty scopes</span>
+      <strong>${escapeHtml(report.dirty.total)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Zabbix apply</span>
+      <strong>${escapeHtml(report.zabbixLive.blockerCount > 0 ? 'Blocked' : report.zabbixLive.warningCount > 0 ? 'Warning' : 'OK')}</strong>
+    </div>
+  `;
+}
+
+function modelControlStatusText(report) {
+  if (report.status === 'blocked') {
+    return `Blocked: есть блокирующие ошибки шаблонов/связей/графа или readiness (${report.blockerCount}). Исправьте детали ниже перед публикацией.`;
+  }
+  if (report.status === 'warn') {
+    return `Warning: блокеров нет, но есть предупреждения или pending изменения (${report.warningCount}). Проверьте детали перед публикацией.`;
+  }
+  return 'OK: блокеров и предупреждений не найдено, модель готова к следующему этапу.';
+}
+
+function renderModelControlDetails(report) {
+  const cards = [
+    modelControlDetailCard('templates', 'Шаблоны', modelControlTemplateStatus(report), modelControlTemplateDetail(report)),
+    modelControlDetailCard('rules', 'Правила', modelControlRulesStatus(report), modelControlRulesDetail(report)),
+    modelControlDetailCard('relations', 'Связи', modelControlRelationsStatus(report), modelControlRelationsDetail(report)),
+    modelControlDetailCard('graph', 'Граф', modelControlGraphStatus(report), modelControlGraphDetail(report)),
+    modelControlDetailCard('zabbix', 'Zabbix readiness', modelControlReadinessStatus(report), modelControlReadinessDetail(report)),
+    modelControlDetailCard('zabbixApply', 'Публикация Zabbix', modelControlZabbixLiveStatus(report), modelControlZabbixLiveDetail(report)),
+    modelControlDetailCard('dirty', 'Dirty scopes', report.dirty.total > 0 ? 'warn' : 'ok', `service ${report.dirty.service}, suppression ${report.dirty.suppression}`)
+  ];
+  return `<div class="relation-graph-finding-list">${cards.join('')}</div>`;
+}
+
+function modelControlDetailCard(key, title, status, detail) {
+  const severity = status === 'blocked' ? 'error' : status === 'warn' ? 'warn' : 'ok';
+  const label = status === 'blocked' ? 'Blocked' : status === 'warn' ? 'Warning' : 'OK';
+  const action = modelControlActionForCard(key);
+  return `
+    <div class="relation-graph-finding ${escapeHtml(severity)}" data-model-control-card="${escapeHtml(key)}">
+      <strong>${escapeHtml(title)}: ${escapeHtml(label)}</strong>
+      <span>${escapeHtml(detail)}</span>
+      ${action ? `
+        <div class="rule-summary-actions">
+          <button class="secondary-button" type="button" data-model-control-action="${escapeHtml(action.key)}">${escapeHtml(action.label)}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function modelControlActionForCard(key) {
+  const actions = {
+    templates: { key: 'modelTemplates', label: 'Открыть шаблоны' },
+    rules: { key: 'templateApply', label: 'Подготовить правила' },
+    relations: { key: 'modelRelations', label: 'Открыть связи' },
+    graph: { key: 'relationsGraph', label: 'Открыть граф' },
+    zabbix: { key: 'microserviceSettings', label: 'Открыть настройки' },
+    zabbixApply: { key: 'modelZabbixApply', label: 'Открыть публикацию Zabbix' },
+    dirty: { key: 'modelZabbixApply', label: 'Открыть dirty scopes' }
+  };
+  return actions[key] ?? null;
+}
+
+async function handleModelControlAction(actionKey) {
+  const view = String(actionKey ?? '').trim();
+  if (!view) {
+    return;
+  }
+
+  if (view === 'modelTemplates' || view === 'modelRelations') {
+    state.modelWorkspace.layer = state.modelWorkspace.layer === 'suppression' ? 'suppression' : 'service';
+  }
+  await activateView(view);
+}
+
+function modelControlTemplateStatus(report) {
+  if (report.auditBlocking.length > 0 || state.templateAudit.error) {
+    return 'blocked';
+  }
+  if (!report.audit || report.auditStale || (report.audit.warnings?.length ?? 0) > 0) {
+    return 'warn';
+  }
+  return 'ok';
+}
+
+function modelControlTemplateDetail(report) {
+  if (state.templateAudit.error) {
+    return state.templateAudit.error;
+  }
+  if (!report.audit) {
+    return 'Проверка шаблонов еще не выполнялась.';
+  }
+  const stale = report.auditStale ? 'проверка устарела; ' : '';
+  return `${stale}шаблонов ${report.audit.templates}, кандидатов ${report.audit.candidates}, ошибок ${report.auditBlocking.length}, предупреждений ${report.audit.warnings.length}`;
+}
+
+function modelControlRulesStatus(report) {
+  return report.staleGeneratedRules > 0 || report.detachedRules > 0 || report.deletionPlans > 0 ? 'warn' : 'ok';
+}
+
+function modelControlRulesDetail(report) {
+  return `stale generated ${report.staleGeneratedRules}, отвязанных ${report.detachedRules}, планов удаления ${report.deletionPlans}`;
+}
+
+function modelControlRelationsStatus(report) {
+  if (report.relationReport.errorCount > 0) {
+    return 'blocked';
+  }
+  return report.relationReport.warningCount > 0 ? 'warn' : 'ok';
+}
+
+function modelControlRelationsDetail(report) {
+  return report.relationReport.layers
+    .map((item) => `${layerHumanLabel(item.layerKey)}: ошибок ${item.errorCount}, предупреждений ${item.warningCount}, info ${item.infoCount}`)
+    .join('; ');
+}
+
+function modelControlGraphStatus(report) {
+  return report.graphReport.cycleCount > 0 || report.graphReport.blockerCount > 0 ? 'blocked' : 'ok';
+}
+
+function modelControlGraphDetail(report) {
+  return `объектов ${report.graphReport.objectNodeCount}, связей ${report.graphReport.objectEdgeCount}, циклов ${report.graphReport.cycleCount}, блокеров ${report.graphReport.blockerCount}`;
+}
+
+function modelControlReadinessStatus(report) {
+  if (report.readiness.errors.length > 0 || report.zabbixLive.blockerCount > 0) {
+    return 'blocked';
+  }
+  if (!report.readiness.cmdbReady || !report.readiness.zabbixReady || !report.readiness.webhooksReady || report.zabbixLive.warningCount > 0) {
+    return 'warn';
+  }
+  return 'ok';
+}
+
+function modelControlReadinessDetail(report) {
+  if (report.readiness.errors.length > 0) {
+    return report.readiness.errors.slice(0, 3).join('; ');
+  }
+  return [
+    `CMDBuild ${report.readiness.cmdbReady ? 'OK' : 'нет кэша/каталога'}`,
+    `Zabbix ${report.readiness.zabbixReady ? 'OK' : 'не проверен'}`,
+    `Webhooks ${report.readiness.webhooksReady ? 'OK' : `не покрыто ${report.readiness.webhooksMissing}`}`
+  ].join('; ');
+}
+
+function modelControlZabbixLiveStatus(report) {
+  if (report.zabbixLive.blockerCount > 0) {
+    return 'blocked';
+  }
+  if (report.zabbixLive.warningCount > 0) {
+    return 'warn';
+  }
+  return 'ok';
+}
+
+function modelControlZabbixLiveDetail(report) {
+  return report.zabbixLive.layers.map((item) => {
+    const label = item.layerKey === 'service' ? 'service' : 'suppression';
+    const graph = item.graphCheckOk ? 'граф проверен' : 'граф требует проверки';
+    const status = item.lastStatus ? zabbixApplyStatusLabel(item.lastStatus) : 'статус не загружен';
+    const counters = `dry-run ${item.dryRunCommands}, применено ${item.appliedCommands}, ошибок ${item.errorCommands}, dirty ${item.dirtyCount}`;
+    const extra = item.error ? `, ошибка: ${item.error}` : item.running ? ', операция выполняется' : '';
+    return `${label}: ${status}, ${graph}, ${counters}${extra}`;
+  }).join('; ');
+}
+
+function renderModelControlGraphDetails(report, summary, findings) {
+  if (!summary || !findings) {
+    return;
+  }
+
+  const layerCards = report.relationReport.layers.map((item) => {
+    if (item.graph?.error) {
+      return `
+        <div class="relation-graph-finding error">
+          <strong>${escapeHtml(layerHumanLabel(item.layerKey))}: граф не построен</strong>
+          <span>${escapeHtml(item.graph.error)}</span>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="relation-graph-finding ${escapeHtml(item.errorCount > 0 ? 'error' : item.warningCount > 0 ? 'warn' : 'ok')}">
+        <strong>${escapeHtml(layerHumanLabel(item.layerKey))}: ${escapeHtml(item.graph.nodes.length)} узлов, ${escapeHtml(item.graph.edges.length)} связей</strong>
+        <span>${escapeHtml(topRelationGraphFindings(item.findings) || 'Критичных выводов по графу нет.')}</span>
+      </div>
+    `;
+  }).join('');
+
+  summary.innerHTML = `
+    <div>
+      <span class="metric-label">Слои</span>
+      <strong>${escapeHtml(report.relationReport.layers.length)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Ошибки графа</span>
+      <strong>${escapeHtml(report.relationReport.errorCount)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Предупреждения</span>
+      <strong>${escapeHtml(report.relationReport.warningCount)}</strong>
+    </div>
+    <div>
+      <span class="metric-label">Циклы Zabbix</span>
+      <strong>${escapeHtml(report.graphReport.cycleCount)}</strong>
+    </div>
+  `;
+  findings.innerHTML = `<div class="relation-graph-finding-list">${layerCards}</div>`;
 }
 
 function zabbixPreflightReport(options = {}) {
@@ -12306,22 +14698,63 @@ function zabbixPreflightStatusText(report) {
   const direction = report.direction === 'effect'
     ? 'проверяется направление влияния/подавления'
     : 'проверяется направление, записанное в правилах';
+  const topProblems = topZabbixPreflightProblems(report);
   if (report.cycleCount > 0) {
-    return `${direction}. Найдены циклы: ${report.cycleCount}; пробный план разрыва: ${report.breakPlanCount}. Конфигурация не изменена.`;
+    return `${direction}. Найдены циклы: ${report.cycleCount}; пробный план разрыва: ${report.breakPlanCount}. Конфигурация не изменена.${topProblems}`;
   }
   if (report.blockerCount > 0) {
-    return `${direction}. Циклов нет, но есть блокеры расчета связей: ${report.blockerCount}.`;
+    return `${direction}. Циклов нет, но есть блокеры расчета связей: ${report.blockerCount}.${topProblems}`;
   }
   return `${direction}. Циклов в материализованном графе объектов не найдено; граф готов к следующему этапу отражения в Zabbix.`;
 }
 
-function renderZabbixPreflightList(report) {
-  return report.layers.map((layerReport) => renderZabbixPreflightLayerReport(layerReport)).join('');
+function topZabbixPreflightProblems(report) {
+  const items = [];
+  for (const layerReport of report.layers ?? []) {
+    const layerLabel = layerReport.layerKey === 'service' ? 'Сервис' : 'Подавление';
+    for (const edge of (layerReport.missingTargetEdges ?? []).slice(0, 2)) {
+      items.push(`${layerLabel}: потеряна цель ${relationGraphEdgeShortText(edge)}`);
+    }
+    for (const item of (layerReport.relationErrorItems ?? []).slice(0, 2)) {
+      items.push(`${layerLabel}: ${item?.error || 'ошибка расчета связи'} ${relationGraphEdgeShortText(item?.edge)}`);
+    }
+    for (const cycle of (layerReport.cycles ?? []).slice(0, 2)) {
+      items.push(`${layerLabel}: цикл ${cycle?.label || cycle?.id || cycle?.index || ''}`.trim());
+    }
+  }
+  if (items.length === 0) {
+    return '';
+  }
+
+  const total = (report.layers ?? []).reduce((sum, layerReport) => (
+    sum
+    + (layerReport.missingTargetEdges?.length ?? 0)
+    + (layerReport.relationErrorItems?.length ?? 0)
+    + (layerReport.cycles?.length ?? 0)
+  ), 0);
+  return ` Главные проблемы: ${items.slice(0, 5).join('; ')}${total > 5 ? `; еще ${total - 5}` : ''}.`;
 }
 
-function renderZabbixPreflightLayerReport(report) {
+function relationGraphEdgeShortText(edge) {
+  if (!edge) {
+    return '-';
+  }
+  const source = edge.sourceLabel || edge.sourceName || edge.sourceId || edge.sourceKey || edge.source || '-';
+  const target = edge.targetLabel || edge.targetName || edge.targetId || edge.targetKey || edge.target || '-';
+  const relation = edge.relationTypeLabel || edge.relationType || edge.typeLabel || edge.type || '';
+  return `${source} -> ${target}${relation ? ` (${relation})` : ''}`;
+}
+
+function renderZabbixPreflightList(report, filter = 'all') {
+  return report.layers.map((layerReport) => renderZabbixPreflightLayerReport(layerReport, filter)).join('');
+}
+
+function renderZabbixPreflightLayerReport(report, filter = 'all') {
   const layerLabel = report.layerKey === 'service' ? 'Сервис' : 'Подавление';
   if (report.graphError) {
+    if (!diagnosticItemVisible('error', filter)) {
+      return renderEmptyDiagnosticFilterResult(filter);
+    }
     return `
       <article class="zabbix-preflight-card error">
         <strong>${escapeHtml(layerLabel)}: граф не построен</strong>
@@ -12334,17 +14767,29 @@ function renderZabbixPreflightLayerReport(report) {
     report.missingTargetCount > 0 ? `Потерянные цели связей: ${report.missingTargetCount}` : '',
     report.relationErrorCount > 0 ? `Ошибки расчета связей времени обработки: ${report.relationErrorCount}` : ''
   ].filter(Boolean).join(' · ');
+  const blocks = [];
+  if (diagnosticItemVisible('error', filter)) {
+    blocks.push(renderZabbixPreflightBlockers(report));
+    if (report.cycles.length > 0) {
+      blocks.push(report.cycles.map((cycle) => renderZabbixCycleReport(cycle)).join(''));
+    }
+  }
+  if (diagnosticItemVisible('warn', filter)) {
+    blocks.push(renderZabbixPreflightTransitiveEdges(report));
+    blocks.push(renderZabbixPreflightUnmaterializedEdges(report));
+  }
+  if (diagnosticItemVisible('info', filter)) {
+    blocks.push(renderZabbixPreflightAcyclicEdges(report));
+    if (report.cycles.length === 0) {
+      blocks.push('<span>Циклические компоненты не найдены.</span>');
+    }
+  }
+  const visibleBlocks = blocks.filter(Boolean);
   return `
     <article class="zabbix-preflight-card ${report.cycles.length > 0 ? 'warn' : report.blockerCount > 0 ? 'error' : 'ok'}">
       <strong>${escapeHtml(layerLabel)}: ${escapeHtml(report.objectNodeCount)} объектов · ${escapeHtml(report.objectEdgeCount)} связей · циклы ${escapeHtml(report.cycles.length)}</strong>
       <span>${escapeHtml(blockerText || 'Блокеров расчета связей нет.')}</span>
-      ${renderZabbixPreflightBlockers(report)}
-      ${renderZabbixPreflightTransitiveEdges(report)}
-      ${renderZabbixPreflightAcyclicEdges(report)}
-      ${renderZabbixPreflightUnmaterializedEdges(report)}
-      ${report.cycles.length > 0
-        ? report.cycles.map((cycle) => renderZabbixCycleReport(cycle)).join('')
-        : '<span>Циклические компоненты не найдены.</span>'}
+      ${visibleBlocks.length > 0 ? visibleBlocks.join('') : renderEmptyDiagnosticFilterResult(filter)}
     </article>
   `;
 }
@@ -12418,7 +14863,7 @@ function renderZabbixPreflightUnmaterializedEdges(report) {
   if (report.unmaterializedEdges.length > 8) {
     items.push(`Еще ${report.unmaterializedEdges.length - 8} связей скрыто.`);
   }
-  items.push('Возможные причины: regexp/переменные не нашли совпавшие сгенерированные правила, целевое правило не создает целевой объект, либо связь еще не материализована через "Создать/обновить правила по шаблонам и связям".');
+  items.push('Возможные причины: regexp/переменные не нашли совпавшие сгенерированные правила, целевое правило не создает целевой объект, либо связь еще не материализована через "Подготовить и сохранить правила".');
   return `
     <div class="zabbix-cycle">
       <strong>Связи, не попавшие в граф объектов: ${escapeHtml(report.unmaterializedEdges.length)}</strong>
@@ -12519,7 +14964,18 @@ async function applyTemplatesToRuleDocuments() {
     state.templateApplyLastResult = {
       appliedAt: new Date().toISOString(),
       service: templateApplyResultSummary(serviceResult),
-      suppression: templateApplyResultSummary(suppressionResult)
+      suppression: templateApplyResultSummary(suppressionResult),
+      storage: null
+    };
+    state.templateApplyMessage = 'Сохранение правил, шаблонов и связей в папку конфигураций...';
+    renderTemplateApplyView();
+    const storageResult = await saveConversionConfigsToFolder({ renderFinal: false, throwOnError: true });
+    state.templateApplyLastResult.storage = {
+      savedAt: storageResult?.savedAt ?? state.conversionConfigStorageUpdatedAt,
+      version: Number(storageResult?.version ?? state.conversionConfigStorageVersion) || 0,
+      folder: conversionConfigFolderLabel(),
+      runtimeFile: storageResult?.runtimeRules?.configuredFile ?? '',
+      runtimeRuleCount: Number(storageResult?.runtimeRules?.ruleCount ?? 0) || 0
     };
     state.templateApplyMessage = [
       syncedDrafts.length > 0
@@ -12528,7 +14984,8 @@ async function applyTemplatesToRuleDocuments() {
       `${templateReconcileMessage(serviceResult, suppressionResult)}.`,
       templateDeletionPlanMessage(serviceResult, suppressionResult),
       `Сформировано правил: сервис ${serviceResult.generatedRules.length}, подавление ${suppressionResult.generatedRules.length}.`,
-      'Далее сохраните правила, шаблоны и связи в папку и перечитайте конфигурацию applier\'ов.',
+      `Конфигурация сохранена: v${state.conversionConfigStorageVersion}, папка ${conversionConfigFolderLabel()}.`,
+      'Далее перечитайте конфигурацию applier\'ов.',
       'CMDBuild-карточки по этим правилам создаются после новых webhooks классов-источников.'
     ].filter(Boolean).join(' ');
     state.templateApplyError = '';
@@ -12537,6 +14994,7 @@ async function applyTemplatesToRuleDocuments() {
     renderTemplateApplyView();
     renderTemplateAuditView();
     renderConversionConfigSyncView();
+    renderTopSourceStatus();
   } catch (error) {
     state.templateApplyMessage = '';
     state.templateApplyError = error.message;
@@ -13196,6 +15654,8 @@ function linkRelationEditorConfig() {
   return {
     title: document.querySelector('#relationManagementTitle'),
     lead: document.querySelector('#relationManagementLead'),
+    layer: document.querySelector('#relationManagementLayerSelect'),
+    kind: document.querySelector('#relationManagementKindSelect'),
     purpose: document.querySelector('#relationManagementPurpose'),
     sourceLabel: document.querySelector('#relationSourceLabel'),
     source: document.querySelector('#relationSourceSelect'),
@@ -13216,6 +15676,16 @@ function linkRelationEditorConfig() {
     description: document.querySelector('#relationDescriptionInput'),
     status: document.querySelector('#relationManagementStatus'),
     list: document.querySelector('#relationManagementList')
+  };
+}
+
+function relationManagementContextFromControls() {
+  const config = linkRelationEditorConfig();
+  return {
+    layer: config.layer?.value === 'suppression' ? 'suppression' : 'service',
+    kind: ['template_template', 'template_rule', 'rule_rule'].includes(config.kind?.value)
+      ? config.kind.value
+      : 'template_template'
   };
 }
 
@@ -13282,6 +15752,14 @@ function renderLinkRelationEditor() {
 
   const context = state.linkRelationContext ?? { layer: 'service', kind: 'template_template' };
   const kindConfig = linkRelationKindConfig(context.kind, context.layer);
+  if (config.layer) {
+    config.layer.value = context.layer === 'suppression' ? 'suppression' : 'service';
+  }
+  if (config.kind) {
+    config.kind.value = ['template_template', 'template_rule', 'rule_rule'].includes(context.kind)
+      ? context.kind
+      : 'template_template';
+  }
   config.title.textContent = kindConfig.title;
   config.lead.textContent = kindConfig.lead;
   if (config.purpose) {
@@ -13916,6 +16394,7 @@ function renderRelationsGraphView() {
   const onlineToggle = document.querySelector('#relationGraphShowOnline');
   const onlineButton = document.querySelector('#relationGraphRefreshOnlineButton');
   const filterInput = document.querySelector('#relationGraphFilterInput');
+  const diagnosticFilter = document.querySelector('#relationGraphDiagnosticFilter');
   const summary = document.querySelector('#relationGraphSummary');
   const status = document.querySelector('#relationGraphStatus');
   const diagnostics = document.querySelector('#relationGraphDiagnostics');
@@ -13932,6 +16411,9 @@ function renderRelationsGraphView() {
   onlineToggle.checked = graphState.showOnline;
   onlineButton.disabled = graphState.loadingOnline;
   onlineButton.textContent = graphState.loadingOnline ? 'Загрузка...' : 'Обновить онлайн';
+  if (diagnosticFilter) {
+    diagnosticFilter.value = normalizeDiagnosticFilter(state.diagnosticFilters.relationGraph);
+  }
   if (filterInput.value !== graphState.filter) {
     filterInput.value = graphState.filter;
   }
@@ -13952,12 +16434,27 @@ function renderRelationsGraphView() {
   graphState.currentOnline = online;
   const findings = relationGraphFindings(filteredGraph, online);
   summary.innerHTML = renderRelationGraphSummary(graph, filteredGraph, online);
-  status.textContent = relationGraphStatusText(graph, filteredGraph, graphState);
-  status.classList.toggle('error', Boolean(graphState.onlineError));
+  const findingProblems = topRelationGraphFindings(findings);
+  status.textContent = [relationGraphStatusText(graph, filteredGraph, graphState), findingProblems]
+    .filter(Boolean)
+    .join(' ');
+  status.classList.toggle('error', Boolean(graphState.onlineError) || findings.some((finding) => finding.severity === 'error'));
   diagnostics.innerHTML = graphState.showDiagnostics
-    ? renderRelationGraphFindings(findings)
+    ? renderRelationGraphFindings(findings, state.diagnosticFilters.relationGraph)
     : '';
   canvas.innerHTML = renderRelationGraphCanvas(layout, graphState);
+}
+
+function topRelationGraphFindings(findings) {
+  const items = (findings ?? [])
+    .filter((finding) => finding?.severity === 'error' || finding?.severity === 'warn')
+    .map((finding) => [finding.title, finding.detail].filter(Boolean).join(': '))
+    .filter(Boolean);
+  if (items.length === 0) {
+    return '';
+  }
+
+  return `Главные выводы: ${items.slice(0, 5).join('; ')}${items.length > 5 ? `; еще ${items.length - 5}` : ''}.`;
 }
 
 function relationGraphData(layerKey) {
@@ -15898,10 +18395,16 @@ function relationGraphObjectFanIn(graph) {
   return [...byObject.values()];
 }
 
-function renderRelationGraphFindings(findings) {
+function renderRelationGraphFindings(findings, filter = 'all') {
+  const visibleFindings = (findings ?? []).filter((finding) =>
+    diagnosticItemVisible(finding?.severity, filter));
+  if (visibleFindings.length === 0) {
+    return renderEmptyDiagnosticFilterResult(filter);
+  }
+
   return `
     <div class="relation-graph-finding-list">
-      ${findings.map((finding) => `
+      ${visibleFindings.map((finding) => `
         <div class="relation-graph-finding ${escapeHtml(finding.severity)}">
           <strong>${escapeHtml(finding.title)}</strong>
           <span>${escapeHtml(finding.detail || '')}</span>
@@ -16489,6 +18992,7 @@ function renderTemplateApplyView() {
   const list = document.querySelector('#templateApplyPlanList');
   const applyButton = document.querySelector('#applyTemplatesButton');
   const auditButton = document.querySelector('#runTemplateAuditButton');
+  const planFilter = document.querySelector('#templateApplyPlanFilter');
   if (!serviceCount || !suppressionCount || !ruleCount || !relationCount || !candidateCount || !status || !list) {
     return;
   }
@@ -16511,9 +19015,21 @@ function renderTemplateApplyView() {
     auditButton.disabled = state.templateAudit.checking;
     auditButton.textContent = state.templateAudit.checking ? 'Проверка...' : 'Проверить шаблоны';
   }
-  status.textContent = state.templateApplyError || state.templateApplyMessage || templateAuditGateMessage();
+  if (planFilter) {
+    planFilter.value = state.templateApplyPlanFilter;
+  }
+  status.textContent = state.templateApplyError
+    || topTemplateApplyErrors(plan, suppressionPlan)
+    || state.templateApplyMessage
+    || templateAuditGateMessage();
   status.classList.toggle('error', Boolean(state.templateApplyError || templateAuditBlockingErrors().length > 0));
   const auditResult = state.templateAudit.result;
+  const templatePlanCards = auditResult
+    ? []
+    : pagedTemplatePlanCards([
+        ...templatePlanCardItems('service', plan),
+        ...templatePlanCardItems('suppression', suppressionPlan)
+      ]);
   list.innerHTML = [
     renderTemplateAuditGateCard(),
     renderTemplateDeletionPlansCard('service'),
@@ -16527,12 +19043,24 @@ function renderTemplateApplyView() {
     renderTemplateApplicationCard('suppression'),
     renderTemplatePlanErrorsCard('service', plan),
     renderTemplatePlanErrorsCard('suppression', suppressionPlan),
-    ...(auditResult ? [] : renderTemplatePlanCards('service', plan)),
-    ...(auditResult ? [] : renderTemplatePlanCards('suppression', suppressionPlan)),
+    ...templatePlanCards,
     renderCurrentGeneratedRulesCard('service'),
     renderCurrentGeneratedRulesCard('suppression')
   ].filter(Boolean).join('')
     || '<div class="empty-state">Шаблоны не настроены или нет подходящих классов-источников.</div>';
+}
+
+function topTemplateApplyErrors(servicePlan, suppressionPlan) {
+  const errors = [
+    ...(servicePlan.errors ?? []),
+    ...(suppressionPlan.errors ?? []),
+    ...templateAuditBlockingErrors()
+  ].filter(Boolean);
+  if (errors.length === 0) {
+    return '';
+  }
+
+  return `Главные ошибки: ${errors.slice(0, 5).join('; ')}${errors.length > 5 ? `; еще ${errors.length - 5}` : ''}.`;
 }
 
 function renderTemplatePlanErrorsCard(layerKey, plan) {
@@ -17011,6 +19539,8 @@ function renderTemplateApplyLastResultCard() {
       <strong>${escapeHtml(formatCacheTimestamp(result.appliedAt) || result.appliedAt)}</strong>
       <span>сервис: ${escapeHtml(templateApplyLayerResultText(result.service))}</span>
       <span>подавление: ${escapeHtml(templateApplyLayerResultText(result.suppression))}</span>
+      ${result.storage ? `<span>конфигурация: v${escapeHtml(result.storage.version || '-')} · ${escapeHtml(result.storage.folder || '-')}</span>` : ''}
+      ${result.storage?.runtimeFile ? `<span>runtime: ${escapeHtml(result.storage.runtimeFile)} · правил ${escapeHtml(result.storage.runtimeRuleCount)}</span>` : ''}
     </div>
   `;
 }
@@ -17072,9 +19602,57 @@ function renderTemplateAuditView() {
   renderTemplateApplyView();
 }
 
-function renderTemplatePlanCards(layerKey, plan) {
+function templatePlanCardItems(layerKey, plan) {
   const reconcile = plan.reconcile ?? {};
-  return plan.templates.map((item) => `
+  return plan.templates.map((item) => {
+    const severity = plan.errors?.length ? 'error' : item.rules.length === 0 ? 'warning' : 'ok';
+    return {
+      severity,
+      html: renderTemplatePlanCard(layerKey, plan, item, reconcile)
+    };
+  });
+}
+
+function pagedTemplatePlanCards(items) {
+  const filter = state.templateApplyPlanFilter;
+  const filtered = items.filter((item) =>
+    filter === 'all'
+    || (filter === 'errors' && item.severity === 'error')
+    || (filter === 'warnings' && item.severity === 'warning'));
+  const pageSize = 12;
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const page = Math.min(Math.max(1, Number(state.templateApplyPlanPage) || 1), pageCount);
+  state.templateApplyPlanPage = page;
+  const start = (page - 1) * pageSize;
+  const visible = filtered.slice(start, start + pageSize);
+  const header = `
+    <div class="rule-summary">
+      <span class="structure-mark">план шаблонов</span>
+      <strong>${escapeHtml(filtered.length)} из ${escapeHtml(items.length)} записей</strong>
+      <span>фильтр: ${escapeHtml(templatePlanFilterLabel(filter))} · страница ${escapeHtml(page)} из ${escapeHtml(pageCount)}</span>
+      ${pageCount > 1 ? `
+        <div class="details-pagination">
+          <button class="secondary-button compact-button" type="button" data-template-plan-page="${escapeHtml(page - 1)}" ${page <= 1 ? 'disabled' : ''}>Назад</button>
+          <button class="secondary-button compact-button" type="button" data-template-plan-page="${escapeHtml(page + 1)}" ${page >= pageCount ? 'disabled' : ''}>Вперед</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+  return [header, ...visible.map((item) => item.html)];
+}
+
+function templatePlanFilterLabel(filter) {
+  if (filter === 'errors') {
+    return 'ошибки';
+  }
+  if (filter === 'warnings') {
+    return 'предупреждения';
+  }
+  return 'все';
+}
+
+function renderTemplatePlanCard(layerKey, plan, item, reconcile) {
+  return `
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(layerKey === 'service' ? 'сервис' : 'подавление')} шаблон</span>
       <strong>${escapeHtml(item.template.name || item.template.template_id)}</strong>
@@ -17087,7 +19665,7 @@ function renderTemplatePlanCards(layerKey, plan) {
       <span>цель ${escapeHtml(item.template.target?.class_code || '')} · regex источника ${escapeHtml(item.template.source_class_regex || 'все')}</span>
       ${plan.errors?.length ? `<span>ошибки: ${escapeHtml(plan.errors.join('; '))}</span>` : ''}
     </div>
-  `);
+  `;
 }
 
 function templatePlanDimensionText(item) {
@@ -17291,6 +19869,7 @@ function templateAuditRowForTemplate(layerKey, template, planItem, context) {
   if (rules.length > 0 && rules.length >= Math.floor(maxRules * 0.8)) {
     warnings.push(`правил ${rules.length} при лимите ${maxRules}; проверьте кардинальность dimension.`);
   }
+  warnings.push(...templateLookupStableDisplayWarnings(template, dimension));
   if (planItem && candidates.length > 0 && rules.length === 0) {
     warnings.push('шаблон выбрал source-классы, но не породил правил.');
   }
@@ -17336,6 +19915,33 @@ function templateAuditRowForTemplate(layerKey, template, planItem, context) {
     errors: uniqueTextList(rowErrors),
     warnings: uniqueTextList(warnings)
   };
+}
+
+function templateLookupStableDisplayWarnings(template, dimension) {
+  const warnings = [];
+  const dimensionType = String(dimension?.type ?? '').trim();
+  if (dimensionType !== 'source_lookup') {
+    return warnings;
+  }
+
+  const keyTemplate = String(dimension?.key_template || template.target?.population_source_key_template || '').trim();
+  const conditionPattern = String(dimension?.condition_pattern_template || '').trim();
+  const targetName = String(template.target?.name_template || '').trim();
+  const targetDescription = String(template.target?.description_template || '').trim();
+  const displayInStructuralFields = [
+    ['key template', keyTemplate],
+    ['condition regex', conditionPattern]
+  ].filter(([, value]) => /\$\{dimension\.(name|displayValue|display_value)\}/i.test(value));
+  for (const [label] of displayInStructuralFields) {
+    warnings.push(`${label} использует display lookup (${ '${dimension.name}' }); для стабильности используйте ${ '${dimension.key}' } или ${ '${dimension.value}' }.`);
+  }
+
+  if (/\$\{dimension\.(name|displayValue|display_value)\}/i.test(targetName)
+      || /\$\{dimension\.(name|displayValue|display_value)\}/i.test(targetDescription)) {
+    warnings.push('display lookup используется только в name/description: это допустимо, но переименование справочника обновит подписи только после scoped/full reconcile.');
+  }
+
+  return warnings;
 }
 
 function safeTemplateCandidateClasses(template) {
@@ -17458,8 +20064,10 @@ function templateAuditDimensionExamples(rules) {
       const key = generation.dimension_key || '';
       const value = generation.dimension_value || '';
       const name = generation.dimension_name || '';
+      const stable = generation.dimension_stable_value || key || value;
+      const display = generation.dimension_display_value || name || value;
       return key || value || name
-        ? `key=${key || '-'}, value=${value || '-'}, name=${name || '-'}`
+        ? `key=${key || '-'}, value=${value || '-'}, name=${name || '-'}, stable=${stable || '-'}, display=${display || '-'}`
         : '';
     })
     .filter(Boolean)
@@ -17792,7 +20400,7 @@ function templateRelationMissingTargetRuleMessage(relation, context = {}) {
     `Шаблон ${templateHumanLabel(context.sourceTemplate)} не может применить связь ${templateRelationHumanLabel(relation, context)}: целевое ручное правило ${targetRuleId ? `"${targetRuleId}"` : 'не задано'} не найдено.`,
     placeholderText,
     `Источник связи: ${generatedRuleHumanLabel(context.sourceRule)}.`,
-    `Что сделать: откройте ${layerHumanLabel(context.layerKey)} -> Управление связями -> Шаблон-правило, удалите эту связь и создайте заново, выбрав существующее ручное правило.`
+    `Что сделать: откройте Модель -> Связи, выберите слой "${layerHumanLabel(context.layerKey)}" и тип "Шаблон-правило", удалите эту связь и создайте заново, выбрав существующее ручное правило.`
   ].filter(Boolean).join(' ');
 }
 
@@ -17809,7 +20417,7 @@ function templateRelationMissingTargetTemplateMessage(relation, context = {}) {
   return [
     `Шаблон ${templateHumanLabel(context.sourceTemplate)} не может применить связь ${templateRelationHumanLabel(relation, context)}: ${reasonText}.`,
     `Источник связи: ${generatedRuleHumanLabel(context.sourceRule)}.`,
-    `Что сделать: откройте ${layerHumanLabel(context.layerKey)} -> Управление связями -> Шаблон-шаблон или Шаблон-правило и перенастройте целевой шаблон.`
+    `Что сделать: откройте Модель -> Связи, выберите слой "${layerHumanLabel(context.layerKey)}" и тип "Шаблон-шаблон" или "Шаблон-правило" и перенастройте целевой шаблон.`
   ].join(' ');
 }
 
@@ -18453,6 +21061,8 @@ function ruleFromTemplate(layerKey, template, candidate, dimensionValue = null) 
       dimension_key: materializedDimension ? dimensionValue.key : '',
       dimension_name: materializedDimension ? dimensionValue.name : '',
       dimension_value: materializedDimension ? dimensionValue.value : '',
+      dimension_stable_value: materializedDimension ? dimensionValue.stableValue || dimensionValue.key : '',
+      dimension_display_value: materializedDimension ? dimensionValue.displayValue || dimensionValue.name : '',
       target_class_code: template.target?.class_code || ''
     },
     source: {
@@ -18541,13 +21151,16 @@ function normalizeTemplateDimensionValue(template, candidate, dimension, value, 
   const raw = value && typeof value === 'object' && !Array.isArray(value)
     ? value
     : { key: value, value };
-  const key = String(raw.key ?? raw.value ?? '').trim();
-  const rawValue = String(raw.value ?? key).trim();
-  const baseName = String((raw.name ?? raw.label ?? rawValue) || key).trim();
+  const key = String(raw.key ?? raw.stableValue ?? raw.value ?? '').trim();
+  const rawValue = String(raw.value ?? raw.stableValue ?? key).trim();
+  const displayValue = String(raw.displayValue ?? raw.display ?? raw.name ?? raw.label ?? rawValue).trim();
+  const baseName = String((raw.name ?? raw.label ?? displayValue) || rawValue || key).trim();
   const preliminary = {
     key,
     value: rawValue,
     name: baseName,
+    stableValue: key,
+    displayValue: displayValue || baseName || key,
     condition_pattern: String(raw.condition_pattern ?? raw.pattern ?? '').trim(),
     source_field: String(raw.source_field ?? dimension.source_field ?? '').trim(),
     index
@@ -18564,7 +21177,7 @@ function normalizeTemplateDimensionValue(template, candidate, dimension, value, 
 }
 
 function sourceFieldDimensionValues(candidate, dimension) {
-  const values = sourceCardFieldValues(candidate.code, dimension.source_field);
+  const values = sourceCardFieldDimensionEntries(candidate.code, dimension.source_field);
   if (values.length === 0) {
     const reason = sourceFieldDimensionEmptyReason(candidate.code, dimension.source_field);
     if (reason) {
@@ -18572,7 +21185,14 @@ function sourceFieldDimensionValues(candidate, dimension) {
     }
   }
 
-  return values.map((value) => ({ key: value, value, name: value, source_field: dimension.source_field }));
+  return values.map((value) => ({
+    key: value.key,
+    value: value.stableValue || value.key,
+    name: value.displayValue || value.key,
+    stableValue: value.stableValue || value.key,
+    displayValue: value.displayValue || value.key,
+    source_field: dimension.source_field
+  }));
 }
 
 function regexCaptureDimensionValues(candidate, dimension) {
@@ -18753,7 +21373,13 @@ function lookupValuesForTemplateSourceField(sourceClass, sourceField) {
   return (lookup?.values ?? []).map((value) => {
     const key = String(value.code ?? value.name ?? value.value ?? '').trim();
     const name = String(value.displayName ?? value.description ?? key).trim();
-    return { key, value: key, name };
+    return {
+      key,
+      value: key,
+      name,
+      stableValue: key,
+      displayValue: name
+    };
   }).filter((value) => value.key);
 }
 
@@ -18839,24 +21465,42 @@ function splitDimensionValuesText(text) {
 }
 
 function sourceCardFieldValues(sourceClass, field) {
-  const values = [];
+  return sourceCardFieldDimensionEntries(sourceClass, field)
+    .map((entry) => entry.stableValue || entry.key)
+    .filter(Boolean);
+}
+
+function sourceCardFieldDimensionEntries(sourceClass, field) {
+  const entries = [];
   const option = sourceFieldOptionForClass(sourceClass, field);
   for (const card of sourceClassCards(sourceClass)) {
     const directValues = normalizeCardFieldValues(rawCardFieldValue(card, field));
     if (directValues.length > 0) {
-      values.push(...directValues);
+      const displayValues = normalizeCardFieldDisplayValues(rawCardFieldDisplayValue(card, field));
+      for (const [index, value] of directValues.entries()) {
+        entries.push({
+          key: value,
+          stableValue: value,
+          displayValue: displayValues[index] || displayValues[0] || value
+        });
+      }
       continue;
     }
 
-    values.push(...resolveCardFieldValuesByCmdbPath(sourceClass, card, option?.fieldRule));
+    entries.push(...resolveCardFieldEntriesByCmdbPath(sourceClass, card, option?.fieldRule));
   }
 
-  const normalizedValues = uniqueNonEmptyValues(values);
-  if (normalizedValues.length > 0) {
-    return normalizedValues;
+  const normalizedEntries = uniqueNonEmptyDimensionEntries(entries);
+  if (normalizedEntries.length > 0) {
+    return normalizedEntries;
   }
 
-  return sourceCardFieldValuesByPathProbe(sourceClass, option?.fieldRule);
+  return sourceCardFieldValuesByPathProbe(sourceClass, option?.fieldRule)
+    .map((value) => ({
+      key: value,
+      stableValue: value,
+      displayValue: value
+    }));
 }
 
 function sourceFieldOptionForClass(sourceClass, field) {
@@ -18883,6 +21527,24 @@ function sourceClassCards(sourceClass) {
 
 function uniqueNonEmptyValues(values) {
   return [...new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))];
+}
+
+function uniqueNonEmptyDimensionEntries(entries) {
+  const byKey = new Map();
+  for (const entry of entries ?? []) {
+    const key = String(entry?.key ?? entry?.stableValue ?? '').trim();
+    if (!key || byKey.has(key)) {
+      continue;
+    }
+
+    byKey.set(key, {
+      key,
+      stableValue: String(entry?.stableValue ?? key).trim() || key,
+      displayValue: String(entry?.displayValue ?? entry?.name ?? key).trim() || key
+    });
+  }
+
+  return [...byKey.values()];
 }
 
 function rawCardFieldValue(card, field) {
@@ -18914,7 +21576,51 @@ function rawCardFieldValue(card, field) {
   return '';
 }
 
+function rawCardFieldDisplayValue(card, field) {
+  if (!card || !field) {
+    return '';
+  }
+
+  const token = canonicalToken(field);
+  const direct = card[field] ?? card.values?.[field] ?? card.Values?.[field] ?? card.attributes?.[field] ?? card.Attributes?.[field];
+  const directDisplay = normalizeCardFieldDisplayValues(direct);
+  if (direct !== undefined && directDisplay.length > 0) {
+    return directDisplay[0];
+  }
+
+  for (const attribute of Array.isArray(card.attributes) ? card.attributes : []) {
+    const code = attribute.code ?? attribute.name ?? attribute.Code ?? attribute.Name ?? '';
+    if (canonicalToken(code) === token) {
+      if (Object.hasOwn(attribute, 'displayValue')) {
+        return attribute.displayValue ?? '';
+      }
+
+      if (Object.hasOwn(attribute, 'DisplayValue')) {
+        return attribute.DisplayValue ?? '';
+      }
+
+      if (Object.hasOwn(attribute, 'description')) {
+        return attribute.description ?? '';
+      }
+
+      if (Object.hasOwn(attribute, 'Description')) {
+        return attribute.Description ?? '';
+      }
+
+      return rawCardFieldValue(card, field);
+    }
+  }
+
+  return '';
+}
+
 function resolveCardFieldValuesByCmdbPath(sourceClass, card, fieldRule) {
+  return resolveCardFieldEntriesByCmdbPath(sourceClass, card, fieldRule)
+    .map((entry) => entry.stableValue || entry.key)
+    .filter(Boolean);
+}
+
+function resolveCardFieldEntriesByCmdbPath(sourceClass, card, fieldRule) {
   const path = cmdbPathSegmentsForFieldRule(sourceClass, fieldRule);
   if (path.length === 0 || path.some((segment) => segment.startsWith('{domain:'))) {
     return [];
@@ -18926,8 +21632,15 @@ function resolveCardFieldValuesByCmdbPath(sourceClass, card, fieldRule) {
     const segment = path[index];
     const last = index === path.length - 1;
     if (last) {
-      return currentCards.flatMap((item) =>
-        normalizeCardFieldValues(rawCardFieldValue(item, segment)));
+      return currentCards.flatMap((item) => {
+        const stableValues = normalizeCardFieldValues(rawCardFieldValue(item, segment));
+        const displayValues = normalizeCardFieldDisplayValues(rawCardFieldDisplayValue(item, segment));
+        return stableValues.map((value, valueIndex) => ({
+          key: value,
+          stableValue: value,
+          displayValue: displayValues[valueIndex] || displayValues[0] || value
+        }));
+      });
     }
 
     const attribute = sourceAttributeByCode(currentClass, segment);
@@ -19114,6 +21827,36 @@ function normalizeCardFieldValues(value) {
   return [String(value)];
 }
 
+function normalizeCardFieldDisplayValues(value) {
+  if (value === null || value === undefined) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(normalizeCardFieldDisplayValues);
+  }
+  if (typeof value === 'object') {
+    const candidate = value.displayValue
+      ?? value.DisplayValue
+      ?? value.displayName
+      ?? value.DisplayName
+      ?? value.description
+      ?? value.Description
+      ?? value.label
+      ?? value.Label
+      ?? value.name
+      ?? value.Name
+      ?? value.value
+      ?? value.Value
+      ?? value.code
+      ?? value.Code
+      ?? value.id
+      ?? value.Id;
+    return normalizeCardFieldDisplayValues(candidate);
+  }
+
+  return [String(value)];
+}
+
 function templateDimensionConditionMatcher(dimension, dimensionValue, context) {
   const field = String(dimension.condition_field || dimensionValue.source_field || dimension.source_field || '').trim();
   if (!field) {
@@ -19247,14 +21990,20 @@ function templateContext(template, candidate, dimension = null) {
 
 function templateDimensionContext(dimension) {
   const key = String(dimension?.key ?? '').trim();
-  const value = String(dimension?.value ?? key).trim();
-  const name = String((dimension?.name ?? value) || key).trim();
+  const stableValue = String(dimension?.stableValue ?? dimension?.stable_value ?? key).trim() || key;
+  const value = String(dimension?.value ?? stableValue).trim();
+  const displayValue = String(dimension?.displayValue ?? dimension?.display_value ?? dimension?.name ?? value).trim() || value || key;
+  const name = String((dimension?.name ?? displayValue) || value || key).trim();
   const pattern = String(dimension?.condition_pattern ?? '').trim();
   return {
     key,
     value,
     name,
     label: name,
+    stableValue,
+    stable_value: stableValue,
+    displayValue,
+    display_value: displayValue,
     pattern,
     regexKey: escapeRegex(key),
     regexValue: escapeRegex(value),

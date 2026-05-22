@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
     <ProjectReference Include="../shared/Cmdb2MonitoringServiceSuppression.Shared.csproj" />
   </ItemGroup>
 

@@ -3508,7 +3508,7 @@ public sealed class CmdbuildClient(
 
         if (value.ValueKind == JsonValueKind.Object)
         {
-            foreach (var propertyName in new[] { "name", "_id", "id", "className", "class", "type", "_type", "description", "_description" })
+            foreach (var propertyName in new[] { "code", "_code", "value", "Value", "_id", "id", "name", "className", "class", "type", "_type", "description", "_description" })
             {
                 if (value.TryGetProperty(propertyName, out var nested))
                 {

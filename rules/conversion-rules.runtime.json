@@ -18481,7 +18481,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City09",
+          "target_lookup": "supp:City03",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18492,7 +18492,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City11",
+          "target_lookup": "supp:City01",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18503,194 +18503,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City24",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City37",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City25",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City26",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City27",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City28",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City29",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City30",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City33",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City36",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City38",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City41",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City45",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City47",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City48",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City49",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City50",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City23",
+          "target_lookup": "supp:City02",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18723,6 +18536,17 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City06",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City07",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
@@ -18745,7 +18569,29 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City09",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City10",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City12",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18767,95 +18613,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City20",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City21",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City22",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City03",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City14",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City15",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City18",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City19",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City12",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18888,6 +18646,160 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City18",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City19",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City21",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City25",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City27",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City29",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City11",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City14",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City20",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City22",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City23",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City24",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City26",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City28",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City31",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
@@ -18899,7 +18811,29 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City30",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City32",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City33",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18932,6 +18866,39 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City36",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City37",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City38",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City39",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
@@ -18944,6 +18911,17 @@
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City40",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City41",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18976,7 +18954,40 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City49",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City50",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City44",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City45",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -18998,7 +19009,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City06",
+          "target_lookup": "supp:City47",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -19009,18 +19020,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City02",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City01",
+          "target_lookup": "supp:City48",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -19087,186 +19087,6 @@
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "610725",
           "managed_relation_key": "suppression-rule-suppression-routercore-c2m-suppressionnetworkaccesszone-611269-relation-rule-suppresses-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        }
-      ]
-    },
-    {
-      "rule_id": "ipad",
-      "name": "iPad",
-      "layer": "suppression",
-      "priority": 80,
-      "managed_relations": [
-        {
-          "kind": "rule",
-          "relation_role": "suppresses",
-          "target_template_id": "",
-          "target_rule_id": "iphone",
-          "managed_key": "suppression-rule-ipad-relation-rule-suppresses-iphone",
-          "artifact_fingerprint": "7122677:110",
-          "attributes": {}
-        }
-      ],
-      "source": {
-        "class_code": "iiipad",
-        "key_attribute": "Critical",
-        "conditions": [],
-        "filters": []
-      },
-      "when": {
-        "allRegex": [
-          {
-            "field": "className",
-            "pattern": "(?i)^iiipad$"
-          },
-          {
-            "field": "Critical",
-            "pattern": ".*"
-          }
-        ],
-        "fieldExists": "Critical",
-        "anyRegex": [],
-        "noneRegex": []
-      },
-      "target": {
-        "class_code": "C2M_SuppressionNetworkAccessZone",
-        "create_instance": false,
-        "card_id": "980357",
-        "card_description": "iiipad",
-        "idempotency_key": "cmdbuild:C2M_SuppressionNetworkAccessZone:980357",
-        "attribute_mappings": {},
-        "initial_user_values": {
-          "Code": "iiipad",
-          "description": "iiipad",
-          "name": "iiipad",
-          "is_critical": "false",
-          "aggregation_type": "n_of_m",
-          "n": "1"
-        },
-        "user_responsibility_attributes": []
-      },
-      "relations": [
-        {
-          "domain_code": "C2M_SuppressionNetworkAccessZoneSuppressesSuppresse87c1be4",
-          "target_class_code": "C2M_SuppressionComputeCluster",
-          "target_lookup": "981926",
-          "managed_relation_key": "suppression-rule-ipad-relation-rule-suppresses-iphone",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        }
-      ]
-    },
-    {
-      "rule_id": "iphone",
-      "name": "iPhone",
-      "layer": "suppression",
-      "priority": 100,
-      "managed_relations": [],
-      "source": {
-        "class_code": "iiiphone",
-        "key_attribute": "Code",
-        "conditions": [],
-        "filters": []
-      },
-      "when": {
-        "allRegex": [
-          {
-            "field": "className",
-            "pattern": "(?i)^iiiphone$"
-          },
-          {
-            "field": "Code",
-            "pattern": ".*"
-          }
-        ],
-        "fieldExists": "Code",
-        "anyRegex": [],
-        "noneRegex": []
-      },
-      "target": {
-        "class_code": "C2M_SuppressionComputeCluster",
-        "create_instance": false,
-        "card_id": "981926",
-        "card_description": "iphone",
-        "idempotency_key": "cmdbuild:C2M_SuppressionComputeCluster:981926",
-        "attribute_mappings": {},
-        "initial_user_values": {
-          "Code": "iphone",
-          "description": "iphone",
-          "name": "iphone",
-          "is_critical": "false",
-          "aggregation_type": "all"
-        },
-        "user_responsibility_attributes": []
-      },
-      "relations": []
-    },
-    {
-      "rule_id": "irouter",
-      "name": "irouter",
-      "layer": "suppression",
-      "priority": 70,
-      "managed_relations": [
-        {
-          "kind": "rule",
-          "relation_role": "suppresses",
-          "target_template_id": "",
-          "target_rule_id": "ipad",
-          "managed_key": "suppression-rule-irouter-relation-rule-suppresses-ipad",
-          "artifact_fingerprint": "fbbea1de:108",
-          "attributes": {}
-        }
-      ],
-      "source": {
-        "class_code": "iiirouter",
-        "key_attribute": "Code",
-        "conditions": [],
-        "filters": []
-      },
-      "when": {
-        "allRegex": [
-          {
-            "field": "className",
-            "pattern": "(?i)^iiirouter$"
-          },
-          {
-            "field": "Code",
-            "pattern": ".*"
-          }
-        ],
-        "fieldExists": "Code",
-        "anyRegex": [],
-        "noneRegex": []
-      },
-      "target": {
-        "class_code": "C2M_SuppressionComputeCluster",
-        "create_instance": false,
-        "card_id": "981939",
-        "card_description": "irouter",
-        "idempotency_key": "cmdbuild:C2M_SuppressionComputeCluster:981939",
-        "attribute_mappings": {},
-        "initial_user_values": {
-          "Code": "irouter",
-          "description": "irouter",
-          "name": "irouter",
-          "is_critical": "false",
-          "aggregation_type": "all"
-        },
-        "user_responsibility_attributes": []
-      },
-      "relations": [
-        {
-          "domain_code": "C2M_SuppressionComputeClusterSuppressesSuppressiond6087971",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "980357",
-          "managed_relation_key": "suppression-rule-irouter-relation-rule-suppresses-ipad",
           "attribute_mappings": {
             "is_active": "true",
             "source": "cmdb2monitoring",

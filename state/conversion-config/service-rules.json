@@ -41311,6 +41311,1116 @@
           ]
         }
       ]
+    },
+    {
+      "application_id": "service-2026-05-18t07-06-59-430z-624503f0-461410",
+      "layer": "service",
+      "applied_at": "2026-05-18T07:06:59.430Z",
+      "reconcile": {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 152,
+        "removed": 0,
+        "relations": {
+          "created": 0,
+          "updated": 0,
+          "unchanged": 147,
+          "removed": 0,
+          "total": 147
+        }
+      },
+      "templates": [
+        {
+          "template_id": "supp-service-copy",
+          "template_name": "МаршрутизаторыSupp (Сервис)",
+          "template_version": 2,
+          "content_hash": "fd82d71c:1461",
+          "candidate_count": 1,
+          "candidates": [
+            "routerG"
+          ],
+          "generated_rules": [
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city03-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city03",
+              "artifact_fingerprint": "94be519a:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city01-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city01",
+              "artifact_fingerprint": "5499aa98:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city02-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city02",
+              "artifact_fingerprint": "a05d74db:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city04-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city04",
+              "artifact_fingerprint": "c480c3dd:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city05-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city05",
+              "artifact_fingerprint": "864b8b9c:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city06-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city06",
+              "artifact_fingerprint": "a8535ddf:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city07-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city07",
+              "artifact_fingerprint": "c0444a9e:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city08-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city08",
+              "artifact_fingerprint": "587e9ad1:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city09-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city09",
+              "artifact_fingerprint": "4e327290:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city10-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city10",
+              "artifact_fingerprint": "2336ccb8:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city12-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city12",
+              "artifact_fingerprint": "6a0f00ba:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city13-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city13",
+              "artifact_fingerprint": "4bee933b:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city15-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city15",
+              "artifact_fingerprint": "f36bb73d:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city16-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city16",
+              "artifact_fingerprint": "8f3209be:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city17-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city17",
+              "artifact_fingerprint": "f58e7c3f:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city18-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city18",
+              "artifact_fingerprint": "c4b78cb0:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city19-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city19",
+              "artifact_fingerprint": "738d8e31:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city21-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city21",
+              "artifact_fingerprint": "d2722da:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city25-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city25",
+              "artifact_fingerprint": "e5611bde:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city27-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city27",
+              "artifact_fingerprint": "f4b50d5c:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city29-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city29",
+              "artifact_fingerprint": "4f18ead2:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city11-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city11",
+              "artifact_fingerprint": "1fb9de39:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city14-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city14",
+              "artifact_fingerprint": "ab44adbc:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city20-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city20",
+              "artifact_fingerprint": "927f161b:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city22-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city22",
+              "artifact_fingerprint": "8cf21699:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city23-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city23",
+              "artifact_fingerprint": "1aa70c58:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city24-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city24",
+              "artifact_fingerprint": "72d50f1f:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city26-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city26",
+              "artifact_fingerprint": "83cff9d:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city28-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city28",
+              "artifact_fingerprint": "c37ee613:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city31-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city31",
+              "artifact_fingerprint": "c398377b:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city30-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city30",
+              "artifact_fingerprint": "f05fe1fa:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city32-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city32",
+              "artifact_fingerprint": "d14b9c78:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city33-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city33",
+              "artifact_fingerprint": "77bc9ef9:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city34-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city34",
+              "artifact_fingerprint": "851eb2fe:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city35-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city35",
+              "artifact_fingerprint": "43dc107f:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city36-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city36",
+              "artifact_fingerprint": "e56db57c:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city37-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city37",
+              "artifact_fingerprint": "8f665ffd:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city38-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city38",
+              "artifact_fingerprint": "47d8a9f2:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city39-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city39",
+              "artifact_fingerprint": "3f49e773:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city40-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city40",
+              "artifact_fingerprint": "dc70295d:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city41-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city41",
+              "artifact_fingerprint": "ad4af11c:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city42-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city42",
+              "artifact_fingerprint": "4490d35f:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city43-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city43",
+              "artifact_fingerprint": "eeae801e:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city49-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city49",
+              "artifact_fingerprint": "d3bda914:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city50-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city50",
+              "artifact_fingerprint": "34a5fb3c:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city44-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city44",
+              "artifact_fingerprint": "1cdf7159:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city45-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city45",
+              "artifact_fingerprint": "ae076118:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city46-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city46",
+              "artifact_fingerprint": "fce9135b:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city47-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city47",
+              "artifact_fingerprint": "51d8e81a:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            },
+            {
+              "managed_key": "service-template-supp-service-copy-rule-routerg-dimension-city48-c2m-servicenetworkaccesszone",
+              "rule_id": "service-supp-service-copy-routerg-city48",
+              "artifact_fingerprint": "281d955:1205",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_ServiceNetworkAccessZone"
+            }
+          ]
+        },
+        {
+          "template_id": "rule-service-copy",
+          "template_name": "Рабочие места (Сервис)",
+          "template_version": 2,
+          "content_hash": "55c9e83e:1422",
+          "candidate_count": 3,
+          "candidates": [
+            "ARM",
+            "NTbook",
+            "TKGK"
+          ],
+          "generated_rules": [
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city07-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city07",
+              "artifact_fingerprint": "d9539fbd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city27-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city27",
+              "artifact_fingerprint": "2fe188bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city22-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city22",
+              "artifact_fingerprint": "e085657d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city02-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city02",
+              "artifact_fingerprint": "fe48bf7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city23-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city23",
+              "artifact_fingerprint": "751bfdbd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city49-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city49",
+              "artifact_fingerprint": "a91c63d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city51-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city51",
+              "artifact_fingerprint": "c099bb75:854",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city53-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city53",
+              "artifact_fingerprint": "38b6f0b7:854",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city33-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city33",
+              "artifact_fingerprint": "e8ac43bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city15-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city15",
+              "artifact_fingerprint": "4067a53d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city19-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city19",
+              "artifact_fingerprint": "161cec3d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city41-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city41",
+              "artifact_fingerprint": "d1dbf43d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city45-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city45",
+              "artifact_fingerprint": "dd7f9b3d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city31-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city31",
+              "artifact_fingerprint": "25a8553d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city32-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city32",
+              "artifact_fingerprint": "3babc9fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city36-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city36",
+              "artifact_fingerprint": "f67154fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city01-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city01",
+              "artifact_fingerprint": "f2709a3d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city09-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city09",
+              "artifact_fingerprint": "a6b17c3d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city14-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city14",
+              "artifact_fingerprint": "f9fabb7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city29-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city29",
+              "artifact_fingerprint": "e44c6f3d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city12-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city12",
+              "artifact_fingerprint": "f96e1fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city40-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city40",
+              "artifact_fingerprint": "7b556afd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city04-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city04",
+              "artifact_fingerprint": "780abfd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city34-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city34",
+              "artifact_fingerprint": "8a197d7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city16-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city16",
+              "artifact_fingerprint": "f8a464fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city10-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city10",
+              "artifact_fingerprint": "9bb6187d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city44-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city44",
+              "artifact_fingerprint": "1d3511fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city25-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city25",
+              "artifact_fingerprint": "8727403d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city52-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city52",
+              "artifact_fingerprint": "cf502d6:854",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city03-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city03",
+              "artifact_fingerprint": "a30304bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city08-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city08",
+              "artifact_fingerprint": "df2eeafd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city38-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city38",
+              "artifact_fingerprint": "c1e5dc7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city28-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city28",
+              "artifact_fingerprint": "1f9ae6fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city50-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city50",
+              "artifact_fingerprint": "4ea9727d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city48-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city48",
+              "artifact_fingerprint": "285e44fd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city11-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city11",
+              "artifact_fingerprint": "1469123d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city05-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city05",
+              "artifact_fingerprint": "d4552d3d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city17-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city17",
+              "artifact_fingerprint": "71eb3bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city18-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city18",
+              "artifact_fingerprint": "6342ba7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city20-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city20",
+              "artifact_fingerprint": "a5813cfd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city42-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city42",
+              "artifact_fingerprint": "1144197d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city26-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city26",
+              "artifact_fingerprint": "21df87d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city47-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city47",
+              "artifact_fingerprint": "8e1205bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city13-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city13",
+              "artifact_fingerprint": "670a18bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city30-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city30",
+              "artifact_fingerprint": "d0f8ea7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city35-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city35",
+              "artifact_fingerprint": "c5bcf03d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city39-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city39",
+              "artifact_fingerprint": "b403173d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city43-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city43",
+              "artifact_fingerprint": "6db656bd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city37-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city37",
+              "artifact_fingerprint": "fff2cebd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city06-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city06",
+              "artifact_fingerprint": "7a894a7d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city24-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city24",
+              "artifact_fingerprint": "b9abdffd:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city21-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city21",
+              "artifact_fingerprint": "7d4ea53d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-ntbook-dimension-city46-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-ntbook-city46",
+              "artifact_fingerprint": "e957c07d:1164",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city04-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city04",
+              "artifact_fingerprint": "3322103d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city05-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city05",
+              "artifact_fingerprint": "92ca737d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city06-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city06",
+              "artifact_fingerprint": "8dafdbbd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city07-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city07",
+              "artifact_fingerprint": "45ffb8fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city09-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city09",
+              "artifact_fingerprint": "c730a47d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city11-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city11",
+              "artifact_fingerprint": "67d9c5fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city12-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city12",
+              "artifact_fingerprint": "415ebd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city14-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city14",
+              "artifact_fingerprint": "5ca22f3d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city15-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city15",
+              "artifact_fingerprint": "514e5efd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city16-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city16",
+              "artifact_fingerprint": "2440efbd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city19-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city19",
+              "artifact_fingerprint": "4148a7fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city20-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city20",
+              "artifact_fingerprint": "2830163d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city21-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city21",
+              "artifact_fingerprint": "5ec5177d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city22-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city22",
+              "artifact_fingerprint": "5fcc8bbd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city23-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city23",
+              "artifact_fingerprint": "240ae4fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city24-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city24",
+              "artifact_fingerprint": "e5deaf3d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city25-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city25",
+              "artifact_fingerprint": "82c4a87d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city26-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city26",
+              "artifact_fingerprint": "30352cbd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city27-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city27",
+              "artifact_fingerprint": "d3f46dfd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city28-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city28",
+              "artifact_fingerprint": "6c99303d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city08-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city08",
+              "artifact_fingerprint": "e14c613d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city10-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city10",
+              "artifact_fingerprint": "9bf1963d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city13-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city13",
+              "artifact_fingerprint": "3bc50d7d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city18-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city18",
+              "artifact_fingerprint": "5d20d03d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city29-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city29",
+              "artifact_fingerprint": "faf7117d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city30-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city30",
+              "artifact_fingerprint": "33fad33d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city31-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city31",
+              "artifact_fingerprint": "fd5f0fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city32-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city32",
+              "artifact_fingerprint": "ccdecbbd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city33-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city33",
+              "artifact_fingerprint": "a248247d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city34-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city34",
+              "artifact_fingerprint": "fd95643d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city35-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city35",
+              "artifact_fingerprint": "127e89fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city36-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city36",
+              "artifact_fingerprint": "7cc854bd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city37-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city37",
+              "artifact_fingerprint": "cd8cb57d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city38-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city38",
+              "artifact_fingerprint": "5c27a53d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city39-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city39",
+              "artifact_fingerprint": "4bd5dafd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city40-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city40",
+              "artifact_fingerprint": "4f907f3d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city41-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city41",
+              "artifact_fingerprint": "4f6fda7d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city42-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city42",
+              "artifact_fingerprint": "aa1e4abd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city43-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city43",
+              "artifact_fingerprint": "a8a057fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city44-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city44",
+              "artifact_fingerprint": "b48f783d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city47-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city47",
+              "artifact_fingerprint": "563418fd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city49-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city49",
+              "artifact_fingerprint": "778bcc7d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city50-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city50",
+              "artifact_fingerprint": "a591c63d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city45-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city45",
+              "artifact_fingerprint": "9a14db7d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city46-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city46",
+              "artifact_fingerprint": "91f843bd:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city48-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city48",
+              "artifact_fingerprint": "c3bb693d:1158",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city51-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city51",
+              "artifact_fingerprint": "bdcca835:848",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city52-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city52",
+              "artifact_fingerprint": "32181896:848",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            },
+            {
+              "managed_key": "service-template-rule-service-copy-rule-tkgk-dimension-city53-c2m-serviceuserendpointfleet",
+              "rule_id": "service-rule-service-copy-tkgk-city53",
+              "artifact_fingerprint": "29596877:848",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_ServiceUserEndpointFleet"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

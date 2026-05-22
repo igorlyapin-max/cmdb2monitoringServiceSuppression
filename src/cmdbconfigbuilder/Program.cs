@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -43,9 +45,19 @@ builder.Services.AddOptions<SemanticDeduplicationOptions>()
     .Validate(options => options.HasValidWindow(), "SemanticDeduplication:WindowSeconds must be greater than zero.")
     .Validate(options => options.HasValidMaxEntries(), "SemanticDeduplication:MaxEntries must be greater than zero.")
     .ValidateOnStart();
+builder.Services.AddOptions<RuntimeRedisOptions>()
+    .Bind(builder.Configuration.GetSection(RuntimeRedisOptions.SectionName))
+    .Validate(options => !options.Enabled || !string.IsNullOrWhiteSpace(options.ConnectionString), "Redis:ConnectionString is required when Redis:Enabled=true.")
+    .Validate(options => options.OperationTtlSeconds > 0, "Redis:OperationTtlSeconds must be greater than zero.")
+    .Validate(options => options.HasValidFailureMode(), "Redis:FailureMode must be fallback or fail.")
+    .ValidateOnStart();
 builder.Services.AddOptions<ReadinessOptions>()
     .Bind(builder.Configuration.GetSection(ReadinessOptions.SectionName))
     .Validate(options => options.HasValidZabbixHostIdAttribute(), "Readiness:ZabbixHostIdAttribute is required.")
+    .ValidateOnStart();
+builder.Services.AddOptions<ZabbixDirtyScopeOptions>()
+    .Bind(builder.Configuration.GetSection(ZabbixDirtyScopeOptions.SectionName))
+    .Validate(options => !options.Enabled || options.HasValidEndpoint(), "ZabbixDirtyScopes:Endpoint is required when ZabbixDirtyScopes:Enabled=true.")
     .ValidateOnStart();
 builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
@@ -68,6 +80,7 @@ builder.Services.AddSingleton<ApplyCurrentRulesProgressStore>();
 builder.Services.AddHostedService<RuleEngineWorker>();
 builder.Services.AddHttpClient<CmdbuildClient>();
 builder.Services.AddHttpClient<ZabbixClient>();
+builder.Services.AddHttpClient<ZabbixDirtyScopeClient>();
 
 var app = builder.Build();
 app.MapServiceHealth();
@@ -95,6 +108,161 @@ app.MapGet("/rules/status", async (
             title: "Conversion rules status is unavailable.",
             detail: ex.Message,
             statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
+
+app.MapGet("/redis/check", (
+    IOptionsMonitor<RuntimeRedisOptions> redisOptions,
+    IOptionsMonitor<SemanticDeduplicationOptions> dedupOptions) =>
+{
+    var redis = redisOptions.CurrentValue;
+    var dedup = dedupOptions.CurrentValue;
+    if (!redis.Enabled)
+    {
+        return Results.Ok(new
+        {
+            configured = false,
+            success = true,
+            backend = "in-memory",
+            redisRequested = false,
+            redisAvailable = false,
+            fallbackActive = false,
+            blockingOnRedisUnavailable = false,
+            keyPrefix = redis.KeyPrefix,
+            semanticDeduplicationEnabled = dedup.Enabled,
+            semanticDeduplicationWindowSeconds = dedup.WindowSeconds,
+            message = "Redis is disabled; semantic deduplication uses process memory."
+        });
+    }
+
+    try
+    {
+        using var client = RedisRespClient.Connect(redis);
+        client.Ping();
+        return Results.Ok(new
+        {
+            configured = true,
+            success = true,
+            backend = "redis",
+            redisRequested = true,
+            redisAvailable = true,
+            fallbackActive = false,
+            blockingOnRedisUnavailable = false,
+            keyPrefix = redis.KeyPrefix,
+            semanticDeduplicationEnabled = dedup.Enabled,
+            semanticDeduplicationWindowSeconds = dedup.WindowSeconds,
+            message = "Redis semantic deduplication backend is available."
+        });
+    }
+    catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException or TimeoutException)
+    {
+        var failMode = string.Equals(redis.FailureMode, "fail", StringComparison.OrdinalIgnoreCase);
+        return Results.Ok(new
+        {
+            configured = true,
+            success = !failMode,
+            backend = failMode ? "redis" : "in-memory-fallback",
+            redisRequested = true,
+            redisAvailable = false,
+            fallbackActive = !failMode,
+            blockingOnRedisUnavailable = failMode,
+            keyPrefix = redis.KeyPrefix,
+            semanticDeduplicationEnabled = dedup.Enabled,
+            semanticDeduplicationWindowSeconds = dedup.WindowSeconds,
+            message = failMode
+                ? $"Redis is unavailable and FailureMode=fail. Last Redis error: {ex.Message}"
+                : $"Redis is unavailable; semantic deduplication falls back to process memory. Last Redis error: {ex.Message}"
+        });
+    }
+});
+
+app.MapPost("/redis/semantic-dedup/check", (
+    SemanticCommandDeduplicator deduplicator,
+    IOptionsMonitor<RuntimeRedisOptions> redisOptions,
+    IOptionsMonitor<SemanticDeduplicationOptions> dedupOptions) =>
+{
+    var redis = redisOptions.CurrentValue;
+    var dedup = dedupOptions.CurrentValue;
+    var redisAvailable = false;
+    if (redis.Enabled)
+    {
+        try
+        {
+            using var client = RedisRespClient.Connect(redis);
+            client.Ping();
+            redisAvailable = true;
+        }
+        catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException or TimeoutException)
+        {
+            if (string.Equals(redis.FailureMode, "fail", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.Ok(new
+                {
+                    configured = true,
+                    success = false,
+                    backend = "redis",
+                    redisRequested = true,
+                    redisAvailable = false,
+                    fallbackActive = false,
+                    blockingOnRedisUnavailable = true,
+                    keyPrefix = redis.KeyPrefix,
+                    semanticDeduplicationEnabled = dedup.Enabled,
+                    semanticDeduplicationWindowSeconds = dedup.WindowSeconds,
+                    message = $"Redis is unavailable and FailureMode=fail. Semantic dedup self-check is blocked. Last Redis error: {ex.Message}"
+                });
+            }
+        }
+    }
+
+    var plan = BuildSemanticDedupSelfCheckPlan();
+    try
+    {
+        var firstDuplicate = deduplicator.IsDuplicate(plan, out var firstDuplicateAge);
+        deduplicator.MarkPublished(plan);
+        var secondDuplicate = deduplicator.IsDuplicate(plan, out var secondDuplicateAge);
+        var success = dedup.Enabled ? !firstDuplicate && secondDuplicate : !firstDuplicate && !secondDuplicate;
+        var backend = redis.Enabled
+            ? redisAvailable ? "redis" : "in-memory-fallback"
+            : "in-memory";
+
+        return Results.Ok(new
+        {
+            configured = redis.Enabled,
+            success,
+            backend,
+            redisRequested = redis.Enabled,
+            redisAvailable,
+            fallbackActive = redis.Enabled && !redisAvailable,
+            blockingOnRedisUnavailable = false,
+            keyPrefix = redis.KeyPrefix,
+            semanticDeduplicationEnabled = dedup.Enabled,
+            semanticDeduplicationWindowSeconds = dedup.WindowSeconds,
+            semanticKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(plan.SemanticKey))).ToLowerInvariant(),
+            firstDuplicate,
+            firstDuplicateAgeSeconds = firstDuplicateAge?.TotalSeconds,
+            secondDuplicate,
+            secondDuplicateAgeSeconds = secondDuplicateAge?.TotalSeconds,
+            message = dedup.Enabled
+                ? "Semantic dedup self-check completed: first check is new, second check is duplicate."
+                : "Semantic deduplication is disabled; self-check verified that no duplicate is reported."
+        });
+    }
+    catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException or TimeoutException)
+    {
+        return Results.Ok(new
+        {
+            configured = redis.Enabled,
+            success = false,
+            backend = redis.Enabled ? "redis" : "in-memory",
+            redisRequested = redis.Enabled,
+            redisAvailable = false,
+            fallbackActive = false,
+            blockingOnRedisUnavailable = redis.Enabled && string.Equals(redis.FailureMode, "fail", StringComparison.OrdinalIgnoreCase),
+            keyPrefix = redis.KeyPrefix,
+            semanticDeduplicationEnabled = dedup.Enabled,
+            semanticDeduplicationWindowSeconds = dedup.WindowSeconds,
+            message = $"Semantic dedup self-check failed: {ex.Message}"
+        });
     }
 });
 
@@ -203,6 +371,7 @@ app.MapPost("/rules/apply-current", async (
     KafkaJsonProducer producer,
     CmdbuildClient cmdbuild,
     IHttpClientFactory httpClientFactory,
+    ZabbixDirtyScopeClient dirtyScopeClient,
     IOptions<KafkaTopicsOptions> topicOptions,
     IOptions<ConversionRulesOptions> conversionRulesOptions,
     IHostEnvironment environment,
@@ -395,6 +564,7 @@ app.MapPost("/rules/apply-current", async (
                 httpClientFactory.CreateClient(),
                 topicOptions.Value,
                 publishTargets,
+                dirtyScopeClient,
                 pendingPlans,
                 operationDeduplicationKeys,
                 result,
@@ -431,6 +601,7 @@ app.MapPost("/rules/apply-current", async (
                 httpClientFactory.CreateClient(),
                 topicOptions.Value,
                 publishTargets,
+                dirtyScopeClient,
                 pendingPlans,
                 operationDeduplicationKeys,
                 result,
@@ -756,6 +927,42 @@ static void AddScopeCandidate(ISet<string> values, string? value)
     {
         values.Add(value.Trim());
     }
+}
+
+static AggregationCommandPlan BuildSemanticDedupSelfCheckPlan()
+{
+    var suffix = Guid.NewGuid().ToString("N");
+    return new AggregationCommandPlan
+    {
+        SemanticKey = $"redis:self-check:{suffix}",
+        SemanticFingerprint = $"fingerprint:{suffix}",
+        Command = new AggregationCommand
+        {
+            CommandId = $"redis-self-check-{suffix}",
+            CorrelationId = $"redis-self-check-{suffix}",
+            SourceEventId = $"redis-self-check-{suffix}",
+            CommandType = AggregationCommandTypes.EnsureMembership,
+            Layer = "diagnostic",
+            RuleId = "redis-semantic-dedup-self-check",
+            RuleName = "Redis semantic dedup self-check",
+            EventType = "diagnostic",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Source = new AggregationSourceObject
+            {
+                ClassCode = "RedisSelfCheckSource",
+                CardId = suffix,
+                KeyAttribute = "Code",
+                KeyValue = suffix
+            },
+            Target = new AggregationTargetObject
+            {
+                ClassCode = "RedisSelfCheckTarget",
+                CardDescription = "Redis semantic dedup self-check",
+                CreateInstance = false,
+                IdempotencyKey = suffix
+            }
+        }
+    };
 }
 
 static RuleScopeEdges BuildRuleScopeEdges(IReadOnlyList<ConversionRule> rules)
@@ -1279,6 +1486,7 @@ static async Task PublishPendingZabbixPlansAsync(
     HttpClient httpClient,
     KafkaTopicsOptions topicOptions,
     PublishTargets publishTargets,
+    ZabbixDirtyScopeClient dirtyScopeClient,
     IReadOnlyList<PendingApplyCurrentPlan> pendingPlans,
     ISet<string> operationDeduplicationKeys,
     ApplyCurrentRulesResult result,
@@ -1401,6 +1609,11 @@ static async Task PublishPendingZabbixPlansAsync(
         {
             Increment(result.CommandsPublishedByTopic, topic);
         }
+        await dirtyScopeClient.MarkPendingIfZabbixPublishedAsync(
+            plan.Command,
+            publishedTopics,
+            "apply-current zabbix topic publish",
+            cancellationToken);
     }
 }
 
@@ -4034,6 +4247,7 @@ public sealed class RuleEngineWorker(
     SemanticCommandDeduplicator deduplicator,
     KafkaJsonProducer producer,
     CmdbuildClient cmdbuild,
+    ZabbixDirtyScopeClient dirtyScopeClient,
     ILogger<RuleEngineWorker> logger)
     : KafkaJsonConsumerWorker<CmdbRawEvent>(kafkaOptions, logger)
 {
@@ -4082,13 +4296,65 @@ public sealed class RuleEngineWorker(
                 continue;
             }
 
-            await PublishAggregationPlanAsync(
+            var publishedTopics = await PublishAggregationPlanAsync(
                 producer,
                 topicOptions.Value,
                 plan,
                 PublishTargets.All,
                 cancellationToken);
+            await dirtyScopeClient.MarkPendingIfZabbixPublishedAsync(
+                plan.Command,
+                publishedTopics,
+                "streaming webhook zabbix topic publish",
+                cancellationToken);
             deduplicator.MarkPublished(plan);
+        }
+
+        await MarkDirtyScopesForIntermediateWebhookAsync(message, rules, cancellationToken);
+    }
+
+    private async Task MarkDirtyScopesForIntermediateWebhookAsync(
+        CmdbRawEvent message,
+        ConversionRulesDocument rules,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(message.ClassCode) || rules.Source.Fields.Count == 0)
+        {
+            return;
+        }
+
+        var impactedFields = rules.Source.Fields
+            .Where(item => CmdbPathContainsIntermediateClass(item.Value.CmdbPath, message.ClassCode))
+            .Select(item => item.Key)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (impactedFields.Length == 0)
+        {
+            return;
+        }
+
+        var impactedFieldSet = impactedFields.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in rules.Rules
+            .Where(rule => rule.Enabled
+                && !rule.Source.ClassCode.Equals(message.ClassCode, StringComparison.OrdinalIgnoreCase)
+                && ReferencedFieldsForRule(rule).Overlaps(impactedFieldSet))
+            .SelectMany(rule => DirtyScopeEntriesForRule(rule)
+                .Select(scopeKey => new
+                {
+                    Layer = NormalizeDirtyScopeLayer(rule.Layer),
+                    ScopeKey = scopeKey,
+                    RuleId = rule.RuleId
+                }))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Layer) && !string.IsNullOrWhiteSpace(item.ScopeKey))
+            .GroupBy(item => item.Layer, StringComparer.Ordinal)
+            .ToArray())
+        {
+            var reason = $"intermediate cmdbPath webhook: {message.ClassCode}/{message.CardId} can affect {string.Join(", ", impactedFields)}";
+            await dirtyScopeClient.MarkPendingAsync(
+                group.Key,
+                group.Select(item => item.ScopeKey).Distinct(StringComparer.Ordinal).ToArray(),
+                reason,
+                cancellationToken);
         }
     }
 
@@ -4253,7 +4519,7 @@ public sealed class RuleEngineWorker(
         return "";
     }
 
-    private static async Task PublishAggregationPlanAsync(
+    private static async Task<IReadOnlyList<string>> PublishAggregationPlanAsync(
         KafkaJsonProducer producer,
         KafkaTopicsOptions options,
         AggregationCommandPlan plan,
@@ -4270,6 +4536,8 @@ public sealed class RuleEngineWorker(
         {
             await producer.PublishAsync(topic, key, plan.Command, cancellationToken);
         }
+
+        return topics;
     }
 
     private static IReadOnlyList<string> PublishTopicsForCommand(
@@ -4439,6 +4707,104 @@ public sealed class RuleEngineWorker(
         return fields;
     }
 
+    private static HashSet<string> ReferencedFieldsForRule(ConversionRule rule)
+    {
+        var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddField(fields, rule.Source.KeyAttribute);
+        AddField(fields, rule.When.FieldExists);
+        foreach (var matcher in rule.When.AllRegex.Concat(rule.When.AnyRegex).Concat(rule.When.NoneRegex))
+        {
+            AddField(fields, matcher.Field);
+        }
+
+        foreach (var condition in rule.Source.Conditions.Concat(rule.Source.Filters))
+        {
+            AddField(fields, condition.Attribute);
+        }
+
+        AddSourceTemplateFields(fields, rule.Target.IdempotencyKey);
+        AddSourceTemplateFields(fields, rule.Target.CardId);
+        AddSourceTemplateFields(fields, rule.Target.CardDescription);
+        foreach (var value in rule.Target.AttributeMappings.Values.Concat(rule.Target.InitialUserValues.Values))
+        {
+            AddSourceTemplateFields(fields, value);
+        }
+
+        foreach (var relation in rule.Relations)
+        {
+            AddSourceTemplateFields(fields, relation.TargetLookup);
+            foreach (var value in relation.AttributeMappings.Values)
+            {
+                AddSourceTemplateFields(fields, value);
+            }
+        }
+
+        return fields;
+    }
+
+    private static bool CmdbPathContainsIntermediateClass(string? cmdbPath, string classCode)
+    {
+        if (string.IsNullOrWhiteSpace(cmdbPath) || string.IsNullOrWhiteSpace(classCode))
+        {
+            return false;
+        }
+
+        var parts = cmdbPath.Split('.', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return parts.Skip(1).Any(part => part.Equals(classCode, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<string> DirtyScopeEntriesForRule(ConversionRule rule)
+    {
+        var keys = new List<string>();
+        AddStaticScopeKey(keys, rule.Target.CardId);
+        AddStaticScopeKey(keys, rule.Target.IdempotencyKey);
+        if (!string.IsNullOrWhiteSpace(rule.Target.CardId) && !string.IsNullOrWhiteSpace(rule.Target.ClassCode))
+        {
+            AddStaticScopeKey(keys, $"cmdbuild:{rule.Target.ClassCode.Trim()}:{rule.Target.CardId.Trim()}");
+        }
+
+        if (rule.Target.AttributeMappings.TryGetValue("population_source_key", out var mappedPopulationKey))
+        {
+            AddStaticScopeKey(keys, mappedPopulationKey);
+        }
+
+        if (rule.Target.InitialUserValues.TryGetValue("population_source_key", out var initialPopulationKey))
+        {
+            AddStaticScopeKey(keys, initialPopulationKey);
+        }
+
+        AddStaticScopeKey(keys, rule.RuleId);
+        AddStaticScopeKey(keys, rule.Name);
+        return keys
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static void AddStaticScopeKey(ICollection<string> keys, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Contains("${source.", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        keys.Add(value.Trim());
+    }
+
+    private static string NormalizeDirtyScopeLayer(string layer)
+    {
+        if (layer.Equals("service", StringComparison.OrdinalIgnoreCase))
+        {
+            return "service";
+        }
+
+        if (layer.Equals("suppression", StringComparison.OrdinalIgnoreCase))
+        {
+            return "suppression";
+        }
+
+        return "";
+    }
+
     private static void AddField(ISet<string> fields, string? field)
     {
         if (!string.IsNullOrWhiteSpace(field))
@@ -4507,8 +4873,12 @@ public static class SourceHostIdEnrichment
     }
 }
 
-public sealed class SemanticCommandDeduplicator(IOptionsMonitor<SemanticDeduplicationOptions> options)
+public sealed class SemanticCommandDeduplicator(
+    IOptionsMonitor<SemanticDeduplicationOptions> options,
+    IOptionsMonitor<RuntimeRedisOptions> redisOptions,
+    ILogger<SemanticCommandDeduplicator> logger)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<string, SemanticDeduplicationEntry> entries = new();
     private long checkCounter;
 
@@ -4519,6 +4889,23 @@ public sealed class SemanticCommandDeduplicator(IOptionsMonitor<SemanticDeduplic
         if (!currentOptions.Enabled)
         {
             return false;
+        }
+
+        if (redisOptions.CurrentValue.Enabled)
+        {
+            try
+            {
+                return IsRedisDuplicate(plan, currentOptions, redisOptions.CurrentValue, out duplicateAge);
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException or TimeoutException)
+            {
+                if (string.Equals(redisOptions.CurrentValue.FailureMode, "fail", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"Redis semantic deduplication is unavailable: {ex.Message}", ex);
+                }
+
+                logger.LogWarning(ex, "Redis semantic deduplication failed; falling back to in-memory dedup for key {SemanticKey}.", plan.SemanticKey);
+            }
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -4554,6 +4941,24 @@ public sealed class SemanticCommandDeduplicator(IOptionsMonitor<SemanticDeduplic
             return;
         }
 
+        if (redisOptions.CurrentValue.Enabled)
+        {
+            try
+            {
+                MarkRedisPublished(plan, currentOptions, redisOptions.CurrentValue);
+                return;
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException or TimeoutException)
+            {
+                if (string.Equals(redisOptions.CurrentValue.FailureMode, "fail", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"Redis semantic deduplication is unavailable: {ex.Message}", ex);
+                }
+
+                logger.LogWarning(ex, "Redis semantic deduplication publish mark failed; falling back to in-memory dedup for key {SemanticKey}.", plan.SemanticKey);
+            }
+        }
+
         var now = DateTimeOffset.UtcNow;
         entries.AddOrUpdate(
             plan.SemanticKey,
@@ -4578,6 +4983,113 @@ public sealed class SemanticCommandDeduplicator(IOptionsMonitor<SemanticDeduplic
             }
         }
     }
+
+    private bool IsRedisDuplicate(
+        AggregationCommandPlan plan,
+        SemanticDeduplicationOptions currentOptions,
+        RuntimeRedisOptions redis,
+        out TimeSpan? duplicateAge)
+    {
+        duplicateAge = null;
+        using var client = RedisRespClient.Connect(redis);
+        var now = DateTimeOffset.UtcNow;
+        var window = TimeSpan.FromSeconds(currentOptions.WindowSeconds);
+        var key = SemanticDeduplicationRedisKey(redis, plan.SemanticKey);
+        var json = client.ExecuteBulkString("GET", key);
+        if (TryReadSemanticDeduplicationEntry(json, out var existing)
+            && existing.Fingerprint.Equals(plan.SemanticFingerprint, StringComparison.Ordinal)
+            && now - existing.LastSeenAtUtc <= window)
+        {
+            duplicateAge = now - existing.LastPublishedAtUtc;
+            var next = existing with { LastSeenAtUtc = now };
+            client.ExecuteBulkString("SET", key, JsonSerializer.Serialize(next, JsonOptions), "EX", currentOptions.WindowSeconds.ToString(CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        var reservationTtlSeconds = Math.Clamp(currentOptions.WindowSeconds, 5, 60);
+        var reservation = new SemanticDeduplicationEntry(plan.SemanticFingerprint, now)
+        {
+            LastSeenAtUtc = now,
+            Pending = true
+        };
+        var reserved = client.ExecuteBulkString(
+            "SET",
+            key,
+            JsonSerializer.Serialize(reservation, JsonOptions),
+            "EX",
+            reservationTtlSeconds.ToString(CultureInfo.InvariantCulture),
+            "NX");
+        if (string.Equals(reserved, "OK", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var racedJson = client.ExecuteBulkString("GET", key);
+        if (TryReadSemanticDeduplicationEntry(racedJson, out var raced)
+            && raced.Fingerprint.Equals(plan.SemanticFingerprint, StringComparison.Ordinal)
+            && now - raced.LastSeenAtUtc <= window)
+        {
+            duplicateAge = now - raced.LastPublishedAtUtc;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void MarkRedisPublished(
+        AggregationCommandPlan plan,
+        SemanticDeduplicationOptions currentOptions,
+        RuntimeRedisOptions redis)
+    {
+        using var client = RedisRespClient.Connect(redis);
+        var now = DateTimeOffset.UtcNow;
+        var key = SemanticDeduplicationRedisKey(redis, plan.SemanticKey);
+        var entry = new SemanticDeduplicationEntry(plan.SemanticFingerprint, now);
+        client.ExecuteBulkString("SET", key, JsonSerializer.Serialize(entry, JsonOptions), "EX", currentOptions.WindowSeconds.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static string SemanticDeduplicationRedisKey(RuntimeRedisOptions redis, string semanticKey)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(semanticKey))).ToLowerInvariant();
+        return $"{NormalizeRedisPrefix(redis.KeyPrefix)}:semantic-dedup:{hash}";
+    }
+
+    private static string NormalizeRedisPrefix(string prefix)
+    {
+        return string.IsNullOrWhiteSpace(prefix) ? "cmdb2m:test" : prefix.Trim().TrimEnd(':');
+    }
+
+    private static bool TryReadSemanticDeduplicationEntry(
+        string? json,
+        out SemanticDeduplicationEntry entry)
+    {
+        entry = default!;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<SemanticDeduplicationEntry>(json, JsonOptions);
+            if (parsed is null)
+            {
+                return false;
+            }
+
+            entry = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 }
 
 public sealed record SemanticDeduplicationEntry(
@@ -4585,6 +5097,411 @@ public sealed record SemanticDeduplicationEntry(
     DateTimeOffset LastPublishedAtUtc)
 {
     public DateTimeOffset LastSeenAtUtc { get; init; } = LastPublishedAtUtc;
+
+    public bool Pending { get; init; }
+}
+
+public sealed class RuntimeRedisOptions
+{
+    public const string SectionName = "Redis";
+
+    public bool Enabled { get; init; }
+
+    public string ConnectionString { get; init; } = "";
+
+    public string KeyPrefix { get; init; } = "cmdb2m:test";
+
+    public int OperationTtlSeconds { get; init; } = 86400;
+
+    public string FailureMode { get; init; } = "fallback";
+
+    public bool HasValidFailureMode()
+    {
+        return string.Equals(FailureMode, "fallback", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(FailureMode, "fail", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+public sealed class ZabbixDirtyScopeOptions
+{
+    public const string SectionName = "ZabbixDirtyScopes";
+
+    public bool Enabled { get; init; } = true;
+
+    public string Endpoint { get; init; } = "";
+
+    public int TimeoutMs { get; init; } = 3000;
+
+    public bool HasValidEndpoint()
+    {
+        return Uri.TryCreate(Endpoint, UriKind.Absolute, out _);
+    }
+}
+
+public sealed class ZabbixDirtyScopeClient(
+    HttpClient httpClient,
+    IOptionsMonitor<ZabbixDirtyScopeOptions> options,
+    ILogger<ZabbixDirtyScopeClient> logger)
+{
+    public async Task MarkPendingIfZabbixPublishedAsync(
+        AggregationCommand command,
+        IReadOnlyList<string> publishedTopics,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (!publishedTopics.Any(IsZabbixTopic))
+        {
+            return;
+        }
+
+        var current = options.CurrentValue;
+        if (!current.Enabled || string.IsNullOrWhiteSpace(current.Endpoint))
+        {
+            return;
+        }
+
+        var layer = NormalizeLayer(command.Layer);
+        var scopeKey = DirtyScopeKey(command);
+        if (string.IsNullOrWhiteSpace(layer) || string.IsNullOrWhiteSpace(scopeKey))
+        {
+            return;
+        }
+
+        await MarkPendingAsync(layer, [scopeKey], reason, cancellationToken);
+    }
+
+    public async Task MarkPendingAsync(
+        string layer,
+        IEnumerable<string> scopeKeys,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var current = options.CurrentValue;
+        if (!current.Enabled || string.IsNullOrWhiteSpace(current.Endpoint))
+        {
+            return;
+        }
+
+        var normalizedLayer = NormalizeLayer(layer);
+        var keys = scopeKeys
+            .Select(item => (item ?? "").Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(normalizedLayer) || keys.Length == 0)
+        {
+            return;
+        }
+
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(100, current.TimeoutMs)));
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, current.Endpoint)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new
+                    {
+                        layer = normalizedLayer,
+                        reason,
+                        entries = keys.Select(scopeKey => new
+                        {
+                            scopeType = "target",
+                            scopeKey,
+                            reason,
+                            status = "pending"
+                        }).ToArray()
+                    }),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            request.Headers.Accept.ParseAdd("application/json");
+            using var response = await httpClient.SendAsync(request, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(timeout.Token);
+                logger.LogWarning(
+                    "Failed to mark Zabbix dirty scopes {Layer}/{Count}: HTTP {StatusCode}: {Body}",
+                    normalizedLayer,
+                    keys.Length,
+                    (int)response.StatusCode,
+                    TrimForLog(body));
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            logger.LogWarning(ex, "Failed to mark Zabbix dirty scopes {Layer}/{Count}.", normalizedLayer, keys.Length);
+        }
+    }
+
+    private static bool IsZabbixTopic(string topic)
+    {
+        return topic.Contains(".zabbix.", StringComparison.OrdinalIgnoreCase)
+            || topic.Equals("zabbix-direct", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeLayer(string layer)
+    {
+        if (layer.Equals("service", StringComparison.OrdinalIgnoreCase))
+        {
+            return "service";
+        }
+
+        if (layer.Equals("suppression", StringComparison.OrdinalIgnoreCase))
+        {
+            return "suppression";
+        }
+
+        return "";
+    }
+
+    private static string DirtyScopeKey(AggregationCommand command)
+    {
+        return string.IsNullOrWhiteSpace(command.Target.CardId)
+            ? command.Target.IdempotencyKey.Trim()
+            : command.Target.CardId.Trim();
+    }
+
+    private static string TrimForLog(string value, int maxLength = 500)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        return value.Length <= maxLength ? value : value[..maxLength] + "...";
+    }
+}
+
+public sealed class RedisRespClient : IDisposable
+{
+    private readonly TcpClient tcpClient;
+    private readonly NetworkStream stream;
+
+    private RedisRespClient(TcpClient tcpClient)
+    {
+        this.tcpClient = tcpClient;
+        stream = tcpClient.GetStream();
+    }
+
+    public static RedisRespClient Connect(RuntimeRedisOptions options)
+    {
+        var endpoint = RedisEndpoint.Parse(options.ConnectionString);
+        var client = new TcpClient
+        {
+            ReceiveTimeout = 3000,
+            SendTimeout = 3000
+        };
+        client.Connect(endpoint.Host, endpoint.Port);
+        var redis = new RedisRespClient(client);
+        if (!string.IsNullOrWhiteSpace(endpoint.Password))
+        {
+            if (!string.IsNullOrWhiteSpace(endpoint.UserName))
+            {
+                redis.ExecuteBulkString("AUTH", endpoint.UserName, endpoint.Password);
+            }
+            else
+            {
+                redis.ExecuteBulkString("AUTH", endpoint.Password);
+            }
+        }
+
+        if (endpoint.Database > 0)
+        {
+            redis.ExecuteBulkString("SELECT", endpoint.Database.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return redis;
+    }
+
+    public void Ping()
+    {
+        var response = ExecuteBulkString("PING");
+        if (!string.Equals(response, "PONG", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Redis PING returned an unexpected response.");
+        }
+    }
+
+    public string? ExecuteBulkString(params string[] args)
+    {
+        WriteCommand(args);
+        return ReadValue() switch
+        {
+            null => null,
+            string text => text,
+            long number => number.ToString(CultureInfo.InvariantCulture),
+            string[] values => string.Join("\n", values),
+            var other => other.ToString()
+        };
+    }
+
+    private void WriteCommand(IReadOnlyList<string> args)
+    {
+        var builder = new StringBuilder();
+        builder.Append('*').Append(args.Count).Append("\r\n");
+        foreach (var arg in args)
+        {
+            var text = arg ?? "";
+            var bytes = Encoding.UTF8.GetBytes(text);
+            builder.Append('$').Append(bytes.Length).Append("\r\n");
+            builder.Append(text).Append("\r\n");
+        }
+
+        var payload = Encoding.UTF8.GetBytes(builder.ToString());
+        stream.Write(payload, 0, payload.Length);
+        stream.Flush();
+    }
+
+    private object? ReadValue()
+    {
+        var prefix = stream.ReadByte();
+        if (prefix < 0)
+        {
+            throw new IOException("Redis closed the connection.");
+        }
+
+        return (char)prefix switch
+        {
+            '+' => ReadLine(),
+            '-' => throw new InvalidOperationException(ReadLine()),
+            ':' => long.Parse(ReadLine(), CultureInfo.InvariantCulture),
+            '$' => ReadBulkString(),
+            '*' => ReadArray(),
+            _ => throw new InvalidOperationException($"Unsupported Redis response prefix: {(char)prefix}")
+        };
+    }
+
+    private string? ReadBulkString()
+    {
+        var length = int.Parse(ReadLine(), CultureInfo.InvariantCulture);
+        if (length < 0)
+        {
+            return null;
+        }
+
+        var buffer = new byte[length];
+        ReadExact(buffer);
+        ExpectCrLf();
+        return Encoding.UTF8.GetString(buffer);
+    }
+
+    private string[] ReadArray()
+    {
+        var length = int.Parse(ReadLine(), CultureInfo.InvariantCulture);
+        if (length < 0)
+        {
+            return [];
+        }
+
+        var values = new List<string>();
+        for (var index = 0; index < length; index++)
+        {
+            var value = ReadValue();
+            values.Add(value switch
+            {
+                null => "",
+                string text => text,
+                long number => number.ToString(CultureInfo.InvariantCulture),
+                _ => value.ToString() ?? ""
+            });
+        }
+
+        return values.ToArray();
+    }
+
+    private string ReadLine()
+    {
+        var bytes = new List<byte>();
+        while (true)
+        {
+            var value = stream.ReadByte();
+            if (value < 0)
+            {
+                throw new IOException("Redis closed the connection.");
+            }
+
+            if (value == '\r')
+            {
+                if (stream.ReadByte() != '\n')
+                {
+                    throw new IOException("Invalid Redis line terminator.");
+                }
+
+                return Encoding.UTF8.GetString(bytes.ToArray());
+            }
+
+            bytes.Add((byte)value);
+        }
+    }
+
+    private void ReadExact(byte[] buffer)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            var read = stream.Read(buffer, offset, buffer.Length - offset);
+            if (read <= 0)
+            {
+                throw new IOException("Redis closed the connection.");
+            }
+
+            offset += read;
+        }
+    }
+
+    private void ExpectCrLf()
+    {
+        if (stream.ReadByte() != '\r' || stream.ReadByte() != '\n')
+        {
+            throw new IOException("Invalid Redis bulk string terminator.");
+        }
+    }
+
+    public void Dispose()
+    {
+        stream.Dispose();
+        tcpClient.Dispose();
+    }
+}
+
+public sealed record RedisEndpoint(string Host, int Port, string UserName, string Password, int Database)
+{
+    public static RedisEndpoint Parse(string connectionString)
+    {
+        var text = connectionString.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new InvalidOperationException("Redis connection string is empty.");
+        }
+
+        if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme.StartsWith("redis", StringComparison.OrdinalIgnoreCase))
+        {
+            var userInfo = Uri.UnescapeDataString(uri.UserInfo ?? "");
+            var userParts = userInfo.Split(':', 2);
+            var dbText = uri.AbsolutePath.Trim('/');
+            return new RedisEndpoint(
+                uri.Host,
+                uri.Port > 0 ? uri.Port : 6379,
+                userParts.Length == 2 ? userParts[0] : "",
+                userParts.Length == 2 ? userParts[1] : (userParts.Length == 1 ? userParts[0] : ""),
+                int.TryParse(dbText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var uriDatabase) ? uriDatabase : 0);
+        }
+
+        var parts = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var hostPart = parts.FirstOrDefault(part => !part.Contains('=', StringComparison.Ordinal)) ?? "127.0.0.1:6379";
+        var hostPieces = hostPart.Split(':', 2);
+        var values = parts
+            .Where(part => part.Contains('=', StringComparison.Ordinal))
+            .Select(part => part.Split('=', 2))
+            .ToDictionary(part => part[0].Trim(), part => part[1].Trim(), StringComparer.OrdinalIgnoreCase);
+        return new RedisEndpoint(
+            hostPieces[0],
+            hostPieces.Length == 2 && int.TryParse(hostPieces[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var port) ? port : 6379,
+            values.GetValueOrDefault("user") ?? values.GetValueOrDefault("username") ?? "",
+            values.GetValueOrDefault("password") ?? "",
+            int.TryParse(values.GetValueOrDefault("defaultDatabase") ?? values.GetValueOrDefault("database"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var configuredDatabase) ? configuredDatabase : 0);
+    }
 }
 
 public sealed class KafkaTopicExplorer(

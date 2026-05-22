@@ -202,6 +202,124 @@ const server = http.createServer(async (request, response) => {
       return proxyJson(response, targetUrl);
     }
 
+    if (url.pathname === '/api/zabbix/runtime-storage/status' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixRuntimeStorageStatusUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixRuntimeStorageStatusUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/zabbix/redis/check' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixRedisCheckUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixRedisCheckUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/rules/redis/check' && request.method === 'GET') {
+      const targetUrl = config.backend.cmdbConfigBuilderRedisCheckUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.cmdbConfigBuilderRedisCheckUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/zabbix/runtime-storage/migration/dry-run' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixRuntimeStorageMigrationDryRunUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixRuntimeStorageMigrationDryRunUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/runtime-storage/migration/apply' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixRuntimeStorageMigrationApplyUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixRuntimeStorageMigrationApplyUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/runtime-storage/dirty-scopes' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixDirtyScopesUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixDirtyScopesUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl);
+    }
+
+    if (url.pathname === '/api/zabbix/runtime-storage/dirty-scopes' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixDirtyScopesUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixDirtyScopesUrl is not configured' });
+      }
+
+      const body = await readJsonBody(request);
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body ?? {})
+      });
+    }
+
+    const dirtyScopeClearMatch = url.pathname.match(/^\/api\/zabbix\/runtime-storage\/dirty-scopes\/([^/]+)$/);
+    if (dirtyScopeClearMatch && request.method === 'DELETE') {
+      if (!config.backend.zabbixDirtyScopesUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixDirtyScopesUrl is not configured' });
+      }
+
+      const targetUrl = appendPath(
+        config.backend.zabbixDirtyScopesUrl,
+        decodeURIComponent(dirtyScopeClearMatch[1]));
+      return proxyJson(response, targetUrl, {
+        method: 'DELETE',
+        headers: { accept: 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/monitoring-coverage/snapshot' && request.method === 'POST') {
+      const targetUrl = config.backend.zabbixMonitoringCoverageSnapshotUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixMonitoringCoverageSnapshotUrl is not configured' });
+      }
+
+      return proxyJson(response, targetUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/api/zabbix/monitoring-coverage/snapshots' && request.method === 'GET') {
+      const targetUrl = config.backend.zabbixMonitoringCoverageSnapshotUrl;
+      if (!targetUrl) {
+        return sendJson(response, 500, { error: 'backend.zabbixMonitoringCoverageSnapshotUrl is not configured' });
+      }
+
+      const historyUrl = new URL(targetUrl);
+      historyUrl.pathname = historyUrl.pathname.replace(/\/snapshot\/?$/, '/snapshots');
+      historyUrl.search = url.search;
+      return proxyJson(response, historyUrl, {
+        headers: { accept: 'application/json' }
+      });
+    }
+
     if (url.pathname === '/api/zabbix/apply-state/stale-report' && request.method === 'POST') {
       const targetUrl = config.backend.zabbixApplyStateStaleReportUrl;
       if (!targetUrl) {
@@ -895,7 +1013,40 @@ function normalizeZabbixconfig2apiSettings(document) {
   const dependencies = objectValue(document.ZabbixTriggerDependencies);
   const zabbix = objectValue(document.Zabbix);
   const sla = objectValue(document.ZabbixSla);
+  const redis = objectValue(document.Redis);
+  const durableStore = objectValue(document.DurableStore);
+  const coverage = objectValue(document.MonitoringCoverageAudit);
   return {
+    redis: {
+      enabled: booleanValue(redis.Enabled, false),
+      endpoint: redactedConnectionEndpoint(redis.ConnectionString),
+      connectionConfigured: Boolean(stringValue(redis.ConnectionString)),
+      keyPrefix: stringValue(redis.KeyPrefix) || 'cmdb2m:test',
+      instanceId: stringValue(redis.InstanceId),
+      operationTtlSeconds: integerValue(redis.OperationTtlSeconds, 86400),
+      lockTtlSeconds: integerValue(redis.LockTtlSeconds, 300),
+      lockExtendSeconds: integerValue(redis.LockExtendSeconds, 120),
+      cacheDefaultTtlSeconds: integerValue(redis.CacheDefaultTtlSeconds, 300),
+      failureMode: stringValue(redis.FailureMode) || 'fallback'
+    },
+    durableStore: {
+      provider: stringValue(durableStore.Provider) || 'sqlite',
+      endpoint: redactedConnectionEndpoint(durableStore.ConnectionString),
+      connectionConfigured: Boolean(stringValue(durableStore.ConnectionString)),
+      migrationsEnabled: booleanValue(durableStore.MigrationsEnabled, true)
+    },
+    monitoringCoverageAudit: {
+      enabled: booleanValue(coverage.Enabled, true),
+      snapshotRetentionDays: integerValue(coverage.SnapshotRetentionDays, 180),
+      triggerMode: stringValue(coverage.TriggerMode) || 'manual',
+      defaultExpectedPolicy: stringValue(coverage.DefaultExpectedPolicy) || 'rules_matched',
+      hostIdAttribute: stringValue(coverage.HostIdAttribute) || 'zabbix_main_hostid',
+      allowOperationalDelta: booleanValue(coverage.AllowOperationalDelta, true),
+      maxOperationalDeltaMinutes: integerValue(coverage.MaxOperationalDeltaMinutes, 30),
+      autoSnapshotAfterFullGraphApply: booleanValue(coverage.AutoSnapshotAfterFullGraphApply, false),
+      autoSnapshotAfterScopedReconcile: booleanValue(coverage.AutoSnapshotAfterScopedReconcile, false),
+      scheduledSnapshotCronConfigured: Boolean(stringValue(coverage.ScheduledSnapshotCron))
+    },
     zabbixTriggerDependencies: {
       transitiveGroupDependencyDepth: integerValue(dependencies.TransitiveGroupDependencyDepth, 2),
       triggerGetBatchSize: integerValue(dependencies.TriggerGetBatchSize, 25),
@@ -928,6 +1079,83 @@ function normalizeZabbixconfig2apiSettings(document) {
 
 function applyZabbixconfig2apiSettingsPatch(document, body) {
   const next = JSON.parse(JSON.stringify(document ?? {}));
+  if (body.redis) {
+    const source = objectValue(body.redis);
+    const target = ensureObjectSection(next, 'Redis');
+    if ('enabled' in source) {
+      target.Enabled = booleanValue(source.enabled, false);
+    }
+    if ('keyPrefix' in source) {
+      const keyPrefix = stringValue(source.keyPrefix);
+      if (!keyPrefix) {
+        throw new Error('Redis:KeyPrefix is required.');
+      }
+      target.KeyPrefix = keyPrefix;
+    }
+    if ('operationTtlSeconds' in source) {
+      target.OperationTtlSeconds = validatedInteger(source.operationTtlSeconds, 'Redis:OperationTtlSeconds', 1, 604800);
+    }
+    if ('lockTtlSeconds' in source) {
+      target.LockTtlSeconds = validatedInteger(source.lockTtlSeconds, 'Redis:LockTtlSeconds', 1, 86400);
+    }
+    if ('lockExtendSeconds' in source) {
+      target.LockExtendSeconds = validatedInteger(source.lockExtendSeconds, 'Redis:LockExtendSeconds', 1, 86400);
+    }
+    if ('cacheDefaultTtlSeconds' in source) {
+      target.CacheDefaultTtlSeconds = validatedInteger(source.cacheDefaultTtlSeconds, 'Redis:CacheDefaultTtlSeconds', 1, 86400);
+    }
+    if ('failureMode' in source) {
+      target.FailureMode = validatedChoice(source.failureMode, 'Redis:FailureMode', ['fallback', 'fail']);
+    }
+  }
+
+  if (body.durableStore) {
+    const source = objectValue(body.durableStore);
+    const target = ensureObjectSection(next, 'DurableStore');
+    if ('provider' in source) {
+      target.Provider = validatedChoice(source.provider, 'DurableStore:Provider', ['file', 'sqlite']);
+    }
+    if ('migrationsEnabled' in source) {
+      target.MigrationsEnabled = booleanValue(source.migrationsEnabled, true);
+    }
+  }
+
+  if (body.monitoringCoverageAudit) {
+    const source = objectValue(body.monitoringCoverageAudit);
+    const target = ensureObjectSection(next, 'MonitoringCoverageAudit');
+    if ('enabled' in source) {
+      target.Enabled = booleanValue(source.enabled, true);
+    }
+    if ('snapshotRetentionDays' in source) {
+      target.SnapshotRetentionDays = validatedInteger(source.snapshotRetentionDays, 'MonitoringCoverageAudit:SnapshotRetentionDays', 1, 3650);
+    }
+    if ('triggerMode' in source) {
+      target.TriggerMode = validatedChoice(source.triggerMode, 'MonitoringCoverageAudit:TriggerMode', ['manual', 'scheduled', 'manual_and_scheduled']);
+    }
+    if ('defaultExpectedPolicy' in source) {
+      target.DefaultExpectedPolicy = validatedChoice(source.defaultExpectedPolicy, 'MonitoringCoverageAudit:DefaultExpectedPolicy', ['rules_matched', 'class_policy', 'explicit_attribute', 'manual_scope']);
+    }
+    if ('hostIdAttribute' in source) {
+      const hostIdAttribute = stringValue(source.hostIdAttribute);
+      if (!hostIdAttribute) {
+        throw new Error('MonitoringCoverageAudit:HostIdAttribute is required.');
+      }
+      target.HostIdAttribute = hostIdAttribute;
+    }
+    if ('allowOperationalDelta' in source) {
+      target.AllowOperationalDelta = booleanValue(source.allowOperationalDelta, true);
+    }
+    if ('maxOperationalDeltaMinutes' in source) {
+      target.MaxOperationalDeltaMinutes = validatedInteger(source.maxOperationalDeltaMinutes, 'MonitoringCoverageAudit:MaxOperationalDeltaMinutes', 0, 1440);
+    }
+    if ('autoSnapshotAfterFullGraphApply' in source) {
+      target.AutoSnapshotAfterFullGraphApply = booleanValue(source.autoSnapshotAfterFullGraphApply, false);
+    }
+    if ('autoSnapshotAfterScopedReconcile' in source) {
+      target.AutoSnapshotAfterScopedReconcile = booleanValue(source.autoSnapshotAfterScopedReconcile, false);
+    }
+  }
+
   if (body.zabbixTriggerDependencies) {
     const source = objectValue(body.zabbixTriggerDependencies);
     const target = ensureObjectSection(next, 'ZabbixTriggerDependencies');
@@ -1031,6 +1259,15 @@ function validatedInteger(value, name, min, max) {
   return parsed;
 }
 
+function validatedChoice(value, name, allowed) {
+  const text = stringValue(value);
+  if (!allowed.includes(text)) {
+    throw new Error(`${name} must be one of: ${allowed.join(', ')}.`);
+  }
+
+  return text;
+}
+
 function booleanValue(value, fallback) {
   if (typeof value === 'boolean') {
     return value;
@@ -1057,6 +1294,31 @@ function normalizeTagSelectors(value) {
       value: stringValue(item?.value ?? item?.Value)
     }))
     .filter((item) => item.tag);
+}
+
+function redactedConnectionEndpoint(connectionString) {
+  const text = stringValue(connectionString);
+  if (!text) {
+    return '';
+  }
+
+  return text
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const index = part.indexOf('=');
+      if (index <= 0) {
+        return part.includes('@') ? '***' : part;
+      }
+
+      const key = part.slice(0, index).trim();
+      const value = part.slice(index + 1).trim();
+      return ['password', 'pwd', 'user id', 'userid', 'username', 'uid', 'token', 'access key'].includes(key.toLowerCase())
+        ? `${key}=***`
+        : `${key}=${value}`;
+    })
+    .join(';');
 }
 
 async function readConversionConfigStorage() {
@@ -1913,8 +2175,8 @@ function managedWebhookSourceClasses(body) {
       const current = byCode.get(key) ?? {
         code: classCode,
         displayName: classCode,
-        requiredFields: new Set(),
-        payloadFields: new Set()
+        requiredFields: new Set(readinessWebhookPayloadFields()),
+        payloadFields: new Set(readinessWebhookPayloadFields())
       };
       for (const field of sourceFieldsForWebhookRule(rule)) {
         current.requiredFields.add(field);
@@ -1939,12 +2201,26 @@ function normalizeManagedWebhookSourceClass(item) {
     return null;
   }
 
+  const readinessFields = readinessWebhookPayloadFields();
   return {
     code,
     displayName: stringValue(item?.displayName ?? item?.name ?? item?.description) || code,
-    requiredFields: stringArray(item?.requiredFields ?? item?.required_fields),
-    payloadFields: stringArray(item?.payloadFields ?? item?.payload_fields)
+    requiredFields: [...new Set([
+      ...stringArray(item?.requiredFields ?? item?.required_fields),
+      ...readinessFields
+    ])],
+    payloadFields: [...new Set([
+      ...stringArray(item?.payloadFields ?? item?.payload_fields),
+      ...readinessFields
+    ])]
   };
+}
+
+function readinessWebhookPayloadFields() {
+  const hostIdAttribute = stringValue(config.readiness?.zabbixHostIdAttribute) || 'zabbix_main_hostid';
+  return [hostIdAttribute]
+    .map(stringValue)
+    .filter((field) => isSafeCmdbuildAttributeName(field) && !isWebhookSystemPayloadField(field));
 }
 
 function sourceFieldsForWebhookRule(rule) {
@@ -2012,7 +2288,11 @@ function buildCmdbuildWebhookPayload(sourceClass, event) {
     code: '{card:Code}',
     description: '{card:Description}'
   };
-  for (const field of sourceClass.payloadFields ?? []) {
+  const payloadFields = new Set([
+    ...(sourceClass.payloadFields ?? []),
+    ...readinessWebhookPayloadFields()
+  ]);
+  for (const field of payloadFields) {
     const name = stringValue(field);
     if (!isSafeCmdbuildAttributeName(name) || isWebhookSystemPayloadField(name) || Object.hasOwn(body, name)) {
       continue;

@@ -397,7 +397,12 @@ AssertZabbixMembershipRemovesSourceFromLayer();
 AssertZabbixMembershipPrunesMissingHostBindings();
 AssertZabbixMembershipPublishesCriticalityTag();
 AssertZabbixAppliedGraphDiffContract();
+AssertSqliteZabbixApplyStateStorageContract();
+AssertSqliteDirtyScopeStoreContract();
+AssertSqliteMonitoringCoverageSnapshotStoreContract();
 AssertZabbixGraphScopeContract();
+await AssertRuntimeCoordinationLocalLockContractAsync();
+await AssertRuntimeLookupCacheContractAsync();
 AssertZabbixManagedServiceMappingContract();
 AssertSemanticFingerprintIncludesDimensionField();
 AssertSemanticFingerprintChangesWhenHostIdAppears();
@@ -704,6 +709,117 @@ static void AssertZabbixAppliedGraphDiffContract()
         "missing desired graph objects must be reported as removed without automatic publish candidates.");
 }
 
+static void AssertSqliteZabbixApplyStateStorageContract()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "cmdb2monitoring-tests");
+    Directory.CreateDirectory(directory);
+    var dbPath = Path.Combine(directory, $"zabbix-apply-state-{Guid.NewGuid():N}.db");
+    var storage = NewSqliteZabbixApplyStateStorage(dbPath);
+    var state = new ZabbixApplyStateStore(storage);
+    var command = BuildMembershipCommand("service", "svc:City01", "City01", "30001");
+    state.UpdateMembership(command, "service");
+    state.ReplaceAppliedGraph("service", ZabbixDesiredGraphBuilder.Build([command], "service", createManagedServices: true).Objects);
+
+    var reloaded = new ZabbixApplyStateStore(NewSqliteZabbixApplyStateStorage(dbPath));
+    var memberships = reloaded.ListMemberships("service");
+    Assert(memberships.Count == 1 && memberships.Single().SourceCount == 1,
+        "SQLite membership-state backend must persist and reload target/source memberships.");
+
+    var status = storage.Status();
+    Assert(status.Backend == "sqlite" && status.SchemaVersion == 1,
+        "SQLite membership-state backend must report schema version.");
+    Assert(status.TargetMembershipCount == 1 && status.SourceMembershipCount == 1,
+        "SQLite membership-state backend must expose normalized membership counters.");
+    Assert(status.AppliedGraphObjectCount > 0,
+        "SQLite membership-state backend must persist applied graph object counters.");
+}
+
+static void AssertSqliteDirtyScopeStoreContract()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "cmdb2monitoring-tests");
+    Directory.CreateDirectory(directory);
+    var dbPath = Path.Combine(directory, $"zabbix-dirty-scopes-{Guid.NewGuid():N}.db");
+    var store = NewSqliteDirtyScopeStore(dbPath);
+    var mark = store.Mark(new DirtyScopeMarkRequest
+    {
+        Layer = "service",
+        Reason = "contract test",
+        Entries =
+        [
+            new DirtyScopeMarkEntry
+            {
+                ScopeType = "target",
+                ScopeKey = "svc:City01"
+            }
+        ]
+    });
+
+    Assert(mark.AddedOrUpdated == 1, "SQLite dirty scope store must mark one dirty scope.");
+    var reloaded = NewSqliteDirtyScopeStore(dbPath).Snapshot(100);
+    var service = reloaded.Layers.Single(item => item.Layer == "service");
+    Assert(service.Count == 1 && service.Entries.Single().ScopeKey == "svc:City01",
+        "SQLite dirty scope store must persist and reload dirty scopes.");
+
+    var processed = store.MarkResult("service", ["svc:City01"], "processed", "contract apply completed");
+    Assert(processed.AddedOrUpdated == 1,
+        "SQLite dirty scope store must update dirty scope processing result.");
+    var processedEntry = NewSqliteDirtyScopeStore(dbPath)
+        .Snapshot(100)
+        .Layers.Single(item => item.Layer == "service")
+        .Entries.Single();
+    Assert(processedEntry.Status == "processed" && processedEntry.LastReconcileResult == "contract apply completed",
+        "SQLite dirty scope store must persist processed status and result text.");
+
+    var clear = store.Clear("service");
+    Assert(clear.Removed == 1 && NewSqliteDirtyScopeStore(dbPath).Snapshot(100).Layers.All(item => item.Count == 0),
+        "SQLite dirty scope store must clear layer-scoped dirty scopes.");
+}
+
+static void AssertSqliteMonitoringCoverageSnapshotStoreContract()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "cmdb2monitoring-tests");
+    Directory.CreateDirectory(directory);
+    var dbPath = Path.Combine(directory, $"monitoring-coverage-{Guid.NewGuid():N}.db");
+    var options = new MonitoringCoverageSnapshotOptions
+    {
+        SnapshotRetentionDays = 30,
+        DefaultExpectedPolicy = "rules_matched",
+        HostIdAttribute = "zabbix_main_hostid",
+        AllowOperationalDelta = true,
+        MaxOperationalDeltaMinutes = 30
+    };
+    var started = DateTimeOffset.UtcNow.AddSeconds(-2);
+    var finished = DateTimeOffset.UtcNow;
+    var records = MonitoringCoverageSourceRecord.FromMemberships(
+        [
+            NewCoverageMembership("service", "svc:ntbook", "NTbook", "1001", "30001"),
+            NewCoverageMembership("service", "svc:router", "routerG", "1002", "")
+        ],
+        [
+            NewCoverageMembership("suppression", "supp:ntbook", "NTbook", "1001", "30001")
+        ]);
+    var snapshot = MonitoringCoverageSnapshot.FromRecords(
+        records,
+        [new ZabbixHostInfo { HostId = "30001", Host = "host-30001", Name = "host-30001" }],
+        options,
+        started,
+        started.AddSeconds(1),
+        finished,
+        []);
+
+    var store = NewSqliteMonitoringCoverageSnapshotStore(dbPath);
+    var save = store.Save(snapshot, options);
+    Assert(save.Backend == "sqlite" && save.SnapshotId == snapshot.SnapshotId,
+        "SQLite coverage snapshot store must report saved snapshot id.");
+
+    var history = NewSqliteMonitoringCoverageSnapshotStore(dbPath).List(10);
+    Assert(history.Backend == "sqlite" && history.Snapshots.Count == 1,
+        "SQLite coverage snapshot store must persist and reload snapshot history.");
+    var summary = history.Snapshots.Single();
+    Assert(summary.ExpectedObjects == 2 && summary.WithHostId == 1 && summary.ExistingZabbixHosts == 1,
+        "SQLite coverage snapshot history must expose coverage counters.");
+}
+
 static void AssertZabbixGraphScopeContract()
 {
     var root = BuildMembershipCommand("service", "svc:root", "Root", "30001");
@@ -730,6 +846,103 @@ static void AssertZabbixGraphScopeContract()
     var fullSuppressionScope = ZabbixGraphScopeResolver.Resolve([suppA, suppB, suppC], "suppression", ["A"], 0);
     Assert(fullSuppressionScope.TargetManagedKeys.SetEquals(["supp:A", "supp:B", "supp:C"]),
         "suppression scope with depth 0 must include the connected chain.");
+}
+
+static async Task AssertRuntimeCoordinationLocalLockContractAsync()
+{
+    var store = new LocalRuntimeCoordinationStore(new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions
+    {
+        Enabled = false,
+        LockTtlSeconds = 30
+    }));
+    var status = store.Status();
+    Assert(status.Backend == "local-memory", "disabled Redis must use local-memory runtime coordination.");
+
+    await using var first = await store.TryAcquireLockAsync("zabbix:graph:service:apply", CancellationToken.None);
+    Assert(first.Acquired, "first local runtime lock acquisition must succeed.");
+    var progress = store.StartOperation("zabbix:graph:service:apply", first.Backend);
+    Assert(store.Status().ActiveOperationCount == 1,
+        "runtime coordination must expose active operation count.");
+    await using var second = await store.TryAcquireLockAsync("zabbix:graph:service:apply", CancellationToken.None);
+    Assert(!second.Acquired && second.StatusCode == StatusCodes.Status409Conflict,
+        "concurrent local runtime lock acquisition must return busy.");
+    store.CompleteOperation(progress.OperationId, "completed");
+    var completedStatus = store.Status();
+    Assert(completedStatus.ActiveOperationCount == 0 && completedStatus.RecentOperations.Any(item => item.OperationId == progress.OperationId),
+        "runtime coordination must move completed operations to recent operation history.");
+    var firstDebounce = store.RequestDebouncedOperation("zabbix:dependencies:suppression:auto-reconcile", "reason-a", TimeSpan.FromSeconds(5));
+    var secondDebounce = store.RequestDebouncedOperation("zabbix:dependencies:suppression:auto-reconcile", "reason-b", TimeSpan.FromSeconds(5));
+    Assert(firstDebounce.ShouldSchedule && !secondDebounce.ShouldSchedule,
+        "runtime debounce must schedule only the first request inside the debounce window.");
+    var debounceBatch = store.ConsumeDebouncedOperation("zabbix:dependencies:suppression:auto-reconcile");
+    Assert(debounceBatch.Reasons.Contains("reason-a") && debounceBatch.Reasons.Contains("reason-b"),
+        "runtime debounce must preserve coalesced reconcile reasons.");
+
+    var failStore = new LocalRuntimeCoordinationStore(new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions
+    {
+        Enabled = true,
+        FailureMode = "fail",
+        LockTtlSeconds = 30
+    }));
+    await using var blocked = await failStore.TryAcquireLockAsync("zabbix:graph:service:apply", CancellationToken.None);
+    Assert(!blocked.Acquired && blocked.Status == "runtime_coordination_unavailable",
+        "Redis FailureMode=fail must block operations until a real Redis backend is active.");
+
+    var redisDisabledStore = new RedisRuntimeCoordinationStore(
+        new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions
+        {
+            Enabled = false,
+            LockTtlSeconds = 30
+        }),
+        new LocalRuntimeCoordinationStore(new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions
+        {
+            Enabled = false,
+            LockTtlSeconds = 30
+        })),
+        NullLogger<RedisRuntimeCoordinationStore>.Instance);
+    Assert(redisDisabledStore.Status().Backend == "local-memory",
+        "Redis coordination wrapper must delegate to local-memory when Redis is disabled.");
+
+    var parsed = RedisEndpoint.Parse("redis://user:secret@redis.local:6380/2");
+    Assert(parsed.Host == "redis.local" && parsed.Port == 6380 && parsed.UserName == "user" && parsed.Password == "secret" && parsed.Database == 2,
+        "Redis endpoint parser must support redis://user:password@host:port/db.");
+    var configured = RedisEndpoint.Parse("127.0.0.1:6379,password=secret,defaultDatabase=3");
+    Assert(configured.Host == "127.0.0.1" && configured.Port == 6379 && configured.Password == "secret" && configured.Database == 3,
+        "Redis endpoint parser must support host:port,password=...,defaultDatabase=... syntax.");
+}
+
+static async Task AssertRuntimeLookupCacheContractAsync()
+{
+    var disabledOptions = new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions
+    {
+        Enabled = false,
+        CacheDefaultTtlSeconds = 60
+    });
+    var disabledCache = new LocalRuntimeLookupCache(disabledOptions);
+    Assert(disabledCache.Status().Backend == "no-cache",
+        "disabled Redis lookup cache must report no-cache backend.");
+    await disabledCache.SetStringAsync("zabbix:host", "1001", "cached", TimeSpan.FromSeconds(30), CancellationToken.None);
+    Assert(await disabledCache.GetStringAsync("zabbix:host", "1001", CancellationToken.None) is null,
+        "disabled Redis lookup cache must not retain lookup values.");
+
+    var fallbackOptions = new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions
+    {
+        Enabled = true,
+        CacheDefaultTtlSeconds = 60
+    });
+    var fallbackCache = new LocalRuntimeLookupCache(fallbackOptions);
+    Assert(fallbackCache.Status().Backend == "local-memory-fallback",
+        "enabled local lookup fallback must report local-memory-fallback backend.");
+    await fallbackCache.SetStringAsync("zabbix:host", "1001", "cached", TimeSpan.FromSeconds(30), CancellationToken.None);
+    Assert(await fallbackCache.GetStringAsync("zabbix:host", "1001", CancellationToken.None) == "cached",
+        "local lookup fallback must retain lookup values until TTL expires.");
+
+    var redisDisabledCache = new RedisRuntimeLookupCache(
+        disabledOptions,
+        disabledCache,
+        NullLogger<RedisRuntimeLookupCache>.Instance);
+    Assert(redisDisabledCache.Status().Backend == "no-cache",
+        "Redis lookup cache wrapper must not cache when Redis is disabled.");
 }
 
 static void AssertZabbixManagedServiceMappingContract()
@@ -1443,6 +1656,7 @@ static async Task AssertZabbixSuppressionAggregateThresholdUsesSelectedHostsAsyn
     var applier = new ZabbixTriggerDependencyApplier(
         client,
         state,
+        new LocalRuntimeLookupCache(new StaticOptionsMonitor<RuntimeRedisOptions>(new RuntimeRedisOptions())),
         new StaticOptionsMonitor<ZabbixTriggerDependenciesOptions>(new ZabbixTriggerDependenciesOptions
         {
             Enabled = true,
@@ -1559,9 +1773,80 @@ static ZabbixApplyStateStore NewZabbixApplyStateStore()
         Path.GetTempPath(),
         "cmdb2monitoring-tests",
         $"zabbix-apply-state-{Guid.NewGuid():N}.json");
-    return new ZabbixApplyStateStore(
+    var storage = new FileZabbixApplyStateStorage(
         Options.Create(new ZabbixApplyStateOptions { FilePath = path }),
-        NullLogger<ZabbixApplyStateStore>.Instance);
+        NullLogger<FileZabbixApplyStateStorage>.Instance);
+    return new ZabbixApplyStateStore(storage);
+}
+
+static SqliteZabbixApplyStateStorage NewSqliteZabbixApplyStateStorage(string dbPath)
+{
+    return new SqliteZabbixApplyStateStorage(
+        new StaticOptionsMonitor<DurableStoreOptions>(new DurableStoreOptions
+        {
+            Provider = "sqlite",
+            ConnectionString = $"Data Source={dbPath}"
+        }),
+        Options.Create(new ZabbixApplyStateOptions
+        {
+            FilePath = Path.Combine(
+                Path.GetTempPath(),
+                "cmdb2monitoring-tests",
+                $"unused-bootstrap-{Guid.NewGuid():N}.json")
+        }),
+        NullLogger<SqliteZabbixApplyStateStorage>.Instance);
+}
+
+static ZabbixDirtyScopeStore NewSqliteDirtyScopeStore(string dbPath)
+{
+    return new ZabbixDirtyScopeStore(
+        new StaticOptionsMonitor<DurableStoreOptions>(new DurableStoreOptions
+        {
+            Provider = "sqlite",
+            ConnectionString = $"Data Source={dbPath}"
+        }),
+        NullLogger<ZabbixDirtyScopeStore>.Instance);
+}
+
+static MonitoringCoverageSnapshotStore NewSqliteMonitoringCoverageSnapshotStore(string dbPath)
+{
+    return new MonitoringCoverageSnapshotStore(
+        new StaticOptionsMonitor<DurableStoreOptions>(new DurableStoreOptions
+        {
+            Provider = "sqlite",
+            ConnectionString = $"Data Source={dbPath}"
+        }),
+        NullLogger<MonitoringCoverageSnapshotStore>.Instance);
+}
+
+static ZabbixTargetMembershipSnapshot NewCoverageMembership(
+    string layer,
+    string targetKey,
+    string sourceClass,
+    string sourceCardId,
+    string zabbixHostId)
+{
+    return new ZabbixTargetMembershipSnapshot
+    {
+        Layer = layer,
+        TargetManagedKey = targetKey,
+        TargetClass = "C2M_Test",
+        TargetCardId = targetKey,
+        TargetName = targetKey,
+        Sources =
+        [
+            new ZabbixSourceMembership
+            {
+                SourceClass = sourceClass,
+                SourceCardId = sourceCardId,
+                SourceKeyAttribute = "Code",
+                SourceKeyValue = sourceCardId,
+                ZabbixHostId = zabbixHostId,
+                SourceLeafManagedKey = $"{sourceClass}:{sourceCardId}"
+            }
+        ],
+        UpdatedAtUtc = DateTimeOffset.UtcNow
+    };
 }
 
 static AggregationCommand BuildMembershipCommand(

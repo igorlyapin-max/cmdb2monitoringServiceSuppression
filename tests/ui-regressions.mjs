@@ -19,6 +19,9 @@ const cmdbSchemaFactoryPath = path.join(repoRoot, 'src/shared/CmdbuildSchema/Cmd
 const zabbixProgramPath = path.join(repoRoot, 'src/zabbixconfig2api/Program.cs');
 const zabbixAggregationApplierPath = path.join(repoRoot, 'src/zabbixconfig2api/ZabbixAggregationApplier.cs');
 const zabbixTriggerDependencyApplierPath = path.join(repoRoot, 'src/zabbixconfig2api/ZabbixTriggerDependencyApplier.cs');
+const diagnosticsScriptPath = path.join(repoRoot, 'scripts/test-diagnostics.sh');
+const integrationScriptPath = path.join(repoRoot, 'scripts/test-integration.sh');
+const redisKafkaE2ePath = path.join(repoRoot, 'tests/redis-kafka-dedup-e2e.mjs');
 
 const appText = fs.readFileSync(appPath, 'utf8');
 const serverText = fs.readFileSync(serverPath, 'utf8');
@@ -33,6 +36,9 @@ const cmdbSchemaFactoryText = fs.readFileSync(cmdbSchemaFactoryPath, 'utf8');
 const zabbixProgramText = fs.readFileSync(zabbixProgramPath, 'utf8');
 const zabbixAggregationApplierText = fs.readFileSync(zabbixAggregationApplierPath, 'utf8');
 const zabbixTriggerDependencyApplierText = fs.readFileSync(zabbixTriggerDependencyApplierPath, 'utf8');
+const diagnosticsScriptText = fs.readFileSync(diagnosticsScriptPath, 'utf8');
+const integrationScriptText = fs.readFileSync(integrationScriptPath, 'utf8');
+const redisKafkaE2eText = fs.readFileSync(redisKafkaE2ePath, 'utf8');
 const uiConfig = JSON.parse(fs.readFileSync(uiConfigPath, 'utf8'));
 const builderConfig = JSON.parse(fs.readFileSync(builderConfigPath, 'utf8'));
 const zabbixConfig = JSON.parse(fs.readFileSync(zabbixConfigPath, 'utf8'));
@@ -150,8 +156,103 @@ function browserLikeContext() {
 function assertStaticUiContracts() {
   assertIncludes(indexText, 'data-view="relationsGraph"', 'relations graph menu item must exist.');
   assertIncludes(indexText, 'data-view="zabbixPreflight"', 'Zabbix preflight menu item must exist.');
-  assertIncludes(indexText, 'data-view="serviceObjects"', 'service layer must expose a separate service objects menu item.');
-  assertIncludes(indexText, 'Объекты сервиса', 'service layer menu must use the service objects label.');
+  assertIncludes(indexText, 'Контроль модели', 'rule management must expose a unified model control screen.');
+  assertIncludes(indexText, 'id="modelControlSummary"', 'model control view must expose a compact summary.');
+  assertIncludes(indexText, 'id="modelControlRefreshButton"', 'model control view must expose a single check action.');
+  assertIncludes(indexText, 'id="modelControlGraphDetails"', 'model control must contain relation graph as a collapsible detail.');
+  assertIncludes(appText, 'function modelControlReport()', 'UI must aggregate model control status from existing checks.');
+  assertIncludes(appText, 'function modelControlReadinessStatus(report)', 'model control must include Zabbix readiness.');
+  assertIncludes(appText, 'function modelControlZabbixLiveReport()', 'model control must include live Zabbix apply readiness.');
+  assertIncludes(appText, 'function handleModelControlAction(actionKey)', 'model control cards must navigate to concrete fix screens.');
+  assertIncludes(appText, 'data-model-control-action', 'model control findings must expose clickable remediation actions.');
+  assertIncludes(appText, 'function renderModelControlGraphDetails(report, summary, findings)', 'model control must render graph details inline.');
+  assertIncludes(stylesText, '.model-control-summary', 'model control summary must have compact styling.');
+  assertIncludes(indexText, 'id="dashboardSyncLights"', 'dashboard must expose sync traffic lights.');
+  assertIncludes(appText, 'function renderDashboardSyncLights()', 'UI must render dashboard sync traffic lights.');
+  assertIncludes(appText, 'function dashboardSyncLightItems()', 'UI must build dashboard sync traffic light statuses.');
+  assertIncludes(appText, 'function handleDashboardSyncLightClick(event)', 'dashboard sync traffic lights must have click actions.');
+  assertIncludes(stylesText, '.sync-light-card', 'dashboard sync traffic lights must have stable card styling.');
+  assertIncludes(indexText, 'data-view="modelWorkspace"',
+    'UI must expose a unified model workspace entry point.');
+  assertNotIncludes(indexText, 'Технические детали модели',
+    'legacy service/suppression menus must be physically removed from sidebar.');
+  assertNotIncludes(indexText, 'data-technical-model-detail',
+    'legacy Zabbix publication button wrappers must be removed.');
+  assertNotIncludes(indexText, 'id="showTechnicalModelMenusCheckbox"',
+    'general settings must not expose a switch for removed legacy technical menus.');
+  assertNotIncludes(appText, 'showTechnicalModelMenus',
+    'removed legacy menu mode must not remain in UI state.');
+  assertNotIncludes(appText, 'renderTechnicalModelMenuVisibility',
+    'removed legacy menu visibility renderer must not remain.');
+  assertIncludes(indexText, 'Старые прямые service/suppression пункты меню удалены',
+    'model workspace help must explain legacy direct menus were removed.');
+  assertIncludes(indexText, 'id="modelWorkspaceLayerSelect"',
+    'model workspace must expose service/suppression layer selector.');
+  assertIncludes(indexText, 'id="modelWorkspaceActions"',
+    'model workspace must expose common operation cards.');
+  assertIncludes(indexText, 'id="modelRulesView"',
+    'model workspace must expose a unified static rules view.');
+  assertIncludes(indexText, 'id="modelRulesLayerSelect"',
+    'unified static rules view must expose a layer selector.');
+  assertIncludes(indexText, 'id="modelTemplatesView"',
+    'model workspace must expose a unified templates view.');
+  assertIncludes(indexText, 'id="modelTemplatesLayerSelect"',
+    'unified templates view must expose a layer selector.');
+  assertIncludes(indexText, 'id="relationManagementLayerSelect"',
+    'unified relation editor must expose a layer selector.');
+  assertIncludes(indexText, 'id="relationManagementKindSelect"',
+    'unified relation editor must expose a relation kind selector.');
+  assertIncludes(appText, 'function renderModelWorkspaceView()',
+    'UI must render unified model workspace.');
+  assertIncludes(appText, "view === 'modelRules'",
+    'unified model rules route must show the selected layer rule editor.');
+  assertIncludes(appText, "view === 'modelTemplates'",
+    'unified model templates route must show the selected layer template editor.');
+  assertIncludes(appText, "view === 'modelRelations'",
+    'unified model relations route must show the selected relation editor.');
+  assertIncludes(appText, 'function relationManagementContextFromControls()',
+    'relation management must build context from unified layer/kind selectors.');
+  assertIncludes(appText, 'function openActiveNavParents(view)',
+    'programmatic navigation from model workspace must reveal the target technical menu.');
+  assertIncludes(appText, 'modelWorkspaceLayer: state.modelWorkspace.layer',
+    'selected model workspace layer must be persisted in local UI settings.');
+  assertIncludes(appText, 'modelWorkspaceActions(layerKey)',
+    'model workspace must build common actions by selected layer.');
+  assertIncludes(appText, "view: 'modelRules'",
+    'model workspace static rules card must use the unified rules route.');
+  assertIncludes(appText, "view: 'modelTemplates'",
+    'model workspace templates card must use the unified templates route.');
+  assertIncludes(appText, "view: 'modelRelations'",
+    'model workspace relations card must use the unified relations route.');
+  assertIncludes(appText, "view: 'templateApply'",
+    'model workspace must include the prepare-and-save pipeline in the main scenario.');
+  assertIncludes(appText, "view: 'modelZabbixApply'",
+    'model workspace must route Zabbix publication through the unified operator screen.');
+  assertIncludes(indexText, 'id="modelZabbixApplyView"',
+    'UI must expose a unified Zabbix publication screen.');
+  assertIncludes(indexText, 'id="modelZabbixApplySummary"',
+    'unified Zabbix publication screen must show service/SLA/suppression/dependencies status.');
+  assertIncludes(appText, 'function renderModelZabbixApplyView()',
+    'UI must render the unified Zabbix publication screen.');
+  assertIncludes(appText, 'function renderModelZabbixApplySummary()',
+    'unified Zabbix publication screen must keep status summary separate from technical panels.');
+  assertIncludes(indexText, 'data-model-zabbix-technical-view',
+    'unified Zabbix publication screen must link to technical service/suppression details.');
+  assertIncludes(indexText, 'Модель -> Связи',
+    'operator help must route relation editing through the unified model relations editor.');
+  assertIncludes(appText, 'откройте Модель -> Связи',
+    'template materialization diagnostics must route operators to the unified relation editor.');
+  assertNotIncludes(indexText, 'Сервисный слой -> Применить в Zabbix',
+    'operator help must not point SLA publication to the old service-only route.');
+  assertNotIncludes(appText, 'Сервисный слой -> Управление связями',
+    'runtime diagnostics must not point operators to the old service-only relation route.');
+  assertIncludes(appText, 'data-model-workspace-view',
+    'model workspace action cards must navigate to existing detailed views.');
+  assertIncludes(stylesText, '.model-workspace-grid',
+    'model workspace cards must have stable responsive layout.');
+  assertIncludes(appText, "view: 'serviceObjects'", 'model workspace must expose service objects as a service-only action.');
+  assertNotIncludes(indexText, 'data-view="serviceObjects"', 'service objects must not return as an old sidebar menu item.');
+  assertIncludes(indexText, 'Объекты сервиса', 'service objects view must use the service objects label.');
   assertIncludes(indexText, 'id="serviceObjectsView"', 'service objects view must exist.');
   assertIncludes(indexText, 'id="serviceObjectSelect"', 'service objects view must expose existing object selector.');
   assertIncludes(indexText, 'id="createServiceObjectButton"', 'service objects view must expose a creation action.');
@@ -165,17 +266,140 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'id="newServiceObjectRelationButton"', 'service objects view must expose a reset action for relation editing.');
   assertIncludes(indexText, 'id="refreshServiceObjectRelationsButton"', 'service objects view must expose relation refresh.');
   assertIncludes(indexText, 'SLA-политик', 'service objects view must mention SLA policy objects.');
-  assertIncludes(indexText, 'Публикация SLA перенесена в Сервисный слой -> Применить в Zabbix',
+  assertIncludes(indexText, 'Публикация SLA выполняется через Модель -> Применить в Zabbix',
     'SLA settings help must point operators to the service Zabbix apply view for publication.');
   assertIncludes(indexText, 'id="zabbixSlaPublicationStatus"',
     'service Zabbix apply view must expose SLA publication status.');
+  assertIncludes(indexText, 'data-zabbix-publish-console',
+    'Zabbix apply views must expose the compact publication console.');
+  assertIncludes(indexText, 'data-zabbix-publish-progress',
+    'compact Zabbix publication must expose per-step progress rows.');
+  assertIncludes(indexText, 'data-zabbix-publish-layer',
+    'compact Zabbix publication must allow service/suppression/both layer selection.');
+  assertIncludes(indexText, 'data-zabbix-publish-scope',
+    'compact Zabbix publication must allow changes/full/manual scope selection.');
+  assertIncludes(indexText, 'data-zabbix-publish-manual-scope',
+    'compact Zabbix publication must expose manual scope input.');
+  assertIncludes(indexText, 'data-zabbix-publish-include-sla',
+    'compact Zabbix publication must expose SLA substep control.');
+  assertIncludes(indexText, 'data-zabbix-publish-include-dependencies',
+    'compact Zabbix publication must expose trigger dependency substep control.');
+  assertNotIncludes(indexText, 'Технические детали публикации',
+    'legacy Zabbix apply buttons must be physically removed.');
+  assertNotIncludes(indexText, 'data-zabbix-apply-publish',
+    'legacy direct Zabbix publish buttons must not remain in markup.');
+  assertNotIncludes(indexText, 'data-zabbix-apply-full-publish',
+    'legacy direct full-graph Zabbix publish buttons must not remain in markup.');
+  assertNotIncludes(indexText, 'id="zabbixSlaDryRunButton"',
+    'legacy direct SLA dry-run button must not remain in markup.');
+  assertNotIncludes(indexText, 'id="zabbixSlaPublishButton"',
+    'legacy direct SLA publish button must not remain in markup.');
+  assertIncludes(indexText, 'Показать план и детали service-публикации',
+    'service Zabbix apply details must be collapsed behind a details block.');
+  assertIncludes(indexText, 'Показать план и детали suppression-публикации',
+    'suppression Zabbix apply details must be collapsed behind a details block.');
+  assertIncludes(indexText, 'Показать план подготовки правил',
+    'template apply plan must be collapsed behind a details block.');
+  assertIncludes(indexText, 'id="templateApplyPlanFilter"',
+    'template apply plan must expose errors/warnings/all filtering.');
+  assertIncludes(appText, 'pagedTemplatePlanCards',
+    'template apply plan must paginate large template materialization lists.');
+  assertIncludes(appText, 'data-template-plan-page',
+    'template apply plan must expose pagination controls.');
+  assertIncludes(indexText, 'data-zabbix-plan-filter',
+    'Zabbix object plans must expose errors/warnings/all filtering.');
+  assertIncludes(appText, 'zabbixObjectPlanFilteredObjects',
+    'Zabbix object plan must apply plan filters before pagination.');
+  assertIncludes(indexText, 'data-copy-container-text',
+    'large detail blocks must expose copy/export controls.');
+  assertIncludes(appText, 'copyContainerText',
+    'UI must support copying visible plan/detail text.');
+  assertIncludes(appText, 'topTemplateApplyErrors',
+    'template apply summary must show top blocking errors before details.');
+  assertIncludes(appText, 'topZabbixSlaProblems',
+    'SLA publication summary must show top errors/warnings before details.');
+  assertIncludes(appText, 'topZabbixTriggerDependencyProblems',
+    'trigger dependency summary must show top errors/warnings before details.');
+  assertIncludes(appText, 'topZabbixPreflightProblems',
+    'Zabbix preflight summary must show top graph blockers before details.');
+  assertIncludes(appText, 'topRelationGraphFindings',
+    'relations graph summary must show top findings before details.');
+  assertIncludes(appText, 'главные проблемы',
+    'Zabbix apply summary must show top errors/warnings before details.');
+  assertIncludes(indexText, 'Показать примеры циклов и транзитивных связей',
+    'long preflight cycle examples must be collapsed.');
+  assertIncludes(indexText, 'Показать графические примеры циклов',
+    'long relation graph examples must be collapsed.');
+  assertIncludes(indexText, 'Показать пояснение публикации service',
+    'service Zabbix publication help must be collapsed.');
+  assertIncludes(indexText, 'Показать пояснение публикации suppression',
+    'suppression Zabbix publication help must be collapsed.');
+  assertIncludes(indexText, 'Показать пояснение подготовки правил',
+    'template apply help must be collapsed.');
+  assertIncludes(indexText, 'Показать пояснение Redis runtime',
+    'storage Redis help must be collapsed.');
+  assertIncludes(indexText, 'Показать пояснение срезов покрытия',
+    'monitoring coverage help must be collapsed.');
+  assertIncludes(indexText, 'Показать диагностику графа перед Zabbix',
+    'Zabbix preflight diagnostics must be collapsed behind a details block.');
+  assertIncludes(indexText, 'Показать план SLA',
+    'SLA publication plan must be collapsed behind a details block.');
+  assertIncludes(indexText, 'Показать диагностику trigger dependencies',
+    'trigger dependency diagnostics must be collapsed behind a details block.');
+  assertIncludes(indexText, 'id="zabbixPreflightDetailFilter"',
+    'preflight diagnostics must expose an errors/warnings/all filter.');
+  assertIncludes(indexText, 'id="zabbixSlaDetailFilter"',
+    'SLA publication details must expose an errors/warnings/all filter.');
+  assertIncludes(indexText, 'id="zabbixTriggerDependenciesDetailFilter"',
+    'trigger dependency diagnostics must expose an errors/warnings/all filter.');
+  assertIncludes(indexText, 'id="relationGraphDiagnosticFilter"',
+    'relation graph diagnostics must expose an errors/warnings/all filter.');
+  assertIncludes(indexText, 'data-copy-json="zabbixSla"',
+    'SLA publication details must support JSON copy/export.');
+  assertIncludes(indexText, 'data-copy-json="zabbixTriggerDependencies"',
+    'trigger dependency diagnostics must support JSON copy/export.');
+  assertIncludes(indexText, 'data-copy-json="zabbixPreflight"',
+    'preflight diagnostics must support JSON copy/export.');
+  assertIncludes(indexText, 'data-copy-json="relationGraph"',
+    'relation graph diagnostics must support JSON copy/export.');
+  assertIncludes(appText, 'function copyDiagnosticJson(kind, button = null)',
+    'UI must provide a shared JSON copy handler for diagnostic payloads.');
+  assertIncludes(appText, 'function diagnosticItemVisible(severity, filter)',
+    'secondary diagnostics must share filter semantics.');
+  assertIncludes(stylesText, '.compact-details',
+    'collapsed technical detail blocks must have compact styling.');
+  assertIncludes(appText, 'function runCompactZabbixPublication(panel, options = {})',
+    'compact Zabbix publication console must route check/publish to existing apply functions.');
+  assertIncludes(appText, 'compactZabbixPublicationTargets(panel)',
+    'compact Zabbix publication must support both-layer runs.');
+  assertIncludes(appText, 'rememberCompactZabbixPublicationPreferences(panel)',
+    'compact Zabbix publication must persist the latest layer/scope/substep choices.');
+  assertIncludes(appText, 'renderCompactZabbixPublicationProgress(targets, substeps)',
+    'compact Zabbix publication must render service/SLA/suppression/dependencies progress.');
+  assertIncludes(appText, 'zabbixPublishPreferences: normalizeZabbixPublishPreferences',
+    'compact Zabbix publication preferences must be stored in local UI settings.');
+  assertIncludes(appText, 'runZabbixSlaPublication({ dryRun })',
+    'compact Zabbix publication must run SLA as service substep.');
+  assertIncludes(appText, 'runZabbixTriggerDependencies({ dryRun })',
+    'compact Zabbix publication must run trigger dependencies as suppression substep.');
+  assertIncludes(stylesText, '.zabbix-publish-console',
+    'compact Zabbix publication console must have stable styling.');
+  assertIncludes(indexText, 'id="runMonitoringCoverageSnapshotButton"',
+    'storage/audit view must expose one-shot monitoring coverage snapshot action.');
+  assertIncludes(indexText, 'id="monitoringCoverageSnapshotResult"',
+    'storage/audit view must render monitoring coverage snapshot results.');
+  assertIncludes(indexText, 'id="monitoringCoverageSnapshotHistory"',
+    'storage/audit view must render saved monitoring coverage snapshot history.');
+  assertIncludes(appText, '/api/zabbix/monitoring-coverage/snapshot',
+    'UI must call monitoring coverage snapshot endpoint through the BFF.');
+  assertIncludes(appText, '/api/zabbix/monitoring-coverage/snapshots?limit=20',
+    'UI must load saved monitoring coverage snapshot history through the BFF.');
+  assertIncludes(serverText, 'zabbixMonitoringCoverageSnapshotUrl',
+    'BFF must proxy monitoring coverage snapshots to zabbixconfig2api.');
+  assertIncludes(serverText, '/api/zabbix/monitoring-coverage/snapshots',
+    'BFF must proxy monitoring coverage snapshot history to zabbixconfig2api.');
   assertIncludes(indexText, 'Отдельные пустые service-узлы из SLA-панели не создаются',
     'SLA help must explain that SLA publication does not create isolated service nodes.');
-  const serviceZabbixApplyStart = indexText.indexOf('id="serviceZabbixApplyView"');
-  const servicePublishButton = indexText.indexOf('data-zabbix-apply-publish', serviceZabbixApplyStart);
-  const slaDryRunButton = indexText.indexOf('id="zabbixSlaDryRunButton"', serviceZabbixApplyStart);
-  assert(serviceZabbixApplyStart >= 0 && servicePublishButton >= 0 && slaDryRunButton > servicePublishButton,
-    'SLA publication controls must be placed in service Zabbix apply after publish-service action.');
   const slaSettingsStart = indexText.indexOf('id="slaSettingsView"');
   const slaSettingsEnd = indexText.indexOf('id="dataSourceSyncView"', slaSettingsStart);
   const slaSettingsMarkup = indexText.slice(slaSettingsStart, slaSettingsEnd);
@@ -290,7 +514,11 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'Статические правила', 'auto-population menu must be renamed to static rules.');
   assertNotIncludes(indexText, 'Просмотр автонаполнения', 'view-only auto-population menu must not return.');
   assertIncludes(indexText, 'Фильтровать правила и классы из шаблонов', 'static rule template filter label must mention classes.');
-  assertIncludes(indexText, 'Создать/обновить правила по шаблонам и связям', 'template apply action must mention links.');
+  assertIncludes(indexText, 'Подготовить и сохранить правила', 'template apply action must be the preparation-and-save pipeline.');
+  assertIncludes(appText, 'saveConversionConfigsToFolder({ renderFinal: false, throwOnError: true })',
+    'template apply pipeline must persist conversion configuration after materialization.');
+  assertIncludes(appText, 'Конфигурация сохранена: v',
+    'template apply pipeline must report saved manifest version.');
   assertIncludes(indexText, 'id="runTemplateAuditButton"', 'template audit must be available inside template apply menu.');
   assertIncludes(indexText, 'id="templateDeleteModeDefaultSelect"',
     'admin settings must expose the default template deletion mode.');
@@ -298,6 +526,74 @@ function assertStaticUiContracts() {
     'administration menu must expose a separate microservices settings page.');
   assertIncludes(indexText, 'id="microserviceSettingsView"',
     'microservice-owned zabbixconfig2api settings must live outside General settings.');
+  assertIncludes(indexText, 'data-view="storageAuditSettings"',
+    'administration menu must expose storage and monitoring coverage settings.');
+  assertIncludes(indexText, 'id="storageAuditSettingsView"',
+    'storage and monitoring coverage settings view must exist.');
+  assertIncludes(indexText, 'Redis хранит только runtime-данные',
+    'storage settings must explain Redis is runtime-only.');
+  assertIncludes(appText, 'Runtime coordination',
+    'storage settings must show runtime coordination backend.');
+  assertIncludes(appText, 'Lookup cache',
+    'storage settings must show lookup cache backend.');
+  assertIncludes(appText, 'Active runtime locks',
+    'storage settings must show active runtime locks.');
+  assertIncludes(appText, 'Active operations',
+    'storage settings must show active runtime operation count.');
+  assertIncludes(appText, 'Last runtime operation',
+    'storage settings must show the latest runtime operation.');
+  assertIncludes(indexText, 'Разовые срезы покрытия мониторингом',
+    'storage settings must describe one-shot monitoring coverage snapshots.');
+  assertIncludes(indexText, 'не является непрерывной online-метрикой',
+    'coverage settings must explain snapshots are not continuous online metrics.');
+  assertIncludes(indexText, 'id="coverageHostIdAttributeInput"',
+    'coverage settings must expose the Zabbix host id attribute.');
+  assertIncludes(indexText, 'id="dryRunStateMigrationButton"',
+    'storage settings must expose a membership-state migration dry-run action.');
+  assertIncludes(indexText, 'id="checkRedisRuntimeButton"',
+    'storage settings must expose a Redis runtime check action.');
+  assertIncludes(indexText, 'id="checkBuilderRedisRuntimeButton"',
+    'storage settings must expose a cmdbconfigbuilder Redis semantic dedup check action.');
+  assertIncludes(indexText, 'id="redisRuntimeCheckResult"',
+    'storage settings must render Redis runtime check result.');
+  assertIncludes(indexText, 'id="builderRedisRuntimeCheckResult"',
+    'storage settings must render cmdbconfigbuilder Redis semantic dedup check result.');
+  assertIncludes(indexText, 'id="applyStateMigrationButton"',
+    'storage settings must expose a membership-state migration apply action.');
+  assertIncludes(appText, 'renderStorageAuditSettingsView',
+    'UI must render storage and coverage settings.');
+  assertIncludes(appText, 'collectStorageAuditSettingsPayload',
+    'UI must submit storage and coverage settings via the zabbixconfig2api settings panel.');
+  assertIncludes(appText, 'runRuntimeStorageMigration',
+    'UI must run membership-state migration dry-run/apply through zabbixconfig2api.');
+  assertIncludes(appText, 'renderRuntimeStorageMigrationResult',
+    'UI must render membership-state migration counters.');
+  assertIncludes(appText, 'loadRuntimeStorageStatus',
+    'UI must load runtime membership-state counters for storage settings.');
+  assertIncludes(appText, '/api/zabbix/runtime-storage/status',
+    'UI must call the runtime storage status endpoint.');
+  assertIncludes(appText, '/api/zabbix/redis/check',
+    'UI must call the Redis runtime check endpoint.');
+  assertIncludes(appText, '/api/rules/redis/check',
+    'UI must call the cmdbconfigbuilder Redis semantic dedup check endpoint.');
+  assertIncludes(serverText, 'zabbixRedisCheckUrl',
+    'monitoring UI BFF must proxy Redis runtime checks.');
+  assertIncludes(serverText, 'cmdbConfigBuilderRedisCheckUrl',
+    'monitoring UI BFF must proxy cmdbconfigbuilder Redis semantic dedup checks.');
+  assertIncludes(serverText, '/api/zabbix/runtime-storage/status',
+    'monitoring UI BFF must proxy runtime storage status.');
+  assertIncludes(serverText, 'backend.zabbixRuntimeStorageStatusUrl',
+    'monitoring UI BFF must use configured runtime storage status URL.');
+  assertIncludes(serverText, '/api/zabbix/runtime-storage/migration/dry-run',
+    'monitoring UI BFF must proxy membership-state migration dry-run.');
+  assertIncludes(serverText, '/api/zabbix/runtime-storage/migration/apply',
+    'monitoring UI BFF must proxy membership-state migration apply.');
+  assertIncludes(appText, 'Membership backend',
+    'storage settings must show membership backend information.');
+  assertIncludes(serverText, 'monitoringCoverageAudit',
+    'monitoring UI BFF must expose monitoring coverage settings from zabbixconfig2api config.');
+  assertIncludes(serverText, 'redactedConnectionEndpoint',
+    'monitoring UI BFF must not expose raw storage connection strings.');
   assertIncludes(indexText, 'сохраняются в браузерное хранилище только кнопкой',
     'General settings must explain how local UI settings are persisted.');
   assertIncludes(indexText, 'Отвязать правила и сохранить объекты',
@@ -576,6 +872,16 @@ function assertReadinessConfigContracts() {
     'dirty Zabbix scope changes must be saved to the local journal.');
   assertIncludes(appText, 'loadZabbixDirtyScopeJournal();',
     'dirty Zabbix scope journal must be loaded on UI startup.');
+  assertIncludes(appText, 'loadServerZabbixDirtyScopes',
+    'dirty Zabbix scope journal must be synchronized with server-side durable scopes.');
+  assertIncludes(appText, 'Dirty scope failed',
+    'UI must surface failed server-side dirty scopes instead of hiding them as processed work.');
+  assertIncludes(appText, 'ensureZabbixDirtyScopeDefault',
+    'Zabbix apply UI must use pending server-side dirty scopes as the default scope when the input is empty.');
+  assertIncludes(appText, 'подставлен из dirty scopes',
+    'Zabbix apply UI must explain when scope was automatically taken from dirty scopes.');
+  assertIncludes(serverText, '/api/zabbix/runtime-storage/dirty-scopes',
+    'monitoring UI BFF must proxy server-side Zabbix dirty scopes.');
   assertIncludes(appText, 'requireScopeMatch: scope.requireMatch',
     'Zabbix apply and scope preview must send strict scope matching to the backend.');
   assertIncludes(serverText, '/api/zabbix/apply-current/scope-preview',
@@ -640,8 +946,178 @@ function assertReadinessConfigContracts() {
     'zabbixconfig2api must auto-reconcile suppression trigger dependencies after membership changes.');
   assertIncludes(cmdbConfigBuilderText, 'ServiceTemplatesFilePath',
     'cmdbconfigbuilder must have a configured sidecar path for service template relations.');
+  assert(builderConfig.Redis?.Enabled === false,
+    'cmdbconfigbuilder Redis semantic dedup backend must be disabled by default.');
+  assert(builderConfig.Redis?.FailureMode === 'fallback',
+    'cmdbconfigbuilder Redis semantic dedup backend must default to fallback mode.');
+  assert(builderConfig.ZabbixDirtyScopes?.Enabled === true,
+    'cmdbconfigbuilder must mark server-side Zabbix dirty scopes from streaming webhook processing by default.');
+  assertIncludes(builderConfig.ZabbixDirtyScopes?.Endpoint ?? '', '/runtime-storage/dirty-scopes',
+    'cmdbconfigbuilder dirty scope endpoint must point to zabbixconfig2api dirty scope storage.');
+  assertIncludes(cmdbConfigBuilderText, 'SemanticCommandDeduplicator',
+    'cmdbconfigbuilder must keep semantic command deduplication.');
+  assertIncludes(cmdbConfigBuilderText, 'semantic-dedup',
+    'cmdbconfigbuilder must support Redis-backed semantic deduplication keys.');
+  assertIncludes(cmdbConfigBuilderText, '"NX"',
+    'cmdbconfigbuilder Redis semantic dedup must use an atomic reservation before publish.');
+  assertIncludes(cmdbConfigBuilderText, 'Pending = true',
+    'cmdbconfigbuilder Redis semantic dedup reservation must be distinguishable from published entries.');
+  assertIncludes(cmdbConfigBuilderText, 'Redis semantic deduplication failed; falling back to in-memory dedup',
+    'cmdbconfigbuilder must fall back to in-memory semantic dedup when Redis is unavailable in fallback mode.');
+  assertIncludes(cmdbConfigBuilderText, '/redis/check',
+    'cmdbconfigbuilder must expose Redis semantic dedup health check endpoint.');
+  assertIncludes(cmdbConfigBuilderText, 'Redis semantic deduplication backend is available',
+    'cmdbconfigbuilder Redis check must report reachable Redis semantic dedup backend.');
+  assertIncludes(cmdbConfigBuilderText, 'ZabbixDirtyScopeClient',
+    'cmdbconfigbuilder must mark server-side Zabbix dirty scopes when webhook processing publishes Zabbix commands.');
+  assertIncludes(cmdbConfigBuilderText, 'MarkPendingIfZabbixPublishedAsync',
+    'cmdbconfigbuilder dirty scope marking must only happen after Zabbix topic publication.');
+  assertIncludes(cmdbConfigBuilderText, 'MarkDirtyScopesForIntermediateWebhookAsync',
+    'cmdbconfigbuilder must mark dirty scopes for intermediate CMDBuild cmdbPath webhooks.');
+  assertIncludes(cmdbConfigBuilderText, 'CmdbPathContainsIntermediateClass',
+    'cmdbconfigbuilder must detect intermediate classes inside source cmdbPath definitions.');
+  assertIncludes(cmdbConfigBuilderText, 'MarkPendingAsync',
+    'cmdbconfigbuilder dirty scope client must support coarse rule-derived dirty scopes without a published command.');
+  assertIncludes(appText, 'sourceCardFieldDimensionEntries',
+    'template population must keep stable and display values separated for source/path fields.');
+  assertIncludes(appText, 'normalizeCardFieldDisplayValues',
+    'template population must read lookup display values separately from stable lookup codes.');
+  assertIncludes(appText, 'dimension_stable_value',
+    'generated template metadata must persist stable dimension values for diagnostics.');
+  assertIncludes(appText, 'dimension_display_value',
+    'generated template metadata must persist display dimension values for diagnostics.');
+  assertIncludes(appText, 'templateLookupStableDisplayWarnings',
+    'template audit must warn when lookup display values are used in structural fields.');
+  assertIncludes(cmdbuildClientText, '"code", "_code", "value", "Value", "_id", "id", "name"',
+    'CMDBuild path value resolution must prefer stable lookup code/key/id before display names.');
+  assertIncludes(diagnosticsScriptText, 'INTEGRATION_PROFILE',
+    'diagnostic tests must expose explicit integration profiles.');
+  assertIncludes(diagnosticsScriptText, 'redis)',
+    'diagnostic integration profiles must include Redis runtime e2e.');
+  assertIncludes(diagnosticsScriptText, 'redis-kafka)',
+    'diagnostic integration profiles must include Redis Kafka semantic dedup e2e.');
+  assertIncludes(diagnosticsScriptText, 'LIVE_REDIS',
+    'diagnostic tests must keep legacy LIVE_REDIS compatibility.');
+  assertIncludes(integrationScriptText, 'INTEGRATION_PROFILE="$profile"',
+    'integration wrapper must delegate selected profiles to test-diagnostics.');
+  assertIncludes(redisKafkaE2eText, 'redis-kafka-dedup-host',
+    'Redis Kafka e2e must publish a rule-driven command for semantic dedup verification.');
+  assertIncludes(redisKafkaE2eText, 'Kafka__ConsumerGroupId',
+    'Redis Kafka e2e must run multiple builder consumer groups against one raw topic.');
   assert(zabbixConfig.Apply?.CreateSuppressionServices === false,
     'zabbixconfig2api must not create Zabbix Services for suppression by default.');
+  assert(zabbixConfig.Redis?.Enabled === false,
+    'zabbixconfig2api Redis runtime store must be disabled by default.');
+  assert(zabbixConfig.Redis?.FailureMode === 'fallback',
+    'zabbixconfig2api Redis runtime store must default to fallback mode.');
+  assert(zabbixConfig.DurableStore?.Provider === 'sqlite',
+    'zabbixconfig2api durable store must default to sqlite.');
+  assert(zabbixConfig.MonitoringCoverageAudit?.TriggerMode === 'manual',
+    'monitoring coverage snapshots must be manual by default.');
+  assert(zabbixConfig.MonitoringCoverageAudit?.HostIdAttribute === 'zabbix_main_hostid',
+    'monitoring coverage snapshots must use zabbix_main_hostid by default.');
+  assert(zabbixConfig.MonitoringCoverageAudit?.AutoSnapshotAfterFullGraphApply === false,
+    'monitoring coverage snapshots must not run automatically after full graph apply by default.');
+  assert(zabbixConfig.MonitoringCoverageAudit?.AllowOperationalDelta === true,
+    'monitoring coverage snapshots must explicitly allow operational delta by default.');
+  assertIncludes(zabbixProgramText, '/runtime-storage/status',
+    'zabbixconfig2api must expose runtime storage and coverage settings status.');
+  assertIncludes(zabbixProgramText, '/redis/check',
+    'zabbixconfig2api must expose Redis runtime check endpoint.');
+  assertIncludes(zabbixProgramText, '/runtime-storage/migration/dry-run',
+    'zabbixconfig2api must expose membership-state migration dry-run.');
+  assertIncludes(zabbixProgramText, 'ZabbixApplyStateMigrationPlan',
+    'zabbixconfig2api must produce membership-state migration counters.');
+  assertIncludes(zabbixProgramText, 'RuntimeStorageSnapshot',
+    'zabbixconfig2api must expose active membership backend counters.');
+  assertIncludes(zabbixProgramText, 'IZabbixApplyStateStorage',
+    'zabbixconfig2api membership persistence must be behind a storage abstraction before file/SQLite backends.');
+  assertIncludes(zabbixProgramText, 'FileZabbixApplyStateStorage',
+    'zabbixconfig2api must keep the current file-backed membership state as the compatibility backend.');
+  assertIncludes(zabbixProgramText, 'SqliteZabbixApplyStateStorage',
+    'zabbixconfig2api must provide a SQLite membership-state backend.');
+  assertIncludes(zabbixProgramText, 'zabbix_target_memberships',
+    'SQLite membership-state backend must write normalized target membership tables.');
+  assertIncludes(zabbixProgramText, 'zabbix_source_memberships',
+    'SQLite membership-state backend must write normalized source membership tables.');
+  assertIncludes(zabbixProgramText, 'ZabbixDirtyScopeStore',
+    'zabbixconfig2api must provide server-side dirty scope storage.');
+  assertIncludes(zabbixProgramText, 'zabbix_dirty_scopes',
+    'server-side dirty scopes must be persisted in durable store.');
+  assertIncludes(zabbixProgramText, 'DirtyScopeWorkflow',
+    'zabbixconfig2api must update dirty scope workflow status after real Zabbix apply commands.');
+  assertIncludes(zabbixProgramText, 'MarkResult',
+    'dirty scope store must expose status/result updates for processed and failed scopes.');
+  assertIncludes(zabbixProgramText, 'MarkFromTriggerDependencyResult',
+    'suppression trigger dependency apply must close related dirty scopes.');
+  assertIncludes(zabbixProgramText, 'WithDirtyScopeDefault',
+    'suppression dependency reconcile must use pending server-side dirty scopes when no explicit scope is provided.');
+  assertIncludes(zabbixProgramText, 'PendingTargetKeys',
+    'dirty scope store must expose pending target keys for backend scheduled/scoped reconcile.');
+  assertIncludes(zabbixProgramText, 'MarkFromStateCleanupResult',
+    'stale membership cleanup must close related dirty scopes.');
+  assertIncludes(zabbixProgramText, 'MarkFromSlaResult',
+    'SLA apply must close service dirty scopes when the same dirty journal is used.');
+  assertIncludes(zabbixProgramText, 'RuntimeRedisOptions',
+    'zabbixconfig2api must bind Redis runtime settings.');
+  assertIncludes(zabbixProgramText, 'IRuntimeCoordinationStore',
+    'zabbixconfig2api must expose a runtime coordination abstraction for Redis/local locks.');
+  assertIncludes(zabbixProgramText, 'LocalRuntimeCoordinationStore',
+    'zabbixconfig2api must provide local-memory runtime coordination fallback.');
+  assertIncludes(zabbixProgramText, 'RedisRuntimeCoordinationStore',
+    'zabbixconfig2api must provide a Redis runtime coordination backend.');
+  assertIncludes(zabbixProgramText, 'IRuntimeLookupCache',
+    'zabbixconfig2api must expose a runtime lookup cache abstraction.');
+  assertIncludes(zabbixProgramText, 'RedisRuntimeLookupCache',
+    'zabbixconfig2api must provide a Redis-backed lookup cache.');
+  assertIncludes(zabbixProgramText, ':cache:',
+    'Redis lookup cache keys must be separated from locks and deduplication keys.');
+  assertIncludes(zabbixProgramText, 'GetZabbixHostsByIdsWithLookupCacheAsync',
+    'monitoring coverage host lookups must use the runtime lookup cache.');
+  assertIncludes(zabbixProgramText, 'runtimeLookupCache.GetStringAsync("zabbix:host"',
+    'monitoring coverage must read Zabbix host lookup values from cache before host.get.');
+  assertIncludes(zabbixProgramText, 'runtimeLookupCache.SetStringAsync(',
+    'monitoring coverage must store Zabbix host lookup values in cache after host.get.');
+  assertIncludes(zabbixProgramText, 'ListManagedServicesByLayerWithLookupCacheAsync',
+    'stale managed service diagnostics must use runtime lookup cache for service.get by layer.');
+  assertIncludes(zabbixProgramText, '"zabbix:service-by-layer"',
+    'Zabbix service lookup cache keys must separate service-by-layer diagnostics.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'GetTriggersByHostIdsWithLookupCacheAsync',
+    'suppression trigger dependency dry-run must use runtime lookup cache for source trigger lookups.');
+  assertIncludes(zabbixTriggerDependencyApplierText, '"zabbix:trigger-by-host:enabled"',
+    'suppression trigger dependency cache keys must separate trigger-by-host lookups.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'useCache: dryRun',
+    'suppression trigger dependency apply must avoid cached Zabbix lookup data.');
+  assertIncludes(zabbixProgramText, 'RedisRespClient',
+    'zabbixconfig2api must include a Redis RESP client or equivalent Redis adapter.');
+  assertIncludes(zabbixProgramText, 'runtime:lock',
+    'Redis runtime coordination must use prefixed lock keys.');
+  assertIncludes(zabbixProgramText, 'runtime:operations:active',
+    'Redis runtime coordination must store active operation progress.');
+  assertIncludes(zabbixProgramText, 'RequestDebouncedOperation',
+    'runtime coordination must expose debounce requests.');
+  assertIncludes(zabbixProgramText, 'ConsumeDebouncedOperation',
+    'runtime coordination must expose debounce batch consumption.');
+  assertIncludes(zabbixProgramText, 'runtime:debounce',
+    'Redis runtime coordination must store debounce windows and reasons.');
+  assertIncludes(zabbixProgramText, 'WithRuntimeOperationLockAsync',
+    'long-running Zabbix operations must acquire runtime operation locks.');
+  assertIncludes(zabbixProgramText, 'zabbix:dependencies:suppression:auto-reconcile',
+    'automatic suppression dependency reconcile must use a runtime coordination lock.');
+  assertIncludes(zabbixProgramText, 'Automatic suppression trigger dependency reconcile skipped',
+    'automatic suppression dependency reconcile must skip when runtime coordination lock is held.');
+  assertIncludes(zabbixProgramText, 'StartOperation(operationKey',
+    'long-running Zabbix operations must record runtime operation progress.');
+  assertIncludes(zabbixProgramText, 'CompleteOperation(operation.OperationId',
+    'long-running Zabbix operations must complete runtime operation progress.');
+  assertIncludes(zabbixProgramText, 'runtimeCoordination = runtimeCoordination.Status()',
+    'runtime storage status must expose runtime coordination state.');
+  assertIncludes(zabbixProgramText, 'MonitoringCoverageSnapshotOptions',
+    'zabbixconfig2api must bind monitoring coverage snapshot settings.');
+  assertIncludes(zabbixProgramText, 'MonitoringCoverageSnapshotStore',
+    'zabbixconfig2api must persist monitoring coverage snapshots in durable storage.');
+  assertIncludes(zabbixProgramText, 'monitoring_coverage_snapshots',
+    'SQLite durable store must keep monitoring coverage snapshot history.');
   assert(Number.isInteger(zabbixConfig.ZabbixTriggerDependencies?.AutoReconcileDebounceSeconds),
     'suppression trigger dependency auto-reconcile debounce must be configured.');
   assert(!('zabbixTriggerDependencies' in uiConfig),
@@ -729,6 +1205,10 @@ function assertReadinessConfigContracts() {
     'legacy shared aggregate trigger selector must not return.');
   assertIncludes(zabbixTriggerDependencyApplierText, 'ZabbixTriggerDependencyRunRequest',
     'zabbixconfig2api must accept explicit per-request transitive depth overrides for manual UI runs.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'ScopeKeys',
+    'suppression dependency reconcile must accept scoped dirty target keys.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'FilterMembershipsByScope',
+    'suppression dependency reconcile must narrow membership graph by dirty scope when requested.');
   assertIncludes(zabbixTriggerDependencyApplierText, 'ApplyRunOverrides',
     'manual dependency runs must apply request overrides without changing saved zabbixconfig2api options.');
   assertNotIncludes(zabbixTriggerDependencyApplierText, 'dependentAggregate.ToTriggerInfo()',
@@ -783,12 +1263,21 @@ function assertWebhookManagementContracts() {
   assertIncludes(serverText, 'for (const event of WEBHOOK_EVENTS)', 'webhook publish must create every required event per class.');
   assertIncludes(serverText, 'code: managedWebhookCode(sourceClass.code, event.suffix)', 'webhook code must be based on class and event.');
   assertIncludes(serverText, 'target: sourceClass.code', 'CMDBuild webhook target must be the source class code.');
+  assertIncludes(serverText, 'readinessWebhookPayloadFields', 'managed webhooks must include readiness payload fields.');
+  assertIncludes(serverText, "config.readiness?.zabbixHostIdAttribute) || 'zabbix_main_hostid'",
+    'managed webhooks must default readiness payload to zabbix_main_hostid.');
+  assertIncludes(appText, 'const readinessField = zabbixHostIdAttributeName();',
+    'UI source-class coverage must require the configured readiness host id field.');
+  assertIncludes(appText, 'current.payloadFields.add(readinessField);',
+    'UI managed webhook publication must include zabbix_main_hostid in payload fields.');
 
   const payloadStart = serverText.indexOf('function buildCmdbuildWebhookPayload');
   const payloadEnd = serverText.indexOf('function webhookTargetHeaders', payloadStart);
   assert(payloadStart >= 0 && payloadEnd > payloadStart, 'server must expose webhook payload builder.');
   const payloadBlock = serverText.slice(payloadStart, payloadEnd);
   assert(!/rule[_-]?id|ruleId/i.test(payloadBlock), 'managed webhook payload must not depend on rule_id.');
+  assertIncludes(payloadBlock, 'readinessWebhookPayloadFields()',
+    'managed webhook payload builder must always add the readiness host id field.');
 
   const codeStart = serverText.indexOf('function managedWebhookCode');
   const codeEnd = serverText.indexOf('function webhookCodePrefix', codeStart);

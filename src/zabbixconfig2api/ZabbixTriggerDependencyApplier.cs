@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Options;
 public sealed class ZabbixTriggerDependencyApplier(
     ZabbixClient zabbix,
     ZabbixApplyStateStore state,
+    IRuntimeLookupCache runtimeLookupCache,
     IOptionsMonitor<ZabbixTriggerDependenciesOptions> options,
     IOptionsMonitor<ZabbixOptions> zabbixOptions,
     ILogger<ZabbixTriggerDependencyApplier> logger)
@@ -19,6 +21,7 @@ public sealed class ZabbixTriggerDependencyApplier(
     private const int MaxTriggerDescriptionLength = 255;
     private const int MaxUpstreamNamesInTriggerDescription = 4;
     private const decimal AggregateComplexityWarningRatio = 0.8m;
+    private static readonly JsonSerializerOptions LookupCacheJsonOptions = new(JsonSerializerDefaults.Web);
 
     public Task<ZabbixTriggerDependencyRunResult> RunAsync(
         bool dryRun,
@@ -43,6 +46,8 @@ public sealed class ZabbixTriggerDependencyApplier(
             MaxSourceHostsPerAggregate = currentOptions.MaxSourceHostsPerAggregate,
             MaxAggregateFormulaLength = currentOptions.MaxAggregateFormulaLength,
             ZabbixRequestTimeoutMs = currentZabbixOptions.RequestTimeoutMs,
+            ScopeKeys = NormalizeScopeKeys(request?.ScopeKeys).ToArray(),
+            ScopeFromDirtyScopes = request?.ScopeFromDirtyScopes == true,
             AggregateStateTriggerSelectorSummary = currentOptions.AggregateStateTriggerSelectorSummary(),
             DependencyTriggerSelectorSummary = currentOptions.DependencyTriggerSelectorSummary(),
             StartedAtUtc = DateTimeOffset.UtcNow
@@ -158,9 +163,17 @@ public sealed class ZabbixTriggerDependencyApplier(
         bool dryRun,
         CancellationToken cancellationToken)
     {
+        var scopeKeys = NormalizeScopeKeys(result.ScopeKeys);
         var memberships = state.ListMemberships(Layer)
             .Where(item => item.SourceCount > 0 || item.Relations.Count > 0)
             .ToArray();
+        result.UnscopedTargetCount = memberships.Length;
+        if (scopeKeys.Count > 0)
+        {
+            memberships = FilterMembershipsByScope(memberships, scopeKeys).ToArray();
+            result.ScopeMatchedTargetCount = memberships.Length;
+        }
+
         result.TargetCount = memberships.Length;
         result.ManagedDependencyCountBefore = state.ListManagedTriggerDependencies(Layer).Count;
         result.TriggerGetBatchSize = currentOptions.TriggerGetBatchSize;
@@ -168,7 +181,9 @@ public sealed class ZabbixTriggerDependencyApplier(
 
         if (memberships.Length == 0)
         {
-            result.Warnings.Add("В suppression state нет membership-объектов; сначала примените модель подавления в Zabbix.");
+            result.Warnings.Add(scopeKeys.Count > 0
+                ? $"В suppression state нет membership-объектов по scope ({scopeKeys.Count}); проверьте dirty scopes или выполните полный прогон."
+                : "В suppression state нет membership-объектов; сначала примените модель подавления в Zabbix.");
             return;
         }
 
@@ -199,10 +214,12 @@ public sealed class ZabbixTriggerDependencyApplier(
         IReadOnlyList<ZabbixTriggerInfo> triggers;
         try
         {
-            triggers = await zabbix.GetTriggersByHostIdsAsync(
+            triggers = await GetTriggersByHostIdsWithLookupCacheAsync(
                 hostIds,
                 currentOptions.IncludeDisabledTriggers,
                 currentOptions.TriggerGetBatchSize,
+                useCache: dryRun,
+                result,
                 cancellationToken);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -368,6 +385,72 @@ public sealed class ZabbixTriggerDependencyApplier(
         result.SampleAggregates.AddRange(result.Aggregates.Take(currentOptions.SampleLimit));
     }
 
+    private static IReadOnlySet<string> NormalizeScopeKeys(IReadOnlyList<string>? scopeKeys)
+    {
+        return (scopeKeys ?? [])
+            .Select(item => (item ?? "").Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static IEnumerable<ZabbixTargetMembershipSnapshot> FilterMembershipsByScope(
+        IReadOnlyList<ZabbixTargetMembershipSnapshot> memberships,
+        IReadOnlySet<string> scopeKeys)
+    {
+        var direct = memberships
+            .Where(item => MembershipMatchesScope(item, scopeKeys))
+            .Select(item => item.TargetManagedKey)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToHashSet(StringComparer.Ordinal);
+        if (direct.Count == 0)
+        {
+            return [];
+        }
+
+        var expanded = new HashSet<string>(direct, StringComparer.Ordinal);
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var membership in memberships)
+            {
+                if (expanded.Contains(membership.TargetManagedKey))
+                {
+                    foreach (var relation in membership.Relations)
+                    {
+                        if (expanded.Add(relation.TargetLookup))
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+
+                if (membership.Relations.Any(relation => expanded.Contains(relation.TargetLookup))
+                    && expanded.Add(membership.TargetManagedKey))
+                {
+                    changed = true;
+                }
+            }
+        }
+
+        return memberships.Where(item => expanded.Contains(item.TargetManagedKey));
+    }
+
+    private static bool MembershipMatchesScope(
+        ZabbixTargetMembershipSnapshot membership,
+        IReadOnlySet<string> scopeKeys)
+    {
+        if (scopeKeys.Contains(membership.TargetManagedKey)
+            || scopeKeys.Contains(membership.TargetCardId)
+            || scopeKeys.Contains(membership.TargetName))
+        {
+            return true;
+        }
+
+        return membership.Relations.Any(relation => scopeKeys.Contains(relation.TargetLookup));
+    }
+
     private async Task<(ZabbixTargetMembershipSnapshot[] Memberships, string[] HostIds)> ReconcileSourceHostBindingsAsync(
         ZabbixTargetMembershipSnapshot[] memberships,
         string[] hostIds,
@@ -380,9 +463,11 @@ public sealed class ZabbixTriggerDependencyApplier(
         IReadOnlyList<ZabbixHostInfo> liveHosts;
         try
         {
-            liveHosts = await zabbix.GetHostsByIdsAsync(
+            liveHosts = await GetHostsByIdsWithLookupCacheAsync(
                 hostIds,
                 currentOptions.TriggerGetBatchSize,
+                useCache: dryRun,
+                result,
                 cancellationToken);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -430,6 +515,182 @@ public sealed class ZabbixTriggerDependencyApplier(
             .Where(item => item.SourceCount > 0 || item.Relations.Count > 0)
             .ToArray();
         return (refreshedMemberships, SourceHostIds(refreshedMemberships));
+    }
+
+    private async Task<IReadOnlyList<ZabbixHostInfo>> GetHostsByIdsWithLookupCacheAsync(
+        IReadOnlyList<string> hostIds,
+        int batchSize,
+        bool useCache,
+        ZabbixTriggerDependencyRunResult result,
+        CancellationToken cancellationToken)
+    {
+        var ids = hostIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        if (!useCache)
+        {
+            return await zabbix.GetHostsByIdsAsync(ids, batchSize, cancellationToken);
+        }
+
+        var loaded = new Dictionary<string, ZabbixHostInfo>(StringComparer.Ordinal);
+        var misses = new List<string>();
+        foreach (var hostId in ids)
+        {
+            var cached = await runtimeLookupCache.GetStringAsync("zabbix:host", hostId, cancellationToken);
+            if (TryReadLookupCacheValue<ZabbixHostInfo>(cached, out var host)
+                && !string.IsNullOrWhiteSpace(host.HostId))
+            {
+                loaded[host.HostId] = host;
+                result.LookupCacheHitCount++;
+                continue;
+            }
+
+            misses.Add(hostId);
+            result.LookupCacheMissCount++;
+        }
+
+        if (misses.Count > 0)
+        {
+            var liveHosts = await zabbix.GetHostsByIdsAsync(misses, batchSize, cancellationToken);
+            foreach (var host in liveHosts)
+            {
+                if (string.IsNullOrWhiteSpace(host.HostId))
+                {
+                    continue;
+                }
+
+                loaded[host.HostId] = host;
+                await runtimeLookupCache.SetStringAsync(
+                    "zabbix:host",
+                    host.HostId,
+                    JsonSerializer.Serialize(host, LookupCacheJsonOptions),
+                    ttl: null,
+                    cancellationToken);
+            }
+        }
+
+        return loaded.Values
+            .OrderBy(host => host.HostId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private async Task<IReadOnlyList<ZabbixTriggerInfo>> GetTriggersByHostIdsWithLookupCacheAsync(
+        IReadOnlyList<string> hostIds,
+        bool includeDisabled,
+        int batchSize,
+        bool useCache,
+        ZabbixTriggerDependencyRunResult result,
+        CancellationToken cancellationToken)
+    {
+        var ids = hostIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        if (!useCache)
+        {
+            return await zabbix.GetTriggersByHostIdsAsync(ids, includeDisabled, batchSize, cancellationToken);
+        }
+
+        var loaded = new Dictionary<string, ZabbixTriggerInfo>(StringComparer.Ordinal);
+        var misses = new List<string>();
+        var scope = includeDisabled ? "zabbix:trigger-by-host:all" : "zabbix:trigger-by-host:enabled";
+        foreach (var hostId in ids)
+        {
+            var cached = await runtimeLookupCache.GetStringAsync(scope, hostId, cancellationToken);
+            if (TryReadLookupCacheValue<ZabbixTriggerInfo[]>(cached, out var triggers)
+                && triggers.Length > 0)
+            {
+                foreach (var trigger in triggers)
+                {
+                    if (!string.IsNullOrWhiteSpace(trigger.TriggerId))
+                    {
+                        loaded[trigger.TriggerId] = trigger;
+                    }
+                }
+
+                result.LookupCacheHitCount++;
+                continue;
+            }
+
+            misses.Add(hostId);
+            result.LookupCacheMissCount++;
+        }
+
+        if (misses.Count > 0)
+        {
+            var liveTriggers = await zabbix.GetTriggersByHostIdsAsync(misses, includeDisabled, batchSize, cancellationToken);
+            foreach (var trigger in liveTriggers)
+            {
+                if (!string.IsNullOrWhiteSpace(trigger.TriggerId))
+                {
+                    loaded[trigger.TriggerId] = trigger;
+                }
+            }
+
+            var triggersByHost = liveTriggers
+                .SelectMany(trigger => trigger.Hosts
+                    .Select(host => new { host.HostId, Trigger = trigger }))
+                .Where(item => !string.IsNullOrWhiteSpace(item.HostId))
+                .GroupBy(item => item.HostId, StringComparer.Ordinal);
+            foreach (var group in triggersByHost)
+            {
+                var hostTriggers = group
+                    .Select(item => item.Trigger)
+                    .DistinctBy(trigger => trigger.TriggerId, StringComparer.Ordinal)
+                    .ToArray();
+                if (hostTriggers.Length == 0)
+                {
+                    continue;
+                }
+
+                await runtimeLookupCache.SetStringAsync(
+                    scope,
+                    group.Key,
+                    JsonSerializer.Serialize(hostTriggers, LookupCacheJsonOptions),
+                    ttl: null,
+                    cancellationToken);
+            }
+        }
+
+        return loaded.Values
+            .OrderBy(trigger => trigger.TriggerId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static bool TryReadLookupCacheValue<T>(string? value, out T result)
+    {
+        result = default!;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<T>(value, LookupCacheJsonOptions);
+            if (parsed is null)
+            {
+                return false;
+            }
+
+            result = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string[] SourceHostIds(IReadOnlyList<ZabbixTargetMembershipSnapshot> memberships)
@@ -1815,6 +2076,12 @@ public sealed class ZabbixTriggerTagSelector
 public sealed class ZabbixTriggerDependencyRunRequest
 {
     public int? TransitiveGroupDependencyDepth { get; init; }
+
+    public IReadOnlyList<string> ScopeKeys { get; init; } = [];
+
+    public bool ScopeFromDirtyScopes { get; init; }
+
+    public bool UseDirtyScopeDefault { get; init; } = true;
 }
 
 public sealed class ZabbixTriggerDependencyRunResult
@@ -1833,6 +2100,14 @@ public sealed class ZabbixTriggerDependencyRunResult
 
     public int TargetCount { get; set; }
 
+    public int UnscopedTargetCount { get; set; }
+
+    public int ScopeMatchedTargetCount { get; set; }
+
+    public IReadOnlyList<string> ScopeKeys { get; init; } = [];
+
+    public bool ScopeFromDirtyScopes { get; init; }
+
     public int HostCount { get; set; }
 
     public int TriggerCount { get; set; }
@@ -1844,6 +2119,10 @@ public sealed class ZabbixTriggerDependencyRunResult
     public int TriggerGetBatchCount { get; set; }
 
     public int TriggerGetElapsedMs { get; set; }
+
+    public int LookupCacheHitCount { get; set; }
+
+    public int LookupCacheMissCount { get; set; }
 
     public int ZabbixRequestTimeoutMs { get; set; }
 

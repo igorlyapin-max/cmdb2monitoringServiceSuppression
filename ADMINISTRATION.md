@@ -103,14 +103,22 @@ same CMDBuild webhooks and creates or modifies the real Zabbix host. The service
 must not add a source object into the service model or suppression dependencies
 until the CMDBuild card contains `zabbix_main_hostid`.
 
+Managed CMDBuild webhooks must include this readiness attribute in the JSON
+payload for every source class and for all managed events (`CREATE`, `UPDATE`,
+`DELETE`). The UI treats a managed webhook without `zabbix_main_hostid` as
+incomplete even when conversion-rule fields are present. Without that field the
+membership snapshot can keep a source object in `pending`, and an aggregate or
+suppression group can be published with no source hosts until the next full
+reconcile sees the current card.
+
 ## Zabbix Apply Contours
 
 Zabbix application is split by layer:
 
 | Layer | UI menu | Kafka topic setting | Default topic |
 | --- | --- | --- | --- |
-| Service | `Сервисный слой -> Применить в Zabbix` | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` |
-| Suppression | `Каскадное подавление -> Применить в Zabbix` | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` |
+| Service | `Модель -> Применить в Zabbix`, layer `Сервис` | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` |
+| Suppression | `Модель -> Применить в Zabbix`, layer `Каскадное подавление` | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` |
 
 The UI evaluates and publishes each layer in two modes:
 
@@ -154,15 +162,16 @@ default. With a non-empty scope it makes `cmdbconfigbuilder` stop with
 rule metadata nor manual service objects. Empty scope still means an intentional
 full-layer run.
 
-The UI also keeps a local `Scope из последних изменений` hint for each layer.
-It is filled when static rules are changed, when managed rule/template
-relations are changed, and when `Создать/обновить правила по шаблонам и
-связям` materializes changed generated rules. The operator can press
-`Подставить scope из последних изменений`, review the keys, run
-`Проверить изменения ...`, and then publish. The hint is persisted in the
-browser-local journal `cmdb2monitoring.serviceSuppression.zabbixDirtyScope.v1`;
-it is not written to conversion configuration files or microservice state and
-can be cleared from the UI.
+The UI also keeps `Scope из последних изменений` for each layer. It is filled
+when static rules are changed, when managed rule/template relations are changed,
+and when `Подготовить и сохранить правила` materializes changed
+generated rules. The operator can press `Подставить scope из последних
+изменений`, review the keys, run `Проверить изменения ...`, and then publish.
+The hint is written to server-side dirty scopes in `zabbixconfig2api` durable
+storage and also mirrored to the browser-local journal
+`cmdb2monitoring.serviceSuppression.zabbixDirtyScope.v1` for offline UI
+continuity. It is not written to conversion configuration files and can be
+cleared from the UI per layer.
 
 Removed desired objects are reported as stale in changes mode, but are not
 deleted from Zabbix automatically. Use the stale managed objects cleanup actions
@@ -279,7 +288,7 @@ published, the attribute is exported only as a service tag,
 metadata until explicit impact logic is added.
 
 Manual service-layer objects that are not produced from source aggregation are
-created in `Сервисный слой -> Объекты сервиса`. This page is for concrete
+created in `Модель -> Объекты сервиса` with layer `Сервис`. This page is for concrete
 CMDBuild cards such as `C2M_ServicePlatformService`, `C2M_ServiceSlaPolicy`,
 `C2M_ServiceSlaCalendar`, and `C2M_ServiceSlaDowntime`. It also creates direct
 relations between those manual objects: service-to-service dependency,
@@ -301,8 +310,8 @@ template id that is no longer stored in the template file, the selector also
 shows `Шаблон из текущих правил`
 entries derived from generated rules; use those to link already-created
 aggregates without recreating them. Relations where both
-sides are templates/rules must remain in `Сервисный слой -> Управление
-связями`, so the rule/template lifecycle remains authoritative for generated
+sides are templates/rules must remain in `Модель -> Связи` with layer
+`Сервис`, so the rule/template lifecycle remains authoritative for generated
 objects. In the service-object relation editor the checkbox `Фильтровать правила
 и классы из шаблонов` hides generated aggregate cards by default; if a needed
 aggregate such as `Рабочие места / City14` is not visible, clear the checkbox.
@@ -364,20 +373,20 @@ pattern is used by `Администрирование -> Микросервис
 `ZabbixTriggerDependencies` fields and `Zabbix:RequestTimeoutMs`.
 `DefaultPolicyKey` is the fallback policy when a service has no explicit
 `has_sla_policy` relation. This administration page is only for settings; the
-SLA dry-run and publication actions are located in `Сервисный слой -> Применить
-в Zabbix` after the `Опубликовать граф сервиса в Zabbix` action.
+SLA dry-run and publication actions are located in `Модель -> Применить
+в Zabbix` with layer `Сервис` after the `Опубликовать граф сервиса в Zabbix` action.
 
-Use the SLA dry-run in `Сервисный слой -> Применить в Zabbix` before the real
+Use the SLA dry-run in `Модель -> Применить в Zabbix` with layer `Сервис` before the real
 publication. The plan shows how many CMDBuild service cards were scanned, how
 many service objects will be tagged with `cmdb2monitoring:sla_policy`, how many
 Zabbix SLA definitions will be created or updated, and how many managed
 excluded downtime entries will be published. The required order is:
 
-1. Run `Сервисный слой -> Применить в Zabbix -> Опубликовать граф сервиса в Zabbix`.
+1. Run `Модель -> Применить в Zabbix -> Опубликовать граф сервиса в Zabbix` with layer `Сервис`.
 2. Confirm that the selected service objects already exist in the Zabbix service
    tree and have at least one parent or child. Manual service objects are
    created by the service-model publication step, not by SLA publication.
-3. Run `Сервисный слой -> Применить в Zabbix -> Опубликовать SLA в Zabbix`.
+3. Run `Модель -> Применить в Zabbix -> Опубликовать SLA в Zabbix` with layer `Сервис`.
 
 The SLA publisher does not create isolated Zabbix Service nodes. It only adds or
 updates SLA tags on already published managed Zabbix Services, then creates or
@@ -404,7 +413,7 @@ services. They should be children of an aggregate such as
 `Рабочие места (Сервис) / City31`, which in turn can be contained by
 `Рабочие места филиала`. If a leaf such as `NTbook / ctest2-NTbook-003` is shown
 at the root of `Monitoring -> Services`, refresh the stale report in
-`Сервисный слой -> Применить в Zabbix`; the report lists root-level source leaf
+`Модель -> Применить в Zabbix` with layer `Сервис`; the report lists root-level source leaf
 services separately. Re-run service publication after fixing any missing child
 warnings. Missing relation children are warnings, but resolved source leaf
 children are still applied to their aggregate.
@@ -467,10 +476,10 @@ objects from `zabbixconfig2api` state:
 
 After manual Zabbix cleanup, use this order from the Monitoring UI:
 
-1. `Сервисный слой -> Применить в Zabbix -> Опубликовать полный граф сервиса`.
-2. `Каскадное подавление -> Применить в Zabbix -> Опубликовать полный граф подавления`.
-3. `Каскадное подавление -> Применить в Zabbix -> Зависимости триггеров -> Опубликовать зависимости триггеров в Zabbix`.
-4. `Сервисный слой -> Применить в Zabbix -> Опубликовать SLA в Zabbix`.
+1. `Модель -> Применить в Zabbix -> Опубликовать полный граф сервиса`, layer `Сервис`.
+2. `Модель -> Применить в Zabbix -> Опубликовать полный граф подавления`, layer `Каскадное подавление`.
+3. `Модель -> Применить в Zabbix -> Зависимости триггеров -> Опубликовать зависимости триггеров в Zabbix`, layer `Каскадное подавление`.
+4. `Модель -> Применить в Zabbix -> Опубликовать SLA в Zabbix`, layer `Сервис`.
 
 Webhook payloads may omit `zabbix_main_hostid`. `cmdbconfigbuilder` resolves the
 configured readiness attribute (`Readiness:ZabbixHostIdAttribute`, default
@@ -490,8 +499,8 @@ separate cmdb2monitoring problem applier. The production suppression mechanism
 must be expressed in Zabbix itself through aggregate triggers and trigger
 dependencies derived from the suppression model.
 
-The `Зависимости триггеров` block in `Каскадное подавление -> Применить в
-Zabbix` performs suppression reconciliation. It uses the persisted suppression
+The `Зависимости триггеров` block in `Модель -> Применить в Zabbix` with layer
+`Каскадное подавление` performs suppression reconciliation. It uses the persisted suppression
 membership and relation graph after `Опубликовать граф подавления в Zabbix`:
 
 - command target is treated as the cause/parent object;
@@ -606,7 +615,13 @@ When a suppression membership command is applied from Kafka, `zabbixconfig2api`
 automatically requests the same reconcile with debounce
 `ZabbixTriggerDependencies:AutoReconcileDebounceSeconds`. The manual action
 remains the operator control for dry-run, forced reconcile after relation/schema
-changes, and diagnostics.
+changes, and diagnostics. The automatic reconcile also uses runtime
+coordination key `zabbix:dependencies:suppression:auto-reconcile`; with Redis
+enabled, debounce window, collected reasons, lock, and progress are stored under
+the configured Redis prefix. Parallel `zabbixconfig2api` instances therefore
+schedule only one auto-reconcile for a burst of membership updates and skip
+duplicate runs instead of recalculating the same trigger dependencies
+concurrently.
 `Show suppressed problems` should not be expected to list trigger-dependency
 children that never entered Problem state: Zabbix trigger dependencies block the
 dependent trigger state change while the parent trigger is in Problem, then
@@ -622,6 +637,191 @@ For `Применить в Zabbix`, duplicate target commands are collapsed only
 one current-card operation. A later publish intentionally sends the same desired
 objects again so operators can replay Zabbix reconciliation after applier
 restart, Kafka offset changes, or temporary Zabbix API failures.
+
+## Runtime Storage and Coverage Snapshots
+
+The UI page `Администрирование -> Хранилища и аудит` shows runtime storage
+settings owned by `zabbixconfig2api`. The panel reads and writes only an
+allowlisted subset of `src/zabbixconfig2api/appsettings.json`, then calls the
+standard Bearer-protected configuration reload endpoint.
+
+`Redis` is a runtime coordination store only. It is intended for locks, progress
+of long operations, debounce, semantic deduplication, and temporary lookup
+cache. Redis is disabled by default and must not become the source of truth for
+rules, templates, CMDBuild data, Zabbix desired graph, membership-state, or
+coverage snapshots. The UI shows whether the connection is configured and shows
+a redacted endpoint; secrets stay in the microservice config, environment, or
+secret provider.
+
+The current implementation routes long-running Zabbix operations through the
+runtime coordination abstraction: service graph dry-run/apply, suppression
+dependency dry-run/apply, and SLA dry-run/apply acquire an operation lock and
+record active/recent operation progress. When `Redis:Enabled=true` and the Redis
+endpoint is reachable, the active backend is `redis`; locks and progress are
+shared across `zabbixconfig2api` instances under the configured `Redis:KeyPrefix`.
+When Redis is disabled, the backend is `local-memory` and protects only the
+current process. When Redis is enabled but unavailable, `Redis:FailureMode`
+controls behavior: `fallback` uses `local-memory-fallback`, while `fail` returns
+`runtime_coordination_unavailable`. The UI exposes the backend, active lock
+count, active operation count, and latest runtime operation in
+`Администрирование -> Хранилища и аудит`.
+
+Server-side dirty scopes are stored in the same durable area. UI changes to
+rules/templates/relations mark affected target keys as `pending`. Real Zabbix
+command apply, graph apply, and Kafka apply update those rows by target managed
+key: successful command results become `processed`, failed command results
+become `failed` with `last_reconcile_result`. Dry-run and `pending_manual`
+operations do not close dirty scopes. The UI keeps showing pending and failed
+items as operator work; processed rows remain diagnostic history in durable
+storage.
+`cmdbconfigbuilder` marks the same server-side dirty scopes from streaming
+webhook processing after it successfully publishes a command to a Zabbix apply
+topic. The endpoint is configured by `ZabbixDirtyScopes:Endpoint`; failures are
+logged and do not roll back Kafka publication. This makes non-UI CMDBuild
+events visible as pending Zabbix scope until `zabbixconfig2api` applies or
+fails the command.
+If a CMDBuild webhook arrives for an intermediate class used inside a configured
+`source.fields[].cmdbPath`, for example `Building` in
+`ARM.Location.Floor.Building.City`, `cmdbconfigbuilder` also marks affected
+rule targets as dirty even when that intermediate card does not produce its own
+aggregation command. This is a coarse scope: it narrows the next reconcile to
+rule/target keys, but does not try to enumerate every affected source card
+inside webhook processing.
+When the Zabbix apply UI scope field is empty, pending server-side dirty scopes
+are used as the default scope for preview/dry-run/apply; clearing the field
+still means an intentional full-layer run. Manual and automatic
+`dependencies/suppression/apply` also close related suppression dirty scopes
+after aggregate trigger/dependency reconcile. Backend scheduled suppression
+dependency reconcile uses the same pending dirty scopes as its default scope
+when no explicit scope is supplied by the caller. Stale membership cleanup and
+stale Zabbix service deletion close matching dirty scopes after real cleanup;
+SLA apply closes service dirty scopes for services that were actually marked in
+Zabbix.
+
+Lookup cache is exposed separately from locks/progress. It is a performance
+cache only: when Redis is disabled the backend is `no-cache`; when Redis is
+enabled and reachable the backend is `redis`; when Redis is enabled but
+unavailable the service continues with `no-cache-fallback` or local in-process
+fallback for the current operation. Cache keys use
+`<Redis:KeyPrefix>:cache:<scope>:<hash>`. Cache loss must never delete
+membership-state, rules, templates, desired graph, or coverage snapshots.
+The first consumer is the one-shot monitoring coverage snapshot: Zabbix
+`host.get` results for filled `zabbix_main_hostid` values are cached under the
+`zabbix:host` scope. Only positive host lookups are cached; missing hosts are
+looked up again on the next snapshot so newly created Zabbix hosts become
+visible without waiting for a negative-cache TTL. Suppression trigger
+dependency dry-run also uses the lookup cache for positive `host.get` and
+source-host `trigger.get` results. Real apply/reconcile intentionally bypasses
+cached lookup data and reads Zabbix directly, because dependency updates must
+preserve current manual dependencies and must not be based on stale trigger
+state. The stale managed service report uses the same cache for read-only
+`service.get` by managed layer under the `zabbix:service-by-layer` scope. Cleanup
+and publication actions still read Zabbix directly.
+
+Use `Администрирование -> Хранилища и аудит -> Проверить Redis` after changing
+Redis settings. The action calls `zabbixconfig2api` `GET /redis/check` through
+the UI BFF and returns the effective backend, whether Redis is reachable, whether
+fallback is active, and current lock/operation counters. A successful check with
+`configured=false` means Redis is intentionally disabled and local-memory
+coordination is active.
+
+`cmdbconfigbuilder` also has the same `Redis` section. When enabled, semantic
+deduplication fingerprints are stored in Redis under
+`<Redis:KeyPrefix>:semantic-dedup:<sha256(semantic_key)>` with
+`SemanticDeduplication:WindowSeconds` TTL. This prevents repeated equivalent
+commands after a builder restart or when several builder instances consume the
+same webhook stream. When Redis is unavailable and `Redis:FailureMode=fallback`,
+the builder falls back to the previous in-memory deduplication behavior. When
+`FailureMode=fail`, the event processing path fails instead of publishing
+commands without the configured distributed deduplication protection.
+Use `Проверить Redis builder` on the same UI page to call
+`cmdbconfigbuilder` `GET /redis/check`. The result shows whether semantic
+deduplication uses Redis, process memory, or in-memory fallback, and shows the
+active semantic deduplication window. The builder also exposes
+`POST /redis/semantic-dedup/check` for integration diagnostics. That endpoint
+creates a synthetic aggregation command plan, verifies that the first check is
+new, marks it as published, and verifies that the second check is treated as a
+duplicate. It uses the same `SemanticCommandDeduplicator` path as Kafka event
+processing, so it validates the effective Redis/fallback behavior without
+publishing Kafka messages.
+
+Redis live behavior is covered by a separate opt-in test because it requires a
+reachable Redis endpoint and temporary service ports. Run it only on an
+integration stand:
+
+```bash
+INTEGRATION_PROFILE=redis REDIS_E2E_CONNECTION_STRING=127.0.0.1:6379 ./scripts/test-diagnostics.sh
+./scripts/test-integration.sh redis
+./scripts/test-integration.sh redis-kafka
+```
+
+The legacy `LIVE_REDIS=1` flag still works, but new automation should use
+`INTEGRATION_PROFILE=redis`. `INTEGRATION_PROFILE=redis-kafka` runs the
+distributed semantic dedup test: it creates unique temporary Kafka topics,
+starts two `cmdbconfigbuilder` instances with separate consumer groups and the
+same Redis prefix, publishes one raw CMDBuild event, and verifies that only one
+aggregation command is emitted. `./scripts/test-integration.sh all` runs live
+CMDBuild/Zabbix checks, Redis checks, and Redis/Kafka dedup checks in one
+integration profile.
+
+The test starts temporary `cmdbconfigbuilder` and `zabbixconfig2api` instances
+on non-production ports, checks `backend=redis` against the configured Redis,
+then checks unavailable Redis behavior for both `FailureMode=fallback` and
+`FailureMode=fail`. For `cmdbconfigbuilder` it also runs the semantic dedup
+self-check endpoint against Redis, in-memory fallback, and fail mode.
+
+`DurableStore` is the durable backend for membership-state, dirty scopes, and
+saved coverage snapshots. The current plan uses `file` and `sqlite`.
+Membership persistence goes through `IZabbixApplyStateStorage`.
+`file` keeps the compatibility `ZabbixApplyState:FilePath`
+(`apply-membership.json`) behavior. `sqlite` stores the same full JSON state for
+compatibility and also writes normalized tables for target memberships, source
+memberships, pending sources, managed trigger dependencies, and applied graph
+objects.
+The same page shows live counters from the active backend: target membership
+count, source membership count, pending source count, missing host bindings,
+applied graph object count, and managed trigger dependency count.
+
+The same page has migration controls for the state backend. `Проверить миграцию
+state` is a dry-run: it reports how many membership targets, source bindings,
+pending sources, managed trigger dependencies, and applied graph objects would
+be moved to the selected `DurableStore`. `Выполнить миграцию state` writes
+SQLite when `DurableStore:Provider=sqlite`, then validates that the migrated
+counters match the source state.
+
+`MonitoringCoverageAudit` configures one-shot coverage snapshots, not
+continuous online auditing. The default trigger mode is `manual`. A snapshot
+answers:
+
+- how many CMDBuild objects should be monitored;
+- how many have `zabbix_main_hostid`;
+- how many referenced Zabbix hosts really exist;
+- how many objects are present in service membership;
+- how many objects are present in suppression membership;
+- what the coverage percentage is for the selected snapshot.
+
+Snapshot calculation reads CMDBuild and Zabbix non-atomically. A small
+operational delta is acceptable and must be visible in the snapshot status:
+start/end timestamps for CMDBuild and Zabbix reads, completion status, and a
+warning when the data may have changed during calculation. Snapshot reports must
+not create or delete CMDBuild/Zabbix objects by themselves; publication and
+reconcile remain explicit operator actions.
+
+The first implemented snapshot mode uses the active membership-state backend
+and the `rules_matched` policy. It counts source cards that are already known
+to the service/suppression graph, then checks their stored
+`zabbix_main_hostid` values through Zabbix `host.get`. This is intentionally a
+read-only diagnostic action: it does not reread every CMDBuild source class and
+does not publish missing objects. Use it after a full or scoped Zabbix publish
+to answer whether graph membership contains host bindings and whether those
+hosts still exist in Zabbix. The UI action is
+`Администрирование -> Хранилища и аудит -> Сформировать срез покрытия`.
+When `DurableStore:Provider=sqlite`, each completed or partial snapshot is also
+stored in the SQLite durable store with its `snapshotId`, timestamps, counters,
+sample payload, and retention controlled by
+`MonitoringCoverageAudit:SnapshotRetentionDays`. The UI shows the latest saved
+snapshots in the same `Хранилища и аудит` panel; this history is diagnostic only
+and is not an apply/reconcile queue.
 
 ## CMDBuild Webhook Feedback Control
 
@@ -643,6 +843,10 @@ Operational consequences:
 - A burst such as source card update, relation webhook, and a neighboring
   `zabbix_main_hostid` update can still appear in the raw topic, but repeated
   semantic duplicates stop before the aggregation-command topic.
+- The `zabbix_main_hostid` update is not a semantic duplicate for Zabbix
+  membership: the conversion builder includes the readiness host id in the
+  semantic fingerprint, so an object moving from pending to ready is emitted
+  again even when business attributes did not change.
 - Do not suppress raw webhooks by time window alone; a real user edit can occur
   immediately after an automated write.
 - Keep target-object fields deterministic. Updating a timestamp on every
@@ -710,7 +914,7 @@ generated rules from the configuration and creates `templateDeletionPlans`.
 Choose `Отвязать правила и сохранить объекты` only when the operator wants to
 stop template ownership but preserve already created CMDBuild objects. In that
 mode the former generated rules become detached static-like rules and may be
-cleaned up later from `Создать/обновить правила по шаблонам и связям`. The
+cleaned up later from `Подготовить и сохранить правила`. The
 cleanup control either removes the detached rules while keeping CMDBuild cards
 or removes the rules and creates `templateDeletionPlans`. This cleanup control
 lists only rules that were generated by a template and detached by the
@@ -785,6 +989,15 @@ Administrative constraints for that workflow:
   base display name before rendering. Operators should use `dimension.key` for
   managed/idempotency keys and `dimension.name` for human-readable target
   names.
+- Lookup/reference/domain leaf values are handled as two values: stable
+  `code/key/id` and display `description/name/label`. Stable values drive
+  `dimension.key`, `dimension.value`, idempotency, relation matching, and
+  dirty/stale comparison. Display values drive only `dimension.name`,
+  target names/descriptions, UI labels, and diagnostics. Renaming lookup
+  display values is cosmetic: existing managed objects may keep old names until
+  scoped/full reconcile rebuilds the affected objects. Using lookup display
+  values in keys or relation matching is a bad practice and the template audit
+  warns about it.
 - The Monitoring UI help block for `dimension.*` includes a live preview of the
   first calculated dimension values and target keys. For distinct-field and
   regex-capture dimensions the UI tries to load the needed candidate and

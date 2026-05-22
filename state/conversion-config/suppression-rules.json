@@ -120,7 +120,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City09",
+          "target_lookup": "supp:City03",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -131,7 +131,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City11",
+          "target_lookup": "supp:City01",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -142,194 +142,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City24",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City37",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City25",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City26",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City27",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City28",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City29",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City30",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City33",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City36",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City38",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City41",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City45",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City47",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City48",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City49",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City50",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City23",
+          "target_lookup": "supp:City02",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -362,6 +175,17 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City06",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City07",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
@@ -384,7 +208,29 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City09",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City10",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City12",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -406,95 +252,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City20",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City21",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City22",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City03",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City14",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City15",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City18",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City19",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City12",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -527,6 +285,160 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City18",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City19",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City21",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City25",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City27",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City29",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City11",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City14",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City20",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City22",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City23",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City24",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City26",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City28",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City31",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
@@ -538,7 +450,29 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City30",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City32",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City33",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -571,6 +505,39 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City36",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City37",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City38",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City39",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
@@ -583,6 +550,17 @@
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City40",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City41",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -615,7 +593,40 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City49",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City50",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "supp:City44",
+          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
+          "attribute_mappings": {
+            "is_active": "true",
+            "source": "cmdb2monitoring",
+            "priority": "100"
+          }
+        },
+        {
+          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
+          "target_class_code": "C2M_SuppressionNetworkAccessZone",
+          "target_lookup": "supp:City45",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -637,7 +648,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City06",
+          "target_lookup": "supp:City47",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -648,18 +659,7 @@
         {
           "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City02",
-          "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        },
-        {
-          "domain_code": "C2M_SuppressionNetworkZoneDependsOnNetworkZone",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "supp:City01",
+          "target_lookup": "supp:City48",
           "managed_relation_key": "suppression-rule-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725-relation-template-suppresses-supp",
           "attribute_mappings": {
             "is_active": "true",
@@ -722,173 +722,6 @@
           "target_class_code": "C2M_SuppressionNetworkAccessZone",
           "target_lookup": "610725",
           "managed_relation_key": "suppression-rule-suppression-routercore-c2m-suppressionnetworkaccesszone-611269-relation-rule-suppresses-suppression-vpn-hub-c2m-suppressionnetworkaccesszone-610725",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        }
-      ]
-    },
-    {
-      "rule_id": "ipad",
-      "name": "iPad",
-      "layer": "suppression",
-      "priority": 80,
-      "managed_relations": [
-        {
-          "kind": "rule",
-          "relation_role": "suppresses",
-          "target_template_id": "",
-          "target_rule_id": "iphone",
-          "managed_key": "suppression-rule-ipad-relation-rule-suppresses-iphone",
-          "artifact_fingerprint": "7122677:110",
-          "attributes": {}
-        }
-      ],
-      "source": {
-        "class_code": "iiipad",
-        "key_attribute": "Critical"
-      },
-      "when": {
-        "allRegex": [
-          {
-            "field": "className",
-            "pattern": "(?i)^iiipad$"
-          },
-          {
-            "field": "Critical",
-            "pattern": ".*"
-          }
-        ],
-        "fieldExists": "Critical"
-      },
-      "target": {
-        "class_code": "C2M_SuppressionNetworkAccessZone",
-        "create_instance": false,
-        "card_id": "980357",
-        "card_description": "iiipad",
-        "idempotency_key": "cmdbuild:C2M_SuppressionNetworkAccessZone:980357",
-        "attribute_mappings": {},
-        "initial_user_values": {
-          "Code": "iiipad",
-          "description": "iiipad",
-          "name": "iiipad",
-          "is_critical": false,
-          "aggregation_type": "n_of_m",
-          "n": 1
-        },
-        "user_responsibility_attributes": []
-      },
-      "relations": [
-        {
-          "domain_code": "C2M_SuppressionNetworkAccessZoneSuppressesSuppresse87c1be4",
-          "target_class_code": "C2M_SuppressionComputeCluster",
-          "target_lookup": "981926",
-          "managed_relation_key": "suppression-rule-ipad-relation-rule-suppresses-iphone",
-          "attribute_mappings": {
-            "is_active": "true",
-            "source": "cmdb2monitoring",
-            "priority": "100"
-          }
-        }
-      ]
-    },
-    {
-      "rule_id": "iphone",
-      "name": "iPhone",
-      "layer": "suppression",
-      "priority": 100,
-      "managed_relations": [],
-      "source": {
-        "class_code": "iiiphone",
-        "key_attribute": "Code"
-      },
-      "when": {
-        "allRegex": [
-          {
-            "field": "className",
-            "pattern": "(?i)^iiiphone$"
-          },
-          {
-            "field": "Code",
-            "pattern": ".*"
-          }
-        ],
-        "fieldExists": "Code"
-      },
-      "target": {
-        "class_code": "C2M_SuppressionComputeCluster",
-        "create_instance": false,
-        "card_id": "981926",
-        "card_description": "iphone",
-        "idempotency_key": "cmdbuild:C2M_SuppressionComputeCluster:981926",
-        "attribute_mappings": {},
-        "initial_user_values": {
-          "Code": "iphone",
-          "description": "iphone",
-          "name": "iphone",
-          "is_critical": false,
-          "aggregation_type": "all"
-        },
-        "user_responsibility_attributes": []
-      }
-    },
-    {
-      "rule_id": "irouter",
-      "name": "irouter",
-      "layer": "suppression",
-      "priority": 70,
-      "managed_relations": [
-        {
-          "kind": "rule",
-          "relation_role": "suppresses",
-          "target_template_id": "",
-          "target_rule_id": "ipad",
-          "managed_key": "suppression-rule-irouter-relation-rule-suppresses-ipad",
-          "artifact_fingerprint": "fbbea1de:108",
-          "attributes": {}
-        }
-      ],
-      "source": {
-        "class_code": "iiirouter",
-        "key_attribute": "Code"
-      },
-      "when": {
-        "allRegex": [
-          {
-            "field": "className",
-            "pattern": "(?i)^iiirouter$"
-          },
-          {
-            "field": "Code",
-            "pattern": ".*"
-          }
-        ],
-        "fieldExists": "Code"
-      },
-      "target": {
-        "class_code": "C2M_SuppressionComputeCluster",
-        "create_instance": false,
-        "card_id": "981939",
-        "card_description": "irouter",
-        "idempotency_key": "cmdbuild:C2M_SuppressionComputeCluster:981939",
-        "attribute_mappings": {},
-        "initial_user_values": {
-          "Code": "irouter",
-          "description": "irouter",
-          "name": "irouter",
-          "is_critical": false,
-          "aggregation_type": "all"
-        },
-        "user_responsibility_attributes": []
-      },
-      "relations": [
-        {
-          "domain_code": "C2M_SuppressionComputeClusterSuppressesSuppressiond6087971",
-          "target_class_code": "C2M_SuppressionNetworkAccessZone",
-          "target_lookup": "980357",
-          "managed_relation_key": "suppression-rule-irouter-relation-rule-suppresses-ipad",
           "attribute_mappings": {
             "is_active": "true",
             "source": "cmdb2monitoring",
@@ -27887,6 +27720,1116 @@
               "managed_key": "suppression-template-rule-rule-tkgk-dimension-city35-c2m-suppressionresource",
               "rule_id": "suppression-rule-tkgk-city35",
               "artifact_fingerprint": "eb3ba0d3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "application_id": "suppression-2026-05-18t07-06-59-574z-c3640d3a-378438",
+      "layer": "suppression",
+      "applied_at": "2026-05-18T07:06:59.574Z",
+      "reconcile": {
+        "created": 0,
+        "updated": 0,
+        "unchanged": 152,
+        "removed": 0,
+        "relations": {
+          "created": 0,
+          "updated": 0,
+          "unchanged": 101,
+          "removed": 0,
+          "total": 101
+        }
+      },
+      "templates": [
+        {
+          "template_id": "supp",
+          "template_name": "МаршрутизаторыSupp",
+          "template_version": 8,
+          "content_hash": "ecf38c97:1359",
+          "candidate_count": 1,
+          "candidates": [
+            "routerG"
+          ],
+          "generated_rules": [
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city03-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city03",
+              "artifact_fingerprint": "7abe800c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city01-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city01",
+              "artifact_fingerprint": "302f06cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city02-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city02",
+              "artifact_fingerprint": "8f12106c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city04-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city04",
+              "artifact_fingerprint": "1f29efac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city05-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city05",
+              "artifact_fingerprint": "982b9d4c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city06-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city06",
+              "artifact_fingerprint": "f70ea6ec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city07-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city07",
+              "artifact_fingerprint": "e2bb168c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city08-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city08",
+              "artifact_fingerprint": "dadea02c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city09-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city09",
+              "artifact_fingerprint": "53e04dcc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city10-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city10",
+              "artifact_fingerprint": "8a89238c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city12-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city12",
+              "artifact_fingerprint": "800652cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city13-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city13",
+              "artifact_fingerprint": "2ae3d5ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city15-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city15",
+              "artifact_fingerprint": "33d8fbec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city16-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city16",
+              "artifact_fingerprint": "e802e94c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city17-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city17",
+              "artifact_fingerprint": "92e06c2c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city18-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city18",
+              "artifact_fingerprint": "ae3a6a8c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city19-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city19",
+              "artifact_fingerprint": "ef8dac6c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city21-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city21",
+              "artifact_fingerprint": "6852cf0c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city25-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city25",
+              "artifact_fingerprint": "d04f658c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city27-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city27",
+              "artifact_fingerprint": "da367e4c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city29-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city29",
+              "artifact_fingerprint": "8c04160c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city11-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city11",
+              "artifact_fingerprint": "cbdc656c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city14-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city14",
+              "artifact_fingerprint": "f285ba0c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city20-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city20",
+              "artifact_fingerprint": "86eb766c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city22-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city22",
+              "artifact_fingerprint": "a2fe7b2c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city23-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city23",
+              "artifact_fingerprint": "7239e7cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city24-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city24",
+              "artifact_fingerprint": "eee80cec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city26-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city26",
+              "artifact_fingerprint": "afb11ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city28-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city28",
+              "artifact_fingerprint": "aa9cbd6c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city31-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city31",
+              "artifact_fingerprint": "bdbfdaac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city30-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city30",
+              "artifact_fingerprint": "f2907bcc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city32-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city32",
+              "artifact_fingerprint": "9fa76e8c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city33-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city33",
+              "artifact_fingerprint": "f5e2866c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city34-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city34",
+              "artifact_fingerprint": "5a8d124c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city35-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city35",
+              "artifact_fingerprint": "25bc712c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city36-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city36",
+              "artifact_fingerprint": "7a4050c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city37-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city37",
+              "artifact_fingerprint": "5ddf1cec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city38-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city38",
+              "artifact_fingerprint": "1641c2cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city39-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city39",
+              "artifact_fingerprint": "e17121ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city40-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city40",
+              "artifact_fingerprint": "5a1465ac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city41-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city41",
+              "artifact_fingerprint": "40dff34c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city42-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city42",
+              "artifact_fingerprint": "f935ecec:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city43-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city43",
+              "artifact_fingerprint": "17fb4c8c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city49-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city49",
+              "artifact_fingerprint": "64913a4c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city50-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city50",
+              "artifact_fingerprint": "a570180c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city44-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city44",
+              "artifact_fingerprint": "2618c92c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city45-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city45",
+              "artifact_fingerprint": "9f1a76cc:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city46-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city46",
+              "artifact_fingerprint": "fdfd806c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city47-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city47",
+              "artifact_fingerprint": "e9a9f00c:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            },
+            {
+              "managed_key": "suppression-template-supp-rule-routerg-dimension-city48-c2m-suppressionnetworkaccesszone",
+              "rule_id": "suppression-supp-routerg-city48",
+              "artifact_fingerprint": "7dc5acac:1140",
+              "source_class_code": "routerG",
+              "target_class_code": "C2M_SuppressionNetworkAccessZone"
+            }
+          ]
+        },
+        {
+          "template_id": "rule",
+          "template_name": "Рабочие места",
+          "template_version": 4,
+          "content_hash": "d7add520:976",
+          "candidate_count": 3,
+          "candidates": [
+            "ARM",
+            "NTbook",
+            "TKGK"
+          ],
+          "generated_rules": [
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city07-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city07",
+              "artifact_fingerprint": "626aac52:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city27-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city27",
+              "artifact_fingerprint": "6cecebd0:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city22-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city22",
+              "artifact_fingerprint": "510ffff5:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city02-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city02",
+              "artifact_fingerprint": "bc35bb77:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city23-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city23",
+              "artifact_fingerprint": "f9bb7b54:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city49-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city49",
+              "artifact_fingerprint": "9c192718:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city51-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city51",
+              "artifact_fingerprint": "23493691:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city53-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city53",
+              "artifact_fingerprint": "16581853:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city33-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city33",
+              "artifact_fingerprint": "bb0ba8d5:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city15-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city15",
+              "artifact_fingerprint": "51fcac11:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city19-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city19",
+              "artifact_fingerprint": "8e5b009d:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city41-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city41",
+              "artifact_fingerprint": "aae97210:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city45-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city45",
+              "artifact_fingerprint": "f7cc8894:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city31-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city31",
+              "artifact_fingerprint": "62699c17:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city32-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city32",
+              "artifact_fingerprint": "48687df4:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city36-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city36",
+              "artifact_fingerprint": "f972e670:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city01-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city01",
+              "artifact_fingerprint": "75c5bf14:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city09-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city09",
+              "artifact_fingerprint": "91047c1c:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city14-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city14",
+              "artifact_fingerprint": "782fdd30:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city29-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city29",
+              "artifact_fingerprint": "ec9fa89e:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city12-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city12",
+              "artifact_fingerprint": "7d7d3f76:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city40-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city40",
+              "artifact_fingerprint": "aabbf7b1:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city04-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city04",
+              "artifact_fingerprint": "88e9b531:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city34-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city34",
+              "artifact_fingerprint": "f3ee5eb2:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city16-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city16",
+              "artifact_fingerprint": "c4e7aff2:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city10-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city10",
+              "artifact_fingerprint": "25fc7cb4:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city44-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city44",
+              "artifact_fingerprint": "db341635:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city25-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city25",
+              "artifact_fingerprint": "9d337412:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city52-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city52",
+              "artifact_fingerprint": "91dc1272:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city03-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city03",
+              "artifact_fingerprint": "253943d6:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city08-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city08",
+              "artifact_fingerprint": "26a9f9bd:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city38-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city38",
+              "artifact_fingerprint": "435a933e:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city28-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city28",
+              "artifact_fingerprint": "b84e6f3f:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city50-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city50",
+              "artifact_fingerprint": "9dd437b0:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city48-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city48",
+              "artifact_fingerprint": "780ab4b9:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city11-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city11",
+              "artifact_fingerprint": "6d6b5395:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city05-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city05",
+              "artifact_fingerprint": "2aca2f90:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city17-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city17",
+              "artifact_fingerprint": "3b6fdd3:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city18-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city18",
+              "artifact_fingerprint": "6fd429bc:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city20-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city20",
+              "artifact_fingerprint": "bad1d237:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city42-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city42",
+              "artifact_fingerprint": "96d07673:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city26-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city26",
+              "artifact_fingerprint": "d9898071:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city47-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city47",
+              "artifact_fingerprint": "db3a2556:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city13-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city13",
+              "artifact_fingerprint": "ce797d57:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city30-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city30",
+              "artifact_fingerprint": "abf9f636:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city35-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city35",
+              "artifact_fingerprint": "e30c1493:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city39-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city39",
+              "artifact_fingerprint": "e0aa891f:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city43-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city43",
+              "artifact_fingerprint": "182a0ed2:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city37-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city37",
+              "artifact_fingerprint": "d3f0951:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city06-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city06",
+              "artifact_fingerprint": "29cd23f3:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city24-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city24",
+              "artifact_fingerprint": "452d32b3:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city21-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city21",
+              "artifact_fingerprint": "9e2c0396:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-ntbook-dimension-city46-c2m-suppressionresource",
+              "rule_id": "suppression-rule-ntbook-city46",
+              "artifact_fingerprint": "af3884f7:809",
+              "source_class_code": "NTbook",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city04-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city04",
+              "artifact_fingerprint": "d5fb7d71:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city05-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city05",
+              "artifact_fingerprint": "31a6b950:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city06-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city06",
+              "artifact_fingerprint": "6ea033:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city07-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city07",
+              "artifact_fingerprint": "93603912:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city09-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city09",
+              "artifact_fingerprint": "68345edc:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city11-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city11",
+              "artifact_fingerprint": "c4b50dd5:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city12-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city12",
+              "artifact_fingerprint": "805b4d36:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city14-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city14",
+              "artifact_fingerprint": "159eb7f0:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city15-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city15",
+              "artifact_fingerprint": "d96e3f51:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city16-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city16",
+              "artifact_fingerprint": "cad66b2:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city19-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city19",
+              "artifact_fingerprint": "a637e4dd:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city20-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city20",
+              "artifact_fingerprint": "1cfe4077:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city21-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city21",
+              "artifact_fingerprint": "a1b48156:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city22-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city22",
+              "artifact_fingerprint": "72463f35:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city23-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city23",
+              "artifact_fingerprint": "6c2db714:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city24-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city24",
+              "artifact_fingerprint": "bc2261f3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city25-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city25",
+              "artifact_fingerprint": "a9baa2d2:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city26-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city26",
+              "artifact_fingerprint": "49b370b1:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city27-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city27",
+              "artifact_fingerprint": "5d12d890:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city28-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city28",
+              "artifact_fingerprint": "50cc077f:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city08-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city08",
+              "artifact_fingerprint": "c0371afd:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city10-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city10",
+              "artifact_fingerprint": "dc46a674:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city13-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city13",
+              "artifact_fingerprint": "8dda2197:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city18-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city18",
+              "artifact_fingerprint": "f9356d7c:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city29-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city29",
+              "artifact_fingerprint": "61e6585e:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city30-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city30",
+              "artifact_fingerprint": "f909e4f6:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city31-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city31",
+              "artifact_fingerprint": "c1bc7f57:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city32-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city32",
+              "artifact_fingerprint": "64c19fb4:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city33-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city33",
+              "artifact_fingerprint": "e1ae5f15:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city34-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city34",
+              "artifact_fingerprint": "760fe72:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city35-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city35",
+              "artifact_fingerprint": "eb3ba0d3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city36-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city36",
+              "artifact_fingerprint": "55a6c130:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city37-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city37",
+              "artifact_fingerprint": "8c8e7891:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city38-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city38",
+              "artifact_fingerprint": "3f43b3fe:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city39-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city39",
+              "artifact_fingerprint": "d3a7465f:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city40-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city40",
+              "artifact_fingerprint": "c0b8dff1:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city41-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city41",
+              "artifact_fingerprint": "b47f23d0:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city42-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city42",
+              "artifact_fingerprint": "a7af12b3:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city43-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city43",
+              "artifact_fingerprint": "fc66ab92:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city44-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city44",
+              "artifact_fingerprint": "2e4ec575:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city47-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city47",
+              "artifact_fingerprint": "9219116:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city49-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city49",
+              "artifact_fingerprint": "375af2d8:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city50-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city50",
+              "artifact_fingerprint": "62512a70:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city45-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city45",
+              "artifact_fingerprint": "fb0154:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city46-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city46",
+              "artifact_fingerprint": "9655f037:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city48-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city48",
+              "artifact_fingerprint": "3b41b6f9:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city51-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city51",
+              "artifact_fingerprint": "497f69d1:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city52-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city52",
+              "artifact_fingerprint": "f674c932:803",
+              "source_class_code": "TKGK",
+              "target_class_code": "C2M_SuppressionResource"
+            },
+            {
+              "managed_key": "suppression-template-rule-rule-tkgk-dimension-city53-c2m-suppressionresource",
+              "rule_id": "suppression-rule-tkgk-city53",
+              "artifact_fingerprint": "a989e593:803",
               "source_class_code": "TKGK",
               "target_class_code": "C2M_SuppressionResource"
             }

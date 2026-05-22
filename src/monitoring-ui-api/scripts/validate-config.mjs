@@ -9,6 +9,7 @@ const applierConfigs = await Promise.all([
   readJsonConfig('zabbixconfig2api', path.resolve(root, '..', 'zabbixconfig2api', 'appsettings.json')),
   readJsonConfig('cmdbaggregation2cmdbuild', path.resolve(root, '..', 'cmdbaggregation2cmdbuild', 'appsettings.json'))
 ]);
+const cmdbconfigbuilderConfig = await readJsonConfig('cmdbconfigbuilder', path.resolve(root, '..', 'cmdbconfigbuilder', 'appsettings.json'));
 
 const roles = new Set(config.auth?.roles ?? []);
 
@@ -38,10 +39,56 @@ if (!config.managedMicroservices?.zabbixconfig2api?.configFile) {
   errors.push('managedMicroservices.zabbixconfig2api.configFile is required');
 }
 
+const zabbixconfig2api = applierConfigs.find((item) => item.name === 'zabbixconfig2api')?.config ?? {};
+const cmdbconfigbuilder = cmdbconfigbuilderConfig.config ?? {};
+if (!zabbixconfig2api.Redis) {
+  errors.push('zabbixconfig2api Redis section is required');
+}
+if (!['fallback', 'fail'].includes(stringValue(zabbixconfig2api.Redis?.FailureMode))) {
+  errors.push('zabbixconfig2api Redis:FailureMode must be fallback or fail');
+}
+if (zabbixconfig2api.Redis?.Enabled === true && !stringValue(zabbixconfig2api.Redis?.ConnectionString)) {
+  errors.push('zabbixconfig2api Redis:ConnectionString is required when Redis:Enabled=true');
+}
+if (!cmdbconfigbuilder.Redis) {
+  errors.push('cmdbconfigbuilder Redis section is required');
+}
+if (!['fallback', 'fail'].includes(stringValue(cmdbconfigbuilder.Redis?.FailureMode))) {
+  errors.push('cmdbconfigbuilder Redis:FailureMode must be fallback or fail');
+}
+if (cmdbconfigbuilder.Redis?.Enabled === true && !stringValue(cmdbconfigbuilder.Redis?.ConnectionString)) {
+  errors.push('cmdbconfigbuilder Redis:ConnectionString is required when Redis:Enabled=true');
+}
+if (cmdbconfigbuilder.ZabbixDirtyScopes?.Enabled === true && !stringValue(cmdbconfigbuilder.ZabbixDirtyScopes?.Endpoint)) {
+  errors.push('cmdbconfigbuilder ZabbixDirtyScopes:Endpoint is required when ZabbixDirtyScopes:Enabled=true');
+}
+if (!zabbixconfig2api.DurableStore) {
+  errors.push('zabbixconfig2api DurableStore section is required');
+}
+if (!['file', 'sqlite'].includes(stringValue(zabbixconfig2api.DurableStore?.Provider))) {
+  errors.push('zabbixconfig2api DurableStore:Provider must be file or sqlite');
+}
+if (!zabbixconfig2api.MonitoringCoverageAudit) {
+  errors.push('zabbixconfig2api MonitoringCoverageAudit section is required');
+}
+if (stringValue(zabbixconfig2api.MonitoringCoverageAudit?.HostIdAttribute) !== config.readiness?.zabbixHostIdAttribute) {
+  errors.push('zabbixconfig2api MonitoringCoverageAudit:HostIdAttribute must match readiness.zabbixHostIdAttribute');
+}
+if (!['manual', 'scheduled', 'manual_and_scheduled'].includes(stringValue(zabbixconfig2api.MonitoringCoverageAudit?.TriggerMode))) {
+  errors.push('zabbixconfig2api MonitoringCoverageAudit:TriggerMode must be manual, scheduled, or manual_and_scheduled');
+}
+
 for (const key of [
   'rulesValidateUrl',
   'rulesApplyCurrentUrl',
+  'cmdbConfigBuilderRedisCheckUrl',
   'zabbixApplyStatusUrl',
+  'zabbixRuntimeStorageStatusUrl',
+  'zabbixRedisCheckUrl',
+  'zabbixRuntimeStorageMigrationDryRunUrl',
+  'zabbixRuntimeStorageMigrationApplyUrl',
+  'zabbixDirtyScopesUrl',
+  'zabbixMonitoringCoverageSnapshotUrl',
   'zabbixTriggerDependenciesStatusUrl',
   'zabbixTriggerDependenciesDryRunUrl',
   'zabbixTriggerDependenciesApplyUrl',

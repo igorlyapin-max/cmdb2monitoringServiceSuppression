@@ -23,6 +23,8 @@ Operational documentation:
 - [SYSTEM_STABILIZATION_ALGORITHMS.md](SYSTEM_STABILIZATION_ALGORITHMS.md):
   high-level stabilization algorithms for streaming card changes, dirty scopes,
   membership-state, scoped reconcile, and full recovery runs.
+- [AUTOTEST_PLAN.md](AUTOTEST_PLAN.md): offline, live, Redis, and Kafka/Redis
+  autotest profiles plus the regression areas that must stay covered.
 - [UI_DEVELOPMENT_PLAN.md](UI_DEVELOPMENT_PLAN.md): planned simplification of
   the operator UI: synchronization traffic lights, unified model control,
   rule preparation pipeline, compact Zabbix publication, and gradual
@@ -34,8 +36,11 @@ Diagnostic autotests are intentionally launched by a separate command:
 ./scripts/test-diagnostics.sh
 ```
 
-By default it runs fast offline contracts for schema generation, conversion
-rules, CMDBuild apply payloads, and the router-core population scenario. Add
+By default it runs offline contracts for schema generation, conversion rules,
+UI regressions, Zabbix publication contracts, Redis/runtime-state contracts, and
+the current autotest plan coverage. `./scripts/test-configs.sh` is kept as the
+config/rules compatibility gate and delegates to the same offline diagnostics.
+Add
 `LIVE=1` to include live CMDBuild/Zabbix connectivity checks:
 
 ```bash
@@ -816,16 +821,28 @@ stored in browser storage only after pressing `Сохранить настрой
 Microservice-owned settings such as `ZabbixTriggerDependencies:*` are managed
 separately in `Администрирование -> Микросервисы`.
 
-The top-level `Синхронизация с источниками данных` menu is split by source:
+The separate `Синхронизация с источниками данных` sidebar menu is removed.
+Source-status actions are now placed where operators use them: CMDBuild and
+Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
+`Администрирование`, and conversion configuration is a technical block inside
+`Управление правилами -> Подготовить и сохранить правила`:
 
 - `CMDBuild` refreshes local class, attribute, and domain catalogs used by
   schema previews and conversion editors. The CMDBuild cache also includes
   current cards of managed service and suppression classes, grouped by class
   and stored with attribute values. Source-class cards needed by
   `Distinct source field` and `Regex capture` template dimensions are loaded
-  on demand before template materialization.
+  on demand before template materialization. The UI loads the browser cache
+  automatically when the dashboard is opened;
+  pressing the CMDBuild traffic light rereads the live CMDBuild source and
+  replaces the cache. If live synchronization fails, the last loaded cache
+  remains visible and the error is shown separately.
 - `Zabbix` checks the configured Zabbix API through `zabbixconfig2api` and
-  shows connection version, endpoint, and error details.
+  shows connection version, endpoint, and error details. The UI loads the
+  cached Zabbix check automatically; pressing the Zabbix traffic light rereads
+  the source and updates the cache.
+  Hovering over CMDBuild/Zabbix traffic lights shows the cache timestamp and
+  cache lifetime since it was written.
 - `Модель -> Применить в Zabbix` runs the same current-card
   evaluation for the selected layer. The technical service/suppression apply screens run the same
   evaluation only for one layer. `Проверить изменения ...` builds the desired
@@ -984,10 +1001,11 @@ The top-level `Синхронизация с источниками данных
   service and suppression rules may reference the same customer source class,
   but CMDBuild needs one managed webhook set for that class. Rule IDs shown in
   this view are diagnostic labels only.
-- `Конфигурации конвертации` saves and loads service/suppression rule documents,
-  rule templates, managed relations, and pending service-object-to-template
-  links through `monitoring-ui-api`, which is the only writer for the configured
-  server folder. The current format writes
+- The `Сохраненная конфигурация` block inside
+  `Управление правилами -> Подготовить и сохранить правила` saves and loads
+  service/suppression rule documents, rule templates, managed relations, and
+  pending service-object-to-template links through `monitoring-ui-api`, which is
+  the only writer for the configured server folder. The current format writes
   separate JSON files for service rules, suppression rules, service templates,
   suppression templates, shared templates, and a manifest; relations created by
   `Подготовить и сохранить правила` are stored as
@@ -1009,13 +1027,24 @@ The top-level `Синхронизация с источниками данных
   successfully loaded but empty cards is only a warning; a missing source
   field/path is still blocking because the template is incompatible with that
   source schema.
-- Each source separates `Провести синхронизацию` from `Загрузить локальный
-  кэш`. Synchronization reads the real source and stores an IndexedDB browser
-  cache; loading the cache restores the last stored snapshot without rereading a
-  potentially large source. The UI shows the last cache update timestamp for
-  each source. For conversion configurations the primary action is
-  `Сохранить в папку`, with separate `Загрузить из папки` and
-  `Загрузить локальный кэш` actions. In the main operator path,
+- `Управление правилами -> Контроль модели` is the compact readiness screen.
+  It builds a normalized findings list for sources, templates, relations,
+  graph, Zabbix, runtime changes, and microservices. The top surface shows
+  status cards and prioritized `Следующие действия`; long graph diagnostics,
+  JSON-oriented lists, and technical details are collapsed below. `Быстрая
+  проверка` runs local checks and template audit. `Обновить онлайн-сверку`
+  explicitly refreshes Zabbix apply status and microservice health instead of
+  doing live calls on every page open.
+- CMDBuild and Zabbix are no longer separate entries in the source
+  synchronization menu, and that menu has been removed from the sidebar. Their
+  cache loading is automatic, while the dashboard traffic-light click always
+  means reread the live source and update IndexedDB. Webhooks moved to
+  `Администрирование -> Webhooks`; conversion configuration technical actions
+  are embedded into `Управление правилами -> Подготовить и сохранить правила`.
+  Webhooks keeps a dedicated screen because it includes CMDBuild online checks.
+  Conversion configuration still exposes technical `Сохранить в папку`,
+  `Загрузить из папки`, and `Загрузить локальный кэш` actions in a collapsible
+  block, but the main operator path is
   `Подготовить и сохранить правила` now materializes generated rules,
   templates, and their managed links and immediately persists the same
   configuration to the folder/manifest, but it does not execute those rules

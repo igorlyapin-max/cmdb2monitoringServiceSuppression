@@ -608,16 +608,88 @@ textarea {
 .model-control-summary {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
-.model-control-summary > div {
+.model-control-summary > div,
+.model-control-card,
+.model-control-next-action-panel {
   background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: 6px;
   display: grid;
   gap: 3px;
   padding: 10px;
+}
+
+.model-control-card {
+  align-content: start;
+  gap: 8px;
+  min-height: 150px;
+}
+
+.model-control-card.blocked {
+  border-color: rgba(180, 35, 24, 0.32);
+}
+
+.model-control-card.warn {
+  border-color: rgba(161, 98, 7, 0.32);
+}
+
+.model-control-card.ok {
+  border-color: rgba(15, 118, 110, 0.28);
+}
+
+.model-control-card-header {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 10px minmax(0, 1fr) max-content;
+}
+
+.model-control-card-header span:last-child {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-control-dot {
+  border-radius: 999px;
+  height: 10px;
+  width: 10px;
+}
+
+.model-control-card.blocked .model-control-dot {
+  background: #b42318;
+}
+
+.model-control-card.warn .model-control-dot {
+  background: var(--warn);
+}
+
+.model-control-card.ok .model-control-dot {
+  background: var(--accent);
+}
+
+.model-control-card-metric {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.model-control-card p,
+.model-control-card li,
+.model-control-next-action p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-control-card ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 18px;
 }
 
 .model-control-summary strong {
@@ -639,6 +711,74 @@ textarea {
 .model-control-details {
   display: grid;
   gap: 8px;
+}
+
+.model-control-next-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.model-control-next-action-panel {
+  gap: 10px;
+}
+
+.model-control-next-action-panel h3 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.model-control-next-action-list {
+  display: grid;
+  gap: 8px;
+}
+
+.model-control-next-action {
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  padding: 10px;
+}
+
+.model-control-next-action.error {
+  border-color: rgba(180, 35, 24, 0.32);
+}
+
+.model-control-next-action.warning {
+  border-color: rgba(161, 98, 7, 0.32);
+}
+
+.model-control-next-action > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.finding-chip {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  justify-self: start;
+  padding: 2px 7px;
+}
+
+.finding-chip.error {
+  background: rgba(180, 35, 24, 0.1);
+  color: #b42318;
+}
+
+.finding-chip.warning {
+  background: rgba(161, 98, 7, 0.12);
+  color: #a16207;
+}
+
+.finding-chip.info {
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--accent-strong);
 }
 
 .relation-graph-summary > div,

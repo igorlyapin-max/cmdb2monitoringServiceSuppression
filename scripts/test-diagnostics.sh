@@ -13,6 +13,9 @@ node "$repo_root/src/monitoring-ui-api/scripts/validate-config.mjs"
 echo "== run monitoring UI regression checks =="
 node "$repo_root/tests/ui-regressions.mjs"
 
+echo "== run autotest coverage contracts =="
+node "$repo_root/tests/autotest-plan-contracts.mjs"
+
 echo "== build shared diagnostic contracts =="
 "$repo_root/scripts/dotnet" build "$repo_root/tests/sharedcontracts/sharedcontracts.csproj" -v minimal /p:NuGetAudit=false -m:1
 

@@ -159,18 +159,63 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'Контроль модели', 'rule management must expose a unified model control screen.');
   assertIncludes(indexText, 'id="modelControlSummary"', 'model control view must expose a compact summary.');
   assertIncludes(indexText, 'id="modelControlRefreshButton"', 'model control view must expose a single check action.');
+  assertIncludes(indexText, 'id="modelControlOnlineRefreshButton"',
+    'model control must keep online reconciliation behind an explicit action.');
+  assertIncludes(indexText, 'id="modelControlNextActions"',
+    'model control must expose prioritized next actions.');
   assertIncludes(indexText, 'id="modelControlGraphDetails"', 'model control must contain relation graph as a collapsible detail.');
   assertIncludes(appText, 'function modelControlReport()', 'UI must aggregate model control status from existing checks.');
+  assertIncludes(appText, 'function modelControlFindings(report)',
+    'model control must normalize diagnostics into findings.');
+  assertIncludes(appText, 'function renderModelControlNextActions(findings)',
+    'model control must render prioritized next actions.');
   assertIncludes(appText, 'function modelControlReadinessStatus(report)', 'model control must include Zabbix readiness.');
   assertIncludes(appText, 'function modelControlZabbixLiveReport()', 'model control must include live Zabbix apply readiness.');
   assertIncludes(appText, 'function handleModelControlAction(actionKey)', 'model control cards must navigate to concrete fix screens.');
   assertIncludes(appText, 'data-model-control-action', 'model control findings must expose clickable remediation actions.');
   assertIncludes(appText, 'function renderModelControlGraphDetails(report, summary, findings)', 'model control must render graph details inline.');
   assertIncludes(stylesText, '.model-control-summary', 'model control summary must have compact styling.');
+  assertIncludes(stylesText, '.model-control-next-action',
+    'model control next actions must have compact styling.');
   assertIncludes(indexText, 'id="dashboardSyncLights"', 'dashboard must expose sync traffic lights.');
   assertIncludes(appText, 'function renderDashboardSyncLights()', 'UI must render dashboard sync traffic lights.');
   assertIncludes(appText, 'function dashboardSyncLightItems()', 'UI must build dashboard sync traffic light statuses.');
   assertIncludes(appText, 'function handleDashboardSyncLightClick(event)', 'dashboard sync traffic lights must have click actions.');
+  assertIncludes(appText, 'function loadPrimarySourceCaches(options = {})',
+    'UI must always load CMDBuild/Zabbix local source caches.');
+  assertIncludes(appText, 'function dashboardSourceCacheTooltip(sourceName, updatedAt, actionText)',
+    'dashboard source lights must show cache lifetime in the hover tooltip.');
+  assertIncludes(appText, 'function formatCacheLifetime(value)',
+    'UI must format cache lifetime for source synchronization status.');
+  assertIncludes(appText, 'Кэш загружается автоматически. Нажмите, чтобы синхронизировать источник.',
+    'dashboard source lights must tell operators that cache is automatic and click syncs the source.');
+  assertNotIncludes(indexText, '<button class="nav-item" data-view="dataSourceSync">CMDBuild</button>',
+    'CMDBuild must not remain as a separate source synchronization menu item.');
+  assertNotIncludes(indexText, '<button class="nav-item" data-view="zabbixSync">Zabbix</button>',
+    'Zabbix must not remain as a separate source synchronization menu item.');
+  assertNotIncludes(indexText, 'Синхронизация с источниками данных',
+    'source synchronization menu group must be removed from sidebar.');
+  assertNotIncludes(indexText, 'data-view="conversionConfigSync"',
+    'conversion configuration must be merged into the rule preparation screen instead of a separate menu item.');
+  assertNotIncludes(indexText, 'id="conversionConfigSyncView"',
+    'legacy conversion configuration view must be removed after merging into template apply.');
+  assertIncludes(indexText, 'Сохраненная конфигурация',
+    'template apply screen must expose saved conversion configuration status.');
+  assertIncludes(indexText, 'id="syncConversionConfigButton"',
+    'template apply screen must keep technical save-to-folder action.');
+  assertIncludes(appText, "if (view === 'conversionConfigSync')",
+    'legacy conversion configuration route must alias to template apply.');
+  assertIncludes(appText, "await activateView('templateApply');",
+    'rules/templates/relations dashboard lights must open the unified preparation screen.');
+  assert(indexText.indexOf('id="syncConversionConfigButton"') > indexText.indexOf('id="templateApplyView"')
+      && indexText.indexOf('id="syncConversionConfigButton"') < indexText.indexOf('id="relationManagementView"'),
+    'conversion configuration actions must live inside template apply screen.');
+  assert(indexText.indexOf('data-view="webhooksSync"') > indexText.indexOf('Администрирование'),
+    'webhooks menu item must live under administration.');
+  assertNotIncludes(indexText, 'id="loadCachedSourcesButton"',
+    'CMDBuild source sync view must not expose a manual cache-load button.');
+  assertNotIncludes(indexText, 'id="loadCachedZabbixButton"',
+    'Zabbix source sync view must not expose a manual cache-load button.');
   assertIncludes(stylesText, '.sync-light-card', 'dashboard sync traffic lights must have stable card styling.');
   assertIncludes(indexText, 'data-view="modelWorkspace"',
     'UI must expose a unified model workspace entry point.');

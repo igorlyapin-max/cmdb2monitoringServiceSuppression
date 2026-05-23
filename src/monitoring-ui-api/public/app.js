@@ -817,7 +817,7 @@ document.querySelector('#syncSourcesButton').addEventListener('click', async () 
   await syncDataSources();
 });
 
-document.querySelector('#loadCachedSourcesButton').addEventListener('click', async () => {
+document.querySelector('#loadCachedSourcesButton')?.addEventListener('click', async () => {
   await loadCmdbSourceCache();
 });
 
@@ -825,7 +825,7 @@ document.querySelector('#syncZabbixButton').addEventListener('click', async () =
   await checkZabbixSource();
 });
 
-document.querySelector('#loadCachedZabbixButton').addEventListener('click', async () => {
+document.querySelector('#loadCachedZabbixButton')?.addEventListener('click', async () => {
   await loadZabbixSourceCache();
 });
 
@@ -858,8 +858,15 @@ document.querySelector('#dashboardHealthList').addEventListener('click', async (
   await reloadApplierConfiguration(button.dataset.applierReload);
 });
 
-document.querySelector('#dashboardSyncLights')?.addEventListener('click', (event) => {
+const dashboardSyncLights = document.querySelector('#dashboardSyncLights');
+dashboardSyncLights?.addEventListener('click', (event) => {
   void handleDashboardSyncLightClick(event);
+});
+dashboardSyncLights?.addEventListener('mouseover', (event) => {
+  const button = event.target.closest?.('[data-sync-light]');
+  if (button && dashboardSyncLights.contains(button)) {
+    refreshDashboardSyncLightTooltip(button);
+  }
 });
 
 document.querySelector('#modelWorkspaceLayerSelect')?.addEventListener('change', (event) => {
@@ -1230,7 +1237,29 @@ document.querySelector('#modelControlRefreshButton')?.addEventListener('click', 
   void refreshModelControl();
 });
 
+document.querySelector('#modelControlOnlineRefreshButton')?.addEventListener('click', () => {
+  void refreshModelControlOnline();
+});
+
 document.querySelector('#modelControlDetails')?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-model-control-action]');
+  if (!button) {
+    return;
+  }
+
+  void handleModelControlAction(button.dataset.modelControlAction);
+});
+
+document.querySelector('#modelControlSummary')?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-model-control-action]');
+  if (!button) {
+    return;
+  }
+
+  void handleModelControlAction(button.dataset.modelControlAction);
+});
+
+document.querySelector('#modelControlNextActions')?.addEventListener('click', (event) => {
   const button = event.target.closest?.('[data-model-control-action]');
   if (!button) {
     return;
@@ -1543,8 +1572,7 @@ await loadInitialConfig();
 loadGeneralSettings({ silent: true });
 loadZabbixDirtyScopeJournal();
 void loadServerZabbixDirtyScopes();
-await loadCmdbSourceCache({ silent: true });
-await loadZabbixSourceCache({ silent: true });
+await loadPrimarySourceCaches({ silent: true });
 await loadWebhooksSourceCache({ silent: true });
 await loadPreview({ refreshCmdbDomains: false });
 await loadConversionConfigCache({ silent: true });
@@ -1552,6 +1580,10 @@ render();
 void checkHealthServices({ silent: true });
 
 async function activateView(view, activeButton = null) {
+  if (view === 'conversionConfigSync') {
+    view = 'templateApply';
+  }
+
   document.querySelectorAll('.nav-item').forEach((button) => {
     button.classList.toggle('active', activeButton ? button === activeButton : button.dataset.view === view);
   });
@@ -1641,6 +1673,7 @@ async function activateView(view, activeButton = null) {
     renderTemplateEditor('suppression');
   } else if (view === 'templateApply') {
     renderTemplateApplyView();
+    renderConversionConfigSyncView();
   } else if (view === 'relationsGraph') {
     renderRelationsGraphView();
   } else if (view === 'zabbixPreflight') {
@@ -1688,8 +1721,17 @@ async function activateView(view, activeButton = null) {
     if (!state.zabbixTriggerDependencies.status && !state.zabbixTriggerDependencies.loadingStatus) {
       void loadZabbixTriggerDependenciesStatus();
     }
-  } else if (view === 'dashboard' && state.healthServices.length === 0 && !state.checkingHealth) {
-    void checkHealthServices({ silent: true });
+  } else if (view === 'dataSourceSync') {
+    renderDataSourceSyncView();
+    void loadCmdbSourceCache({ silent: true }).finally(() => renderDataSourceSyncView());
+  } else if (view === 'zabbixSync') {
+    renderZabbixSyncView();
+    void loadZabbixSourceCache({ silent: true }).finally(() => renderZabbixSyncView());
+  } else if (view === 'dashboard') {
+    void loadPrimarySourceCaches({ silent: true }).finally(() => renderDashboardView());
+    if (state.healthServices.length === 0 && !state.checkingHealth) {
+      void checkHealthServices({ silent: true });
+    }
   } else if (view === 'events' && state.kafkaTopics.length === 0 && !state.loadingKafkaTopics) {
     void loadKafkaTopics({ refreshEvents: true });
   }
@@ -2203,6 +2245,7 @@ async function syncDataSources() {
   } catch (error) {
     state.syncMessage = '';
     state.syncError = error.message;
+    await loadCmdbSourceCache({ silent: true });
   } finally {
     state.syncingSources = false;
     render();
@@ -2255,6 +2298,16 @@ async function loadCmdbSourceCache(options = {}) {
   }
 }
 
+async function loadPrimarySourceCaches(options = {}) {
+  await Promise.allSettled([
+    loadCmdbSourceCache({ silent: true }),
+    loadZabbixSourceCache({ silent: true })
+  ]);
+  if (options.renderAfter === true) {
+    render();
+  }
+}
+
 async function checkZabbixSource() {
   state.checkingZabbix = true;
   state.zabbixCheckError = '';
@@ -2276,8 +2329,8 @@ async function checkZabbixSource() {
     const cacheRecord = await writeDataCache(CACHE_KEYS.zabbix, payload);
     state.zabbixCacheUpdatedAt = cacheRecord.updatedAt;
   } catch (error) {
-    state.zabbixCheck = null;
     state.zabbixCheckError = error.message;
+    await loadZabbixSourceCache({ silent: true });
   } finally {
     state.checkingZabbix = false;
     render();
@@ -4643,7 +4696,7 @@ function setSourceLamp(selector, options) {
   lamp.classList.toggle('error', stateClass === 'error');
   label.textContent = text;
   lamp.title = options.updatedAt
-    ? `${text}; последнее обновление: ${formatCacheTimestamp(options.updatedAt)}`
+    ? `${text}; последнее обновление: ${formatCacheTimestamp(options.updatedAt)}; время жизни кэша: ${formatCacheLifetime(options.updatedAt)}`
     : text;
 }
 
@@ -4869,7 +4922,7 @@ function renderDashboardSyncLights() {
 
   const items = dashboardSyncLightItems();
   container.innerHTML = items.map((item) => `
-    <button class="sync-light-card ${escapeHtml(item.state)}" type="button" data-sync-light="${escapeHtml(item.id)}" title="${escapeHtml(item.tooltip)}">
+    <button class="sync-light-card ${escapeHtml(item.state)}" type="button" data-sync-light="${escapeHtml(item.id)}" title="${escapeHtml(item.tooltip)}" aria-label="${escapeHtml(item.ariaLabel)}">
       <span class="sync-light-dot" aria-hidden="true"></span>
       <span class="sync-light-body">
         <strong>${escapeHtml(item.title)}</strong>
@@ -4908,8 +4961,8 @@ function dashboardSyncLightItems() {
         ok: Boolean(state.cmdbCacheUpdatedAt)
       }),
       summary: state.syncError || catalogError || dashboardUpdatedSummary(state.cmdbCacheUpdatedAt, 'кэш не загружен'),
-      actionLabel: 'Нажмите, чтобы синхронизировать каталог и карточки.',
-      tooltip: 'Синхронизировать CMDBuild с источником данных.'
+      actionLabel: 'Кэш загружается автоматически. Нажмите, чтобы синхронизировать источник.',
+      tooltip: dashboardSourceCacheTooltip('CMDBuild', state.cmdbCacheUpdatedAt, 'Клик запускает синхронизацию каталога и карточек с источником.')
     },
     {
       id: 'zabbix',
@@ -4920,8 +4973,8 @@ function dashboardSyncLightItems() {
         ok: Boolean(state.zabbixCacheUpdatedAt && state.zabbixCheck)
       }),
       summary: state.zabbixCheckError || dashboardUpdatedSummary(state.zabbixCacheUpdatedAt, 'кэш не загружен'),
-      actionLabel: 'Нажмите, чтобы обновить проверку Zabbix.',
-      tooltip: 'Проверить доступность Zabbix и обновить локальный кэш.'
+      actionLabel: 'Кэш загружается автоматически. Нажмите, чтобы синхронизировать источник.',
+      tooltip: dashboardSourceCacheTooltip('Zabbix', state.zabbixCacheUpdatedAt, 'Клик запускает проверку Zabbix и обновляет локальный кэш.')
     },
     {
       id: 'webhooks',
@@ -4949,8 +5002,8 @@ function dashboardSyncLightItems() {
       summary: uiRules.ok
         ? `${uiRules.totalRuleCount} правил; ${dashboardUpdatedSummary(conversionUpdatedAt, 'не сохранены')}`
         : 'локальные правила содержат ошибку',
-      actionLabel: 'Нажмите, чтобы сохранить конфигурацию конвертации.',
-      tooltip: 'Сохранить правила, шаблоны и связи в папку конфигураций.'
+      actionLabel: 'Нажмите, чтобы открыть подготовку и сохранение правил.',
+      tooltip: 'Открыть единый pipeline проверки, материализации и сохранения правил.'
     },
     {
       id: 'templates',
@@ -4962,8 +5015,8 @@ function dashboardSyncLightItems() {
         warn: templatesTotal === 0
       }),
       summary: `${templatesTotal} шаблонов; ${dashboardUpdatedSummary(conversionUpdatedAt, 'не сохранены')}`,
-      actionLabel: 'Нажмите, чтобы сохранить шаблоны вместе с конфигурацией.',
-      tooltip: 'Сохранить шаблоны сервиса, подавления и общие шаблоны.'
+      actionLabel: 'Нажмите, чтобы открыть подготовку и сохранение правил.',
+      tooltip: 'Открыть единый pipeline проверки шаблонов, материализации и сохранения.'
     },
     {
       id: 'relations',
@@ -4975,8 +5028,8 @@ function dashboardSyncLightItems() {
         warn: relationCounts.total === 0
       }),
       summary: `${relationCounts.total} связей; сервис ${relationCounts.service}, подавление ${relationCounts.suppression}`,
-      actionLabel: 'Нажмите, чтобы сохранить связи вместе с конфигурацией.',
-      tooltip: 'Сохранить управляемые связи шаблонов и статических правил.'
+      actionLabel: 'Нажмите, чтобы открыть подготовку и сохранение правил.',
+      tooltip: 'Открыть единый pipeline сохранения управляемых связей вместе с правилами.'
     },
     {
       id: 'microservices',
@@ -5009,7 +5062,10 @@ function dashboardSyncLightItems() {
       actionLabel: 'Нажмите, чтобы обновить журнал dirty scopes с сервера.',
       tooltip: 'Загрузить серверный журнал dirty scopes для scoped reconcile.'
     }
-  ];
+  ].map((item) => ({
+    ...item,
+    ariaLabel: `${item.title}: ${item.summary}. ${item.actionLabel}. ${item.tooltip}`
+  }));
 }
 
 function dashboardMicroserviceRulesSummary(uiRules) {
@@ -5054,6 +5110,34 @@ function dashboardUpdatedSummary(updatedAt, fallback) {
   return updatedAt ? `обновлено ${formatCacheTimestamp(updatedAt)}` : fallback;
 }
 
+function dashboardSourceCacheTooltip(sourceName, updatedAt, actionText) {
+  const cacheText = updatedAt
+    ? `Последнее обновление: ${formatCacheTimestamp(updatedAt)}. Время жизни кэша с момента записи: ${formatCacheLifetime(updatedAt)}.`
+    : 'Локальный кэш не загружен. Время жизни кэша: нет данных.';
+  return `${sourceName}. ${cacheText} ${actionText}`;
+}
+
+function sourceCacheStatusText(sourceName, updatedAt) {
+  return updatedAt
+    ? `${sourceName}: локальный кэш загружен, время жизни кэша ${formatCacheLifetime(updatedAt)}. Нажмите "Провести синхронизацию", чтобы перечитать источник.`
+    : `${sourceName}: локальный кэш не загружен. Нажмите "Провести синхронизацию", чтобы прочитать источник и создать кэш.`;
+}
+
+function refreshDashboardSyncLightTooltip(button) {
+  const id = button?.dataset?.syncLight;
+  if (!id) {
+    return;
+  }
+
+  const item = dashboardSyncLightItems().find((candidate) => candidate.id === id);
+  if (!item) {
+    return;
+  }
+
+  button.title = item.tooltip;
+  button.setAttribute('aria-label', item.ariaLabel);
+}
+
 async function handleDashboardSyncLightClick(event) {
   const button = event.target.closest('[data-sync-light]');
   if (!button) {
@@ -5069,7 +5153,7 @@ async function handleDashboardSyncLightClick(event) {
     await checkWebhooksSource();
     await checkWebhooksAgainstConversionRules();
   } else if (id === 'rules' || id === 'templates' || id === 'relations') {
-    await saveConversionConfigsToFolder();
+    await activateView('templateApply');
   } else if (id === 'microservices') {
     await checkHealthServices();
   } else if (id === 'dirtyScopes') {
@@ -5413,8 +5497,7 @@ function renderDataSourceSyncView() {
     || !suppressionInstanceCount
     || !updatedAt
     || !status
-    || !button
-    || !cacheButton) {
+    || !button) {
     return;
   }
 
@@ -5428,16 +5511,19 @@ function renderDataSourceSyncView() {
   button.textContent = state.syncingSources
     ? 'Синхронизация...'
     : 'Провести синхронизацию';
-  cacheButton.disabled = state.syncingSources || state.loadingSourcesCache;
-  cacheButton.textContent = state.loadingSourcesCache
-    ? 'Загрузка...'
-    : 'Загрузить локальный кэш';
+  if (cacheButton) {
+    cacheButton.disabled = state.syncingSources || state.loadingSourcesCache;
+    cacheButton.textContent = state.loadingSourcesCache
+      ? 'Загрузка...'
+      : 'Загрузить локальный кэш';
+  }
   status.textContent = state.syncError
     || state.cmdbClassError
     || state.cmdbClassSchemaError
     || state.cmdbDomainError
     || state.cmdbClassInstanceError
-    || state.syncMessage;
+    || state.syncMessage
+    || sourceCacheStatusText('CMDBuild', state.cmdbCacheUpdatedAt);
   status.classList.toggle('error', Boolean(state.syncError || state.cmdbClassError || state.cmdbClassSchemaError || state.cmdbDomainError || state.cmdbClassInstanceError));
 }
 
@@ -5450,7 +5536,7 @@ function renderZabbixSyncView() {
   const status = document.querySelector('#syncZabbixStatus');
   const button = document.querySelector('#syncZabbixButton');
   const cacheButton = document.querySelector('#loadCachedZabbixButton');
-  if (!apiState || !version || !endpoint || !updatedAt || !status || !button || !cacheButton) {
+  if (!apiState || !version || !endpoint || !updatedAt || !status || !button) {
     return;
   }
 
@@ -5466,16 +5552,18 @@ function renderZabbixSyncView() {
   button.textContent = state.checkingZabbix
     ? 'Синхронизация...'
     : 'Провести синхронизацию';
-  cacheButton.disabled = state.checkingZabbix || state.loadingZabbixCache;
-  cacheButton.textContent = state.loadingZabbixCache
-    ? 'Загрузка...'
-    : 'Загрузить локальный кэш';
+  if (cacheButton) {
+    cacheButton.disabled = state.checkingZabbix || state.loadingZabbixCache;
+    cacheButton.textContent = state.loadingZabbixCache
+      ? 'Загрузка...'
+      : 'Загрузить локальный кэш';
+  }
   status.textContent = state.zabbixCheckError
     || check?.summary
     || check?.Summary
     || check?.error
     || check?.Error
-    || '';
+    || sourceCacheStatusText('Zabbix', state.zabbixCacheUpdatedAt);
   status.classList.toggle('error', Boolean(state.zabbixCheckError || check?.error || check?.Error));
 }
 
@@ -6034,6 +6122,38 @@ function formatCacheTimestamp(value) {
     dateStyle: 'short',
     timeStyle: 'medium'
   }).format(date);
+}
+
+function formatCacheLifetime(value) {
+  if (!value) {
+    return 'нет данных';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'нет данных';
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - date.getTime());
+  const totalMinutes = Math.floor(elapsedMs / 60000);
+  if (totalMinutes < 1) {
+    return 'меньше минуты';
+  }
+
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days > 0) {
+    parts.push(`${days} д`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours} ч`);
+  }
+  if (minutes > 0 && parts.length < 2) {
+    parts.push(`${minutes} мин`);
+  }
+  return parts.slice(0, 2).join(' ');
 }
 
 function cmdbInstanceCount(layer = '') {
@@ -13859,9 +13979,17 @@ function renderZabbixPreflightView() {
 
 async function refreshModelControl() {
   await runTemplateAudit({ syncDrafts: true, render: false });
+  renderTemplateApplyView();
+  renderTemplateAuditView();
+  renderZabbixPreflightView();
+}
+
+async function refreshModelControlOnline() {
+  await runTemplateAudit({ syncDrafts: true, render: false });
   await Promise.all([
     loadZabbixApplyStatus('service'),
-    loadZabbixApplyStatus('suppression')
+    loadZabbixApplyStatus('suppression'),
+    checkHealthServices({ silent: true })
   ]);
   renderTemplateApplyView();
   renderTemplateAuditView();
@@ -13871,20 +13999,32 @@ async function refreshModelControl() {
 function renderModelControlView() {
   const summary = document.querySelector('#modelControlSummary');
   const status = document.querySelector('#modelControlStatus');
+  const nextActions = document.querySelector('#modelControlNextActions');
   const details = document.querySelector('#modelControlDetails');
   const graphSummary = document.querySelector('#modelControlGraphSummary');
   const graphFindings = document.querySelector('#modelControlGraphFindings');
   const button = document.querySelector('#modelControlRefreshButton');
-  if (!summary || !status || !details || !button) {
+  const onlineButton = document.querySelector('#modelControlOnlineRefreshButton');
+  if (!summary || !status || !nextActions || !details || !button) {
     return;
   }
 
   const report = modelControlReport();
+  const findings = modelControlFindings(report);
   button.disabled = state.templateAudit.checking;
-  button.textContent = state.templateAudit.checking ? 'Проверка...' : 'Проверить модель';
-  summary.innerHTML = renderModelControlSummary(report);
+  button.textContent = state.templateAudit.checking ? 'Проверка...' : 'Быстрая проверка';
+  if (onlineButton) {
+    const onlineBusy = state.templateAudit.checking
+      || state.checkingHealth
+      || state.zabbixApply.service.loadingStatus
+      || state.zabbixApply.suppression.loadingStatus;
+    onlineButton.disabled = onlineBusy;
+    onlineButton.textContent = onlineBusy ? 'Обновление...' : 'Обновить онлайн-сверку';
+  }
+  summary.innerHTML = renderModelControlSummary(report, findings);
   status.textContent = modelControlStatusText(report);
   status.classList.toggle('error', report.status === 'blocked');
+  nextActions.innerHTML = renderModelControlNextActions(findings);
   details.innerHTML = renderModelControlDetails(report);
   renderModelControlGraphDetails(report, graphSummary, graphFindings);
 }
@@ -14039,50 +14179,297 @@ function modelControlRelationReport() {
   };
 }
 
-function renderModelControlSummary(report) {
-  const statusLabel = report.status === 'blocked'
-    ? 'Blocked'
-    : report.status === 'warn'
-      ? 'Warning'
-      : 'OK';
+function renderModelControlSummary(report, findings = modelControlFindings(report)) {
+  const cards = modelControlSummaryCards(report, findings);
+  return cards.map((card) => {
+    const top = findings
+      .filter((item) => item.area === card.area && item.severity !== 'info')
+      .slice(0, 2);
+    return `
+      <article class="model-control-card ${escapeHtml(card.status)}">
+        <div class="model-control-card-header">
+          <span class="model-control-dot" aria-hidden="true"></span>
+          <strong>${escapeHtml(card.title)}</strong>
+          <span>${escapeHtml(modelControlStatusLabel(card.status))}</span>
+        </div>
+        <div class="model-control-card-metric">${escapeHtml(card.metric)}</div>
+        <p>${escapeHtml(card.summary)}</p>
+        ${top.length > 0 ? `<ul>${top.map((item) => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : ''}
+        ${card.action ? `<button class="secondary-button compact-button" type="button" data-model-control-action="${escapeHtml(card.action.actionView)}">${escapeHtml(card.action.actionLabel)}</button>` : ''}
+      </article>
+    `;
+  }).join('');
+}
+
+function modelControlSummaryCards(report, findings) {
+  const areaStatus = (area) => modelControlAreaStatus(findings, area);
+  return [
+    {
+      area: 'sources',
+      title: 'Источники',
+      status: areaStatus('sources'),
+      metric: `${report.readiness.errors.length} ошибок`,
+      summary: modelControlReadinessDetail(report),
+      action: { actionView: 'dashboard', actionLabel: 'Открыть панель' }
+    },
+    {
+      area: 'templates',
+      title: 'Шаблоны',
+      status: areaStatus('templates'),
+      metric: `${report.audit?.templates ?? 0} шаблонов`,
+      summary: modelControlTemplateDetail(report),
+      action: { actionView: 'templateApply', actionLabel: 'Открыть подготовку' }
+    },
+    {
+      area: 'relations',
+      title: 'Связи',
+      status: areaStatus('relations'),
+      metric: `${report.relationReport.errorCount} ошибок`,
+      summary: modelControlRelationsDetail(report),
+      action: { actionView: 'modelRelations', actionLabel: 'Открыть связи' }
+    },
+    {
+      area: 'graph',
+      title: 'Граф',
+      status: areaStatus('graph'),
+      metric: `${report.graphReport.cycleCount} циклов`,
+      summary: modelControlGraphDetail(report),
+      action: { actionView: 'relationsGraph', actionLabel: 'Открыть граф' }
+    },
+    {
+      area: 'zabbix',
+      title: 'Zabbix',
+      status: areaStatus('zabbix'),
+      metric: `${report.zabbixLive.blockerCount} блокеров`,
+      summary: modelControlZabbixLiveDetail(report),
+      action: { actionView: 'modelZabbixApply', actionLabel: 'Открыть публикацию' }
+    },
+    {
+      area: 'runtime',
+      title: 'Изменения',
+      status: areaStatus('runtime'),
+      metric: `${report.dirty.total} dirty`,
+      summary: `dirty scopes: service ${report.dirty.service}, suppression ${report.dirty.suppression}; deletion plans ${report.deletionPlans}`,
+      action: { actionView: 'modelZabbixApply', actionLabel: 'Открыть публикацию' }
+    },
+    {
+      area: 'microservices',
+      title: 'Микросервисы',
+      status: areaStatus('microservices'),
+      metric: `${state.healthServices.length} сервисов`,
+      summary: modelControlMicroserviceSummary(),
+      action: { actionView: 'microserviceSettings', actionLabel: 'Открыть настройки' }
+    }
+  ];
+}
+
+function modelControlAreaStatus(findings, area) {
+  const items = findings.filter((item) => item.area === area);
+  if (items.some((item) => item.severity === 'error')) {
+    return 'blocked';
+  }
+  if (items.some((item) => item.severity === 'warning')) {
+    return 'warn';
+  }
+  return 'ok';
+}
+
+function modelControlStatusLabel(status) {
+  if (status === 'blocked') {
+    return 'Ошибка';
+  }
+  if (status === 'warn') {
+    return 'Внимание';
+  }
+  return 'OK';
+}
+
+function modelControlFindings(report) {
+  const findings = [];
+  const add = (area, severity, title, detail, actionView, actionLabel, userObjectName = '', technicalId = '') => {
+    findings.push({
+      id: `${area}:${findings.length + 1}`,
+      area,
+      severity,
+      title,
+      detail,
+      userObjectName,
+      technicalId,
+      actionView,
+      actionLabel
+    });
+  };
+
+  for (const error of report.readiness.errors) {
+    add('sources', 'error', 'Источник данных недоступен', error, 'dashboard', 'Открыть панель');
+  }
+  if (!report.readiness.cmdbReady) {
+    add('sources', 'warning', 'CMDBuild-кэш не готов', 'Локальный кэш CMDBuild не загружен или каталог содержит ошибку.', 'dashboard', 'Открыть панель');
+  }
+  if (!report.readiness.zabbixReady) {
+    add('sources', 'warning', 'Zabbix-кэш не готов', 'Локальная проверка Zabbix не загружена или есть ошибка readiness.', 'dashboard', 'Открыть панель');
+  }
+  if (!report.readiness.webhooksReady) {
+    add('sources', 'warning', 'Webhooks требуют проверки', `Не покрыто source-классов: ${report.readiness.webhooksMissing}.`, 'webhooksSync', 'Открыть Webhooks');
+  }
+
+  if (state.templateAudit.error) {
+    add('templates', 'error', 'Проверка шаблонов завершилась ошибкой', state.templateAudit.error, 'templateApply', 'Открыть подготовку');
+  }
+  if (!report.audit) {
+    add('templates', 'warning', 'Шаблоны еще не проверялись', 'Запустите быструю проверку или подготовку правил.', 'templateApply', 'Открыть подготовку');
+  }
+  if (report.auditStale) {
+    add('templates', 'warning', 'Проверка шаблонов устарела', 'Правила, шаблоны или связи менялись после последней проверки.', 'templateApply', 'Открыть подготовку');
+  }
+  for (const error of report.auditBlocking.slice(0, 8)) {
+    add('templates', 'error', 'Блокирующая ошибка шаблона', error, 'templateApply', 'Открыть подготовку');
+  }
+  for (const warning of (report.audit?.warnings ?? []).slice(0, 5)) {
+    add('templates', 'warning', 'Предупреждение шаблона', warning, 'templateApply', 'Открыть подготовку');
+  }
+
+  if (report.staleGeneratedRules > 0) {
+    add('runtime', 'warning', 'Есть устаревшие generated rules', `Устаревших правил: ${report.staleGeneratedRules}.`, 'templateApply', 'Открыть подготовку');
+  }
+  if (report.detachedRules > 0) {
+    add('runtime', 'warning', 'Есть отвязанные правила шаблонов', `Отвязанных правил: ${report.detachedRules}.`, 'templateApply', 'Открыть подготовку');
+  }
+  if (report.deletionPlans > 0) {
+    add('runtime', 'warning', 'Есть планы удаления объектов', `Планов удаления: ${report.deletionPlans}.`, 'templateApply', 'Открыть подготовку');
+  }
+  if (report.dirty.total > 0) {
+    add('runtime', 'warning', 'Есть dirty scopes для Zabbix', `service ${report.dirty.service}, suppression ${report.dirty.suppression}.`, 'modelZabbixApply', 'Открыть публикацию');
+  }
+
+  for (const layer of report.relationReport.layers) {
+    for (const finding of layer.findings.filter((item) => item.severity === 'error').slice(0, 5)) {
+      add('relations', 'error', `${layerHumanLabel(layer.layerKey)}: ошибка связи`, relationGraphFindingText(finding), 'modelRelations', 'Открыть связи', finding.title || '', finding.id || '');
+    }
+    for (const finding of layer.findings.filter((item) => item.severity === 'warn').slice(0, 3)) {
+      add('relations', 'warning', `${layerHumanLabel(layer.layerKey)}: предупреждение связи`, relationGraphFindingText(finding), 'modelRelations', 'Открыть связи', finding.title || '', finding.id || '');
+    }
+  }
+
+  if (report.graphReport.cycleCount > 0) {
+    add('graph', 'error', 'В графе есть циклы', `Циклов: ${report.graphReport.cycleCount}.`, 'relationsGraph', 'Открыть граф');
+  }
+  if (report.graphReport.blockerCount > 0) {
+    add('graph', 'error', 'Граф содержит блокирующие ошибки', `Блокеров: ${report.graphReport.blockerCount}.`, 'relationsGraph', 'Открыть граф');
+  }
+
+  for (const layer of report.zabbixLive.layers) {
+    if (layer.blocked) {
+      add('zabbix', 'error', `${layerHumanLabel(layer.layerKey)}: публикация Zabbix заблокирована`, modelControlZabbixLayerDetail(layer), 'modelZabbixApply', 'Открыть публикацию');
+    } else if (layer.warning) {
+      add('zabbix', 'warning', `${layerHumanLabel(layer.layerKey)}: Zabbix требует внимания`, modelControlZabbixLayerDetail(layer), 'modelZabbixApply', 'Открыть публикацию');
+    }
+  }
+
+  if (state.healthCheckError) {
+    add('microservices', 'error', 'Проверка микросервисов завершилась ошибкой', state.healthCheckError, 'microserviceSettings', 'Открыть микросервисы');
+  }
+  const failedHealthCount = state.healthServices.filter((service) => service.status !== 'ok').length;
+  if (failedHealthCount > 0) {
+    add('microservices', 'warning', 'Есть недоступные микросервисы', `Ошибок health: ${failedHealthCount}.`, 'microserviceSettings', 'Открыть микросервисы');
+  }
+  const microserviceRules = dashboardMicroserviceRulesSummary(uiConversionRulesVersionInfo());
+  if (microserviceRules.hasMismatch) {
+    add('microservices', 'warning', 'Версии правил UI и микросервисов отличаются', microserviceRules.summary, 'microserviceSettings', 'Открыть микросервисы');
+  }
+
+  if (findings.length === 0) {
+    add('runtime', 'info', 'Блокеров не найдено', 'Модель готова к следующему этапу.', 'modelZabbixApply', 'Открыть публикацию');
+  }
+
+  return findings.sort(compareModelControlFindings);
+}
+
+function relationGraphFindingText(finding) {
+  return [finding.title, finding.detail, finding.message]
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean)
+    .join(': ') || 'Подробности доступны в редакторе связей.';
+}
+
+function modelControlZabbixLayerDetail(layer) {
+  const status = layer.lastStatus ? zabbixApplyStatusLabel(layer.lastStatus) : 'статус не загружен';
+  return `${status}; dry-run ${layer.dryRunCommands}, применено ${layer.appliedCommands}, ошибок ${layer.errorCommands}, dirty ${layer.dirtyCount}${layer.error ? `; ${layer.error}` : ''}`;
+}
+
+function modelControlMicroserviceSummary() {
+  const failedHealthCount = state.healthServices.filter((service) => service.status !== 'ok').length;
+  const microserviceRules = dashboardMicroserviceRulesSummary(uiConversionRulesVersionInfo());
+  if (state.healthCheckError) {
+    return state.healthCheckError;
+  }
+  if (state.healthServices.length === 0) {
+    return 'health еще не загружен';
+  }
+  return `доступно ${state.healthServices.length - failedHealthCount}, ошибок ${failedHealthCount}${microserviceRules.summary ? `; ${microserviceRules.summary}` : ''}`;
+}
+
+function compareModelControlFindings(left, right) {
+  const severityRank = { error: 0, warning: 1, info: 2 };
+  const areaRank = {
+    sources: 0,
+    templates: 1,
+    relations: 2,
+    graph: 3,
+    zabbix: 4,
+    runtime: 5,
+    microservices: 6
+  };
+  return (severityRank[left.severity] ?? 9) - (severityRank[right.severity] ?? 9)
+    || (areaRank[left.area] ?? 9) - (areaRank[right.area] ?? 9)
+    || String(left.title).localeCompare(String(right.title), undefined, { sensitivity: 'base' });
+}
+
+function renderModelControlNextActions(findings) {
+  const actions = findings
+    .filter((item) => item.severity !== 'info')
+    .slice(0, 8);
+  if (actions.length === 0) {
+    return `
+      <section class="model-control-next-action-panel ok">
+        <h3>Следующие действия</h3>
+        <div class="empty-state">Блокирующих действий нет. Можно переходить к подготовке правил или публикации в Zabbix.</div>
+      </section>
+    `;
+  }
+
   return `
-    <div>
-      <span class="metric-label">Итог</span>
-      <strong class="${escapeHtml(report.status)}">${escapeHtml(statusLabel)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Шаблоны</span>
-      <strong>${escapeHtml(report.audit?.templates ?? 0)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Generated rules</span>
-      <strong>${escapeHtml(report.audit?.generatedRules ?? 0)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Связи</span>
-      <strong>${escapeHtml(report.audit?.generatedRelations ?? 0)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Циклы</span>
-      <strong>${escapeHtml(report.graphReport.cycleCount)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Блокеры</span>
-      <strong>${escapeHtml(report.blockerCount)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Предупреждения</span>
-      <strong>${escapeHtml(report.warningCount)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Dirty scopes</span>
-      <strong>${escapeHtml(report.dirty.total)}</strong>
-    </div>
-    <div>
-      <span class="metric-label">Zabbix apply</span>
-      <strong>${escapeHtml(report.zabbixLive.blockerCount > 0 ? 'Blocked' : report.zabbixLive.warningCount > 0 ? 'Warning' : 'OK')}</strong>
-    </div>
+    <section class="model-control-next-action-panel">
+      <h3>Следующие действия</h3>
+      <div class="model-control-next-action-list">
+        ${actions.map(renderModelControlNextAction).join('')}
+      </div>
+    </section>
   `;
+}
+
+function renderModelControlNextAction(finding) {
+  return `
+    <article class="model-control-next-action ${escapeHtml(finding.severity)}">
+      <div>
+        <span class="finding-chip ${escapeHtml(finding.severity)}">${escapeHtml(modelControlFindingSeverityLabel(finding.severity))}</span>
+        <strong>${escapeHtml(finding.title)}</strong>
+        ${finding.userObjectName ? `<span>${escapeHtml(finding.userObjectName)}</span>` : ''}
+        <p>${escapeHtml(finding.detail || '-')}</p>
+      </div>
+      ${finding.actionView ? `<button class="secondary-button compact-button" type="button" data-model-control-action="${escapeHtml(finding.actionView)}">${escapeHtml(finding.actionLabel || 'Открыть')}</button>` : ''}
+    </article>
+  `;
+}
+
+function modelControlFindingSeverityLabel(severity) {
+  if (severity === 'error') {
+    return 'Ошибка';
+  }
+  if (severity === 'warning') {
+    return 'Предупреждение';
+  }
+  return 'Инфо';
 }
 
 function modelControlStatusText(report) {
@@ -19048,6 +19435,7 @@ function renderTemplateApplyView() {
     renderCurrentGeneratedRulesCard('suppression')
   ].filter(Boolean).join('')
     || '<div class="empty-state">Шаблоны не настроены или нет подходящих классов-источников.</div>';
+  renderConversionConfigSyncView();
 }
 
 function topTemplateApplyErrors(servicePlan, suppressionPlan) {

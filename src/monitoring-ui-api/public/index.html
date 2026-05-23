@@ -23,19 +23,11 @@
             </div>
           </div>
           <div class="nav-group">
-            <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Синхронизация с источниками данных</button>
-            <div class="nav-sublist">
-              <button class="nav-item" data-view="dataSourceSync">CMDBuild</button>
-              <button class="nav-item" data-view="zabbixSync">Zabbix</button>
-              <button class="nav-item" data-view="webhooksSync">Webhooks</button>
-              <button class="nav-item" data-view="conversionConfigSync">Конфигурации конвертации</button>
-            </div>
-          </div>
-          <div class="nav-group">
             <button class="nav-section-button" type="button" data-nav-toggle aria-expanded="false">Администрирование</button>
             <div class="nav-sublist">
               <button class="nav-item" data-view="generalSettings">Основные</button>
               <button class="nav-item" data-view="microserviceSettings">Микросервисы</button>
+              <button class="nav-item" data-view="webhooksSync">Webhooks</button>
               <button class="nav-item" data-view="storageAuditSettings">Хранилища и аудит</button>
               <button class="nav-item" data-view="slaSettings">SLA</button>
             </div>
@@ -964,18 +956,24 @@
           </div>
           <section class="panel model-control-panel">
             <div class="sync-actions">
-              <button id="modelControlRefreshButton" class="primary-button" type="button">Проверить модель</button>
+              <button id="modelControlRefreshButton" class="primary-button" type="button">Быстрая проверка</button>
+              <button id="modelControlOnlineRefreshButton" class="secondary-button" type="button">Обновить онлайн-сверку</button>
             </div>
             <div id="modelControlSummary" class="model-control-summary" aria-label="Итог контроля модели"></div>
             <p id="modelControlStatus" class="status-line"></p>
-            <div id="modelControlDetails" class="model-control-details"></div>
+            <div id="modelControlNextActions" class="model-control-next-actions" aria-label="Следующие действия"></div>
+            <details class="details-section compact-details">
+              <summary>Показать технические детали контроля</summary>
+              <div id="modelControlDetails" class="model-control-details"></div>
+            </details>
             <details id="modelControlGraphDetails" class="details-section compact-details">
               <summary>Показать граф связей как деталь контроля модели</summary>
               <div id="modelControlGraphSummary" class="relation-graph-summary"></div>
               <div id="modelControlGraphFindings" class="relation-graph-diagnostics"></div>
             </details>
           </section>
-          <section class="panel zabbix-preflight-panel">
+          <details class="panel zabbix-preflight-panel compact-details">
+            <summary>Показать расширенную диагностику графа перед Zabbix</summary>
             <div class="relation-graph-controls">
               <label class="select-field">
                 <span>Слой</span>
@@ -1088,7 +1086,7 @@
               </div>
               <div id="zabbixPreflightList" class="zabbix-preflight-list"></div>
             </details>
-          </section>
+          </details>
         </section>
 
         <section id="serviceZabbixApplyView" class="view hidden" data-zabbix-apply-layer="service">
@@ -1398,6 +1396,68 @@
               </div>
               <div id="templateApplyPlanList" class="preview-list"></div>
             </details>
+          </section>
+          <section class="panel">
+            <div class="section-heading compact-heading">
+              <h3>Сохраненная конфигурация</h3>
+              <p>Состояние правил, шаблонов и управляемых связей в серверной папке и локальном кэше браузера.</p>
+            </div>
+            <div class="sync-grid">
+              <div>
+                <span class="metric-label">Правила сервиса</span>
+                <strong id="conversionServiceRuleCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Правила подавления</span>
+                <strong id="conversionSuppressionRuleCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Шаблоны сервиса</span>
+                <strong id="conversionServiceTemplateCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Шаблоны подавления</span>
+                <strong id="conversionSuppressionTemplateCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Общие шаблоны</span>
+                <strong id="conversionSharedTemplateCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Связи сервиса</span>
+                <strong id="conversionServiceRelationCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Связи подавления</span>
+                <strong id="conversionSuppressionRelationCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Глубина рекурсии</span>
+                <strong id="conversionTraversalDepth">2</strong>
+              </div>
+              <div>
+                <span class="metric-label">Папка</span>
+                <strong id="conversionConfigFolder">-</strong>
+              </div>
+              <div>
+                <span class="metric-label">Файлы обновлены</span>
+                <strong id="conversionConfigStorageUpdatedAt">нет</strong>
+              </div>
+              <div>
+                <span class="metric-label">Локальный кэш</span>
+                <strong id="conversionConfigLastUpdatedAt">нет</strong>
+              </div>
+            </div>
+            <details class="details-section compact-details">
+              <summary>Показать технические операции с конфигурацией</summary>
+              <div class="sync-actions">
+                <button id="syncConversionConfigButton" class="primary-button" type="button">Сохранить в папку</button>
+                <button id="loadStoredConversionConfigButton" class="secondary-button" type="button">Загрузить из папки</button>
+                <button id="loadCachedConversionConfigButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
+              </div>
+              <p class="settings-help">Основной сценарий выполняет кнопка <strong>Подготовить и сохранить правила</strong>: проверка, материализация шаблонов и сохранение. Технические операции нужны для ручной загрузки из папки, восстановления локального кэша и отдельного сохранения без повторной материализации. После сохранения используйте команду перечитать конфигурацию у applier'ов. Управляемые webhooks публикуются отдельно в меню <strong>Администрирование -> Webhooks</strong>.</p>
+            </details>
+            <p id="syncConversionConfigStatus" class="status-line"></p>
           </section>
         </section>
 
@@ -1717,9 +1777,9 @@
             <section class="panel help-panel">
               <h2>Webhooks и правила</h2>
               <ul class="help-list">
-                <li>В меню <strong>Синхронизация с источниками данных -> Webhooks</strong> кнопка <strong>Перечитать из CMDBuild</strong> загружает текущий список управляемых webhooks, а <strong>Сверить правила онлайн</strong> сравнивает его с текущими правилами.</li>
+                <li>В меню <strong>Администрирование -> Webhooks</strong> кнопка <strong>Перечитать из CMDBuild</strong> загружает текущий список управляемых webhooks, а <strong>Сверить правила онлайн</strong> сравнивает его с текущими правилами.</li>
                 <li>Кнопка <strong>Опубликовать webhooks в CMDBuild</strong> создает или обновляет по три управляемых webhook на каждый класс-источник текущих правил: create, update и delete.</li>
-                <li>В <strong>Конфигурации конвертации</strong> кнопка <strong>Сохранить в папку</strong> является точкой публикации правил, шаблонов и связей для микросервисов. После сохранения applier'ы перечитывают эту общую папку, а в целевой схеме аналогично будут читать конфигурацию из Git.</li>
+                <li>В меню <strong>Управление правилами -> Подготовить и сохранить правила</strong> блок <strong>Сохраненная конфигурация</strong> показывает публикацию правил, шаблонов и связей для микросервисов. После сохранения applier'ы перечитывают эту общую папку, а в целевой схеме аналогично будут читать конфигурацию из Git.</li>
                 <li>Для каждого класса-источника правила должны быть покрыты события <code>CREATE</code>, <code>UPDATE</code> и <code>DELETE</code>. Если webhook описан без classCode, он считается общим для всех классов.</li>
                 <li>Если управляемый webhook явно перечисляет поля payload, онлайн-проверка сверяет их с полями, которые нужны условиям правил, шаблонам цели и ключу идемпотентности. Webhook без списка полей считается передающим полный payload.</li>
                 <li>Чужие webhooks не учитываются: проверяются только записи с настроенным управляемым идентификатором.</li>
@@ -2203,7 +2263,7 @@
         <section id="dataSourceSyncView" class="view hidden">
           <div class="section-heading">
             <h2>CMDBuild</h2>
-            <p>Обновление локальных каталогов классов, атрибутов и доменов.</p>
+            <p>UI всегда показывает локальный кэш каталогов и карточек. Кнопка синхронизации перечитывает CMDBuild и обновляет этот кэш.</p>
           </div>
           <section class="panel">
             <div class="sync-grid">
@@ -2234,7 +2294,6 @@
             </div>
             <div class="sync-actions">
               <button id="syncSourcesButton" class="primary-button" type="button">Провести синхронизацию</button>
-              <button id="loadCachedSourcesButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
             </div>
             <p id="syncSourcesStatus" class="status-line"></p>
           </section>
@@ -2243,7 +2302,7 @@
         <section id="zabbixSyncView" class="view hidden">
           <div class="section-heading">
             <h2>Zabbix</h2>
-            <p>Состояние подключения и каталога Zabbix для целевых структур мониторинга.</p>
+            <p>UI всегда показывает локальный кэш проверки Zabbix. Кнопка синхронизации перечитывает источник и обновляет этот кэш.</p>
           </div>
           <section class="panel">
             <div class="sync-grid">
@@ -2266,7 +2325,6 @@
             </div>
             <div class="sync-actions">
               <button id="syncZabbixButton" class="primary-button" type="button">Провести синхронизацию</button>
-              <button id="loadCachedZabbixButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
             </div>
             <p id="syncZabbixStatus" class="status-line"></p>
           </section>
@@ -2333,71 +2391,6 @@
             <p id="syncWebhooksStatus" class="status-line"></p>
             <p id="webhookRuleCoverageStatus" class="status-line">Онлайн-проверка не выполнялась.</p>
             <div id="webhookRuleCoverageList"></div>
-          </section>
-        </section>
-
-        <section id="conversionConfigSyncView" class="view hidden">
-          <div class="section-heading">
-            <h2>Конфигурации конвертации</h2>
-            <p>Сохранение и загрузка правил, шаблонов и управляемых связей сервиса и каскадного подавления из серверной папки с дополнительным локальным кэшем браузера.</p>
-          </div>
-          <section class="panel">
-            <div class="sync-grid">
-              <div>
-                <span class="metric-label">Правила сервиса</span>
-                <strong id="conversionServiceRuleCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Правила подавления</span>
-                <strong id="conversionSuppressionRuleCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Шаблоны сервиса</span>
-                <strong id="conversionServiceTemplateCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Шаблоны подавления</span>
-                <strong id="conversionSuppressionTemplateCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Общие шаблоны</span>
-                <strong id="conversionSharedTemplateCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Связи сервиса</span>
-                <strong id="conversionServiceRelationCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Связи подавления</span>
-                <strong id="conversionSuppressionRelationCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Глубина рекурсии</span>
-                <strong id="conversionTraversalDepth">2</strong>
-              </div>
-              <div>
-                <span class="metric-label">Папка</span>
-                <strong id="conversionConfigFolder">-</strong>
-              </div>
-              <div>
-                <span class="metric-label">Файлы обновлены</span>
-                <strong id="conversionConfigStorageUpdatedAt">нет</strong>
-              </div>
-              <div>
-                <span class="metric-label">Локальный кэш</span>
-                <strong id="conversionConfigLastUpdatedAt">нет</strong>
-              </div>
-            </div>
-            <div class="sync-actions">
-              <button id="syncConversionConfigButton" class="primary-button" type="button">Сохранить в папку</button>
-              <button id="loadStoredConversionConfigButton" class="secondary-button" type="button">Загрузить из папки</button>
-              <button id="loadCachedConversionConfigButton" class="secondary-button" type="button">Загрузить локальный кэш</button>
-            </div>
-            <details class="details-section compact-details">
-              <summary>Показать справку по сохранению конфигураций</summary>
-              <p class="settings-help">После применения шаблонов и связей сохраните конфигурации конвертации: в общую папку записываются сгенерированные правила, шаблоны и их <code>managed_relations</code>. Это операторская публикация конфигурации для микросервисов; после сохранения используйте команду перечитать конфигурацию у applier'ов. Управляемые webhooks публикуются отдельно в меню Webhooks.</p>
-            </details>
-            <p id="syncConversionConfigStatus" class="status-line"></p>
           </section>
         </section>
 

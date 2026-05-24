@@ -341,6 +341,7 @@ app.MapPost("/rules/apply-current/scope-preview", async (
 
     return Results.Ok(new ApplyCurrentRulesScopePreviewResult
     {
+        BuildMode = NormalizeApplyCurrentBuildMode(request.BuildMode),
         Layer = ScopedLayerForCurrentApply(request, baseSelectedRules),
         RuleCount = selectedRules.Count,
         SourceClassCount = sourceClasses.Count,
@@ -438,12 +439,14 @@ app.MapPost("/rules/apply-current", async (
         }
 
         var publishTargets = ResolvePublishTargets(request.Targets);
-        var publishTopics = PublishTopicsForRequest(topicOptions.Value, publishTargets, selectedRules.Select(rule => rule.Layer));
+        var publishLayers = PublishLayersForCurrentApply(request, selectedRules);
+        var publishTopics = PublishTopicsForRequest(topicOptions.Value, publishTargets, publishLayers);
         progress.Configure(operationId, sourceClasses, selectedRules.Count, publishTopics);
         var result = new ApplyCurrentRulesResult
         {
             OperationId = operationId,
             DryRun = request.DryRun,
+            BuildMode = NormalizeApplyCurrentBuildMode(request.BuildMode),
             Topic = string.Join(", ", publishTopics),
             Topics = publishTopics,
             ZabbixDeliveryMode = publishTargets.ZabbixDirect ? "direct" : publishTargets.Zabbix ? "topic" : "",
@@ -455,6 +458,14 @@ app.MapPost("/rules/apply-current", async (
         };
         var operationDeduplicationKeys = new HashSet<string>(StringComparer.Ordinal);
         var pendingPlans = new List<PendingApplyCurrentPlan>();
+
+        if (IsGraphOverlayBuildMode(request))
+        {
+            progress.Stage(
+                operationId,
+                "graph_overlay",
+                "Режим наложения графа: исходные карточки CMDBuild не читаются.");
+        }
 
         foreach (var sourceClass in sourceClasses)
         {
@@ -507,7 +518,7 @@ app.MapPost("/rules/apply-current", async (
                             result,
                             progress,
                             operationId,
-                            serviceTopology: false);
+                            topologyLayer: "");
                     }
 
                     progress.CardProcessed(operationId, sourceClass, card.Id);
@@ -528,7 +539,12 @@ app.MapPost("/rules/apply-current", async (
 
         if (ShouldPublishServiceTopology(request, publishTargets))
         {
-            progress.Stage(operationId, "service_topology", "Публикация ручных сервисных объектов и их связей.");
+            progress.Stage(
+                operationId,
+                "service_topology",
+                IsGraphOverlayBuildMode(request)
+                    ? "Публикация сервисного графа без чтения исходных карточек."
+                    : "Публикация ручных сервисных объектов и их связей.");
             var serviceTopologyResult = await ApplyServiceTopologyAsync(
                 request,
                 cmdbuild,
@@ -546,8 +562,27 @@ app.MapPost("/rules/apply-current", async (
                 operationDeduplicationKeys,
                 applyCancellationToken);
             result.Classes.Add(serviceTopologyResult);
-            result.CardsScanned += serviceTopologyResult.Cards;
+            if (!IsGraphOverlayBuildMode(request))
+            {
+                result.CardsScanned += serviceTopologyResult.Cards;
+            }
+
             result.ServiceObjectsScanned = serviceTopologyResult.Cards;
+        }
+
+        if (ShouldPublishSuppressionTopology(request, publishTargets))
+        {
+            progress.Stage(operationId, "suppression_topology", "Публикация графа каскадного подавления без чтения исходных карточек.");
+            var suppressionTopologyResult = await ApplySuppressionTopologyAsync(
+                request,
+                cmdbuild,
+                operationId,
+                progress,
+                result,
+                pendingPlans,
+                applyCancellationToken);
+            result.Classes.Add(suppressionTopologyResult);
+            result.SuppressionObjectsScanned = suppressionTopologyResult.Cards;
         }
 
         progress.Stage(operationId, "zabbix_graph_validation", "Проверка полного desired graph перед публикацией в Zabbix.");
@@ -734,6 +769,11 @@ static IReadOnlyList<string> SourceClassesForCurrentApply(
     IReadOnlyList<ConversionRule> rules,
     ApplyCurrentRulesRequest request)
 {
+    if (IsGraphOverlayBuildMode(request))
+    {
+        return [];
+    }
+
     var requested = new HashSet<string>(
         (request.SourceClasses ?? [])
             .Select(item => item.Trim())
@@ -862,7 +902,9 @@ static string? CurrentApplyScopeMatchError(
     ApplyCurrentRulesServiceObjectScopeHints serviceObjectScopeHints)
 {
     var requestedKeys = ScopeKeysForCurrentApply(request);
-    if (!request.RequireZabbixScopeMatch || requestedKeys.Count == 0)
+    if (!request.RequireZabbixScopeMatch
+        || requestedKeys.Count == 0
+        || IsGraphOverlayBuildMode(request))
     {
         return null;
     }
@@ -873,7 +915,53 @@ static string? CurrentApplyScopeMatchError(
         return null;
     }
 
-    return $"Scope публикации задан ({requestedKeys.Count}), но не сопоставлен ни с rule id/name/managed key, ни с ручным сервисным объектом. Подготовка полного scan остановлена; исправьте scope или отключите строгую проверку.";
+    return $"Область публикации задана ({requestedKeys.Count}), но не сопоставлена ни с rule id/name/managed key, ни с ручным сервисным объектом. Подготовка полного scan остановлена; исправьте область или отключите строгую проверку.";
+}
+
+static bool IsGraphOverlayBuildMode(ApplyCurrentRulesRequest request)
+{
+    return string.Equals(
+        NormalizeApplyCurrentBuildMode(request.BuildMode),
+        "graph-overlay",
+        StringComparison.OrdinalIgnoreCase);
+}
+
+static string NormalizeApplyCurrentBuildMode(string? value)
+{
+    var normalized = (value ?? "").Trim();
+    if (normalized.Equals("graph", StringComparison.OrdinalIgnoreCase)
+        || normalized.Equals("graph-overlay", StringComparison.OrdinalIgnoreCase)
+        || normalized.Equals("topology", StringComparison.OrdinalIgnoreCase)
+        || normalized.Equals("topology-only", StringComparison.OrdinalIgnoreCase))
+    {
+        return "graph-overlay";
+    }
+
+    return "membership";
+}
+
+static IReadOnlyList<string> PublishLayersForCurrentApply(
+    ApplyCurrentRulesRequest request,
+    IReadOnlyList<ConversionRule> selectedRules)
+{
+    var requested = (request.Layers ?? [])
+        .Select(item => item.Trim().ToLowerInvariant())
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    if (requested.Length > 0)
+    {
+        return requested;
+    }
+
+    var fromRules = selectedRules
+        .Select(rule => rule.Layer.Trim().ToLowerInvariant())
+        .Where(item => !string.IsNullOrWhiteSpace(item))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    return fromRules.Length > 0
+        ? fromRules
+        : ["service", "suppression"];
 }
 
 static string ScopedLayerForCurrentApply(
@@ -1204,12 +1292,7 @@ static async Task<ApplyCurrentRulesServiceObjectScopeHints> ResolveServiceObject
 
 static bool CurrentApplyIncludesServiceLayer(ApplyCurrentRulesRequest request)
 {
-    var layers = new HashSet<string>(
-        (request.Layers ?? [])
-            .Select(item => item.Trim())
-            .Where(item => !string.IsNullOrWhiteSpace(item)),
-        StringComparer.OrdinalIgnoreCase);
-    return layers.Count == 0 || layers.Contains("service");
+    return CurrentApplyIncludesLayer(request, "service");
 }
 
 static HashSet<string> ServiceObjectScopeCandidates(ServiceTopologyCard item)
@@ -1351,12 +1434,28 @@ static bool ShouldPublishServiceTopology(ApplyCurrentRulesRequest request, Publi
         return false;
     }
 
+    return CurrentApplyIncludesLayer(request, "service");
+}
+
+static bool ShouldPublishSuppressionTopology(ApplyCurrentRulesRequest request, PublishTargets targets)
+{
+    if (!IsGraphOverlayBuildMode(request)
+        || (!targets.Zabbix && !targets.ZabbixDirect))
+    {
+        return false;
+    }
+
+    return CurrentApplyIncludesLayer(request, "suppression");
+}
+
+static bool CurrentApplyIncludesLayer(ApplyCurrentRulesRequest request, string layer)
+{
     var layers = new HashSet<string>(
         (request.Layers ?? [])
             .Select(item => item.Trim())
             .Where(item => !string.IsNullOrWhiteSpace(item)),
         StringComparer.OrdinalIgnoreCase);
-    return layers.Count == 0 || layers.Contains("service");
+    return layers.Count == 0 || layers.Contains(layer);
 }
 
 static void AddPublishPerformance(
@@ -1365,12 +1464,16 @@ static void AddPublishPerformance(
     string operationId,
     bool zabbixDirect,
     long elapsedMs,
-    bool serviceTopology)
+    string topologyLayer)
 {
     performance.PublishMs += elapsedMs;
-    if (serviceTopology)
+    if (string.Equals(topologyLayer, "service", StringComparison.OrdinalIgnoreCase))
     {
         performance.ServiceTopologyPublishMs += elapsedMs;
+    }
+    else if (string.Equals(topologyLayer, "suppression", StringComparison.OrdinalIgnoreCase))
+    {
+        performance.SuppressionTopologyPublishMs += elapsedMs;
     }
 
     if (zabbixDirect)
@@ -1387,9 +1490,13 @@ static void AddPublishPerformance(
     progress.AddPerformance(operationId, item =>
     {
         item.PublishMs += elapsedMs;
-        if (serviceTopology)
+        if (string.Equals(topologyLayer, "service", StringComparison.OrdinalIgnoreCase))
         {
             item.ServiceTopologyPublishMs += elapsedMs;
+        }
+        else if (string.Equals(topologyLayer, "suppression", StringComparison.OrdinalIgnoreCase))
+        {
+            item.SuppressionTopologyPublishMs += elapsedMs;
         }
 
         if (zabbixDirect)
@@ -1453,11 +1560,11 @@ static void TrackPendingZabbixPlan(
     ApplyCurrentRulesResult result,
     ApplyCurrentRulesProgressStore progress,
     string operationId,
-    bool serviceTopology)
+    string topologyLayer)
 {
     result.ZabbixPlan.Add(plan.Command);
     progress.AddPlannedCommand(operationId, plan.Command);
-    pendingPlans.Add(new PendingApplyCurrentPlan(plan, classResult, serviceTopology));
+    pendingPlans.Add(new PendingApplyCurrentPlan(plan, classResult, topologyLayer));
     Increment(result.CommandsByLayer, plan.Command.Layer);
     if (result.SampleCommands.Count >= 20)
     {
@@ -1532,14 +1639,18 @@ static async Task PublishPendingZabbixPlansAsync(
                 result.ZabbixDirectGraphResults.Add(publishedTopics.Body);
             }
 
-            var serviceTopology = layerGroup.Any(item => item.ServiceTopology);
+            var topologyLayer = layerGroup.Any(item => string.Equals(item.TopologyLayer, "service", StringComparison.OrdinalIgnoreCase))
+                ? "service"
+                : layerGroup.Any(item => string.Equals(item.TopologyLayer, "suppression", StringComparison.OrdinalIgnoreCase))
+                    ? "suppression"
+                    : "";
             AddPublishPerformance(
                 result.Performance,
                 progress,
                 operationId,
                 zabbixDirect: true,
                 publishWatch.ElapsedMilliseconds,
-                serviceTopology);
+                topologyLayer);
             if (forceDryRun)
             {
                 continue;
@@ -1596,7 +1707,7 @@ static async Task PublishPendingZabbixPlansAsync(
             operationId,
             publishTargets.ZabbixDirect,
             publishWatch.ElapsedMilliseconds,
-            pending.ServiceTopology);
+            pending.TopologyLayer);
         pending.ClassResult.CommandsPublished++;
         result.CommandsPublished++;
         if (publishTargets.ZabbixDirect)
@@ -1875,7 +1986,9 @@ static async Task<ApplyCurrentRulesClassResult> ApplyServiceTopologyAsync(
 {
     var classResult = new ApplyCurrentRulesClassResult
     {
-        SourceClass = "service_objects"
+        SourceClass = IsGraphOverlayBuildMode(request)
+            ? "service_graph_objects"
+            : "service_objects"
     };
 
     try
@@ -1905,7 +2018,7 @@ static async Task<ApplyCurrentRulesClassResult> ApplyServiceTopologyAsync(
                 result,
                 progress,
                 operationId,
-                serviceTopology: true);
+                topologyLayer: "service");
         }
     }
     catch (Exception ex) when (!cancellationToken.IsCancellationRequested
@@ -1914,6 +2027,58 @@ static async Task<ApplyCurrentRulesClassResult> ApplyServiceTopologyAsync(
         classResult.Error = ex.Message;
         result.Errors.Add($"service_objects: {ex.Message}");
         progress.AddError(operationId, $"service_objects: {ex.Message}");
+    }
+
+    return classResult;
+}
+
+static async Task<ApplyCurrentRulesClassResult> ApplySuppressionTopologyAsync(
+    ApplyCurrentRulesRequest request,
+    CmdbuildClient cmdbuild,
+    string operationId,
+    ApplyCurrentRulesProgressStore progress,
+    ApplyCurrentRulesResult result,
+    ICollection<PendingApplyCurrentPlan> pendingPlans,
+    CancellationToken cancellationToken)
+{
+    var classResult = new ApplyCurrentRulesClassResult
+    {
+        SourceClass = "suppression_graph_objects"
+    };
+
+    try
+    {
+        var buildTopologyWatch = Stopwatch.StartNew();
+        var plans = await BuildSuppressionTopologyCommandPlansAsync(
+            cmdbuild,
+            request,
+            cancellationToken);
+        buildTopologyWatch.Stop();
+        result.Performance.SuppressionTopologyBuildMs += buildTopologyWatch.ElapsedMilliseconds;
+        progress.AddPerformance(operationId, item => item.SuppressionTopologyBuildMs += buildTopologyWatch.ElapsedMilliseconds);
+        classResult.Cards = plans.Count;
+        classResult.CommandsBuilt = plans.Count;
+        result.CommandsBuilt += plans.Count;
+        progress.AddCommandsBuilt(operationId, plans.Count);
+
+        foreach (var plan in plans)
+        {
+            TrackPendingZabbixPlan(
+                pendingPlans,
+                plan,
+                classResult,
+                result,
+                progress,
+                operationId,
+                topologyLayer: "suppression");
+        }
+    }
+    catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+        && ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+    {
+        classResult.Error = ex.Message;
+        result.Errors.Add($"suppression_graph_objects: {ex.Message}");
+        progress.AddError(operationId, $"suppression_graph_objects: {ex.Message}");
     }
 
     return classResult;
@@ -1931,7 +2096,9 @@ static async Task<IReadOnlyList<AggregationCommandPlan>> BuildServiceTopologyCom
         request.CmdbuildPrefix,
         "Service",
         request.ServiceModelRoot,
-        item => IsManualServiceObjectClass(request.CmdbuildPrefix, item.Code),
+        item => IsGraphOverlayBuildMode(request)
+            ? IsManagedServiceObjectClass(request.CmdbuildPrefix, item.Code)
+            : IsManualServiceObjectClass(request.CmdbuildPrefix, item.Code),
         cancellationToken);
     var serviceObjects = catalog.Classes
         .SelectMany(item => item.Cards.Select(card => new ServiceTopologyCard(item.ClassCode, card)))
@@ -2049,6 +2216,128 @@ static Dictionary<string, List<AggregationTargetRelation>> BuildServiceTopologyR
     }
 
     return byParent;
+}
+
+static async Task<IReadOnlyList<AggregationCommandPlan>> BuildSuppressionTopologyCommandPlansAsync(
+    CmdbuildClient cmdbuild,
+    ApplyCurrentRulesRequest request,
+    CancellationToken cancellationToken)
+{
+    var catalog = await cmdbuild.ListManagedLayerClassInstancesAsync(
+        request.CmdbuildPrefix,
+        "Suppression",
+        request.SuppressionModelRoot,
+        item => IsManualSuppressionObjectClass(request.CmdbuildPrefix, item.Code),
+        cancellationToken);
+    var suppressionObjects = catalog.Classes
+        .SelectMany(item => item.Cards.Select(card => new ServiceTopologyCard(item.ClassCode, card)))
+        .ToArray();
+    if (suppressionObjects.Length == 0)
+    {
+        return [];
+    }
+
+    var suppressionObjectKeys = suppressionObjects
+        .Select(item => CardRefKey(item.ClassCode, item.Card.Id))
+        .ToHashSet(StringComparer.Ordinal);
+
+    var domains = await cmdbuild.ListDomainsAsync(request.CmdbuildPrefix, cancellationToken);
+    var domainByCode = domains
+        .GroupBy(domain => domain.Code, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+    var relationsCatalog = await cmdbuild.ListDomainRelationsAsync(
+        request.CmdbuildPrefix,
+        domain => SuppressionTopologyDirection(request.CmdbuildPrefix, domain.Code) != ServiceTopologyRelationDirection.Skip,
+        cancellationToken);
+    var relationsByCause = BuildSuppressionTopologyRelations(
+        request.CmdbuildPrefix,
+        relationsCatalog.Relations,
+        domainByCode,
+        suppressionObjectKeys);
+    NormalizeRelations(relationsByCause);
+
+    return suppressionObjects
+        .Select(item => BuildSuppressionTopologyCommandPlan(
+            item,
+            relationsByCause.TryGetValue(CardRefKey(item.ClassCode, item.Card.Id), out var relations)
+                ? relations
+                : []))
+        .OrderBy(plan => plan.Command.Target.CardDescription, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(plan => plan.Command.Target.ClassCode, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(plan => plan.Command.Target.CardId, StringComparer.Ordinal)
+        .ToArray();
+}
+
+static Dictionary<string, List<AggregationTargetRelation>> BuildSuppressionTopologyRelations(
+    string prefix,
+    IReadOnlyList<CmdbuildDomainRelationCatalogItem> relations,
+    IReadOnlyDictionary<string, CmdbuildDomainCatalogItem> domainByCode,
+    IReadOnlySet<string> suppressionObjectKeys)
+{
+    var byCause = new Dictionary<string, List<AggregationTargetRelation>>(StringComparer.Ordinal);
+    foreach (var relation in relations)
+    {
+        if (!domainByCode.TryGetValue(relation.DomainCode, out var domain))
+        {
+            continue;
+        }
+
+        var direction = SuppressionTopologyDirection(prefix, domain.Code);
+        if (direction == ServiceTopologyRelationDirection.Skip)
+        {
+            continue;
+        }
+
+        var causeClass = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.SourceType
+            : relation.DestinationType;
+        var causeId = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.SourceId
+            : relation.DestinationId;
+        var dependentClass = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.DestinationType
+            : relation.SourceType;
+        var dependentId = direction == ServiceTopologyRelationDirection.SourceParentDestinationChild
+            ? relation.DestinationId
+            : relation.SourceId;
+        if (string.Equals(causeClass, dependentClass, StringComparison.Ordinal)
+            && string.Equals(causeId, dependentId, StringComparison.Ordinal))
+        {
+            continue;
+        }
+
+        var causeKey = CardRefKey(causeClass, causeId);
+        var dependentKey = CardRefKey(dependentClass, dependentId);
+        if (!suppressionObjectKeys.Contains(causeKey)
+            || !suppressionObjectKeys.Contains(dependentKey))
+        {
+            continue;
+        }
+
+        if (!byCause.TryGetValue(causeKey, out var causeRelations))
+        {
+            causeRelations = [];
+            byCause[causeKey] = causeRelations;
+        }
+
+        causeRelations.Add(new AggregationTargetRelation
+        {
+            DomainCode = domain.Code,
+            TargetClassCode = dependentClass,
+            TargetLookup = dependentId
+        });
+    }
+
+    foreach (var pair in byCause)
+    {
+        byCause[pair.Key] = pair.Value
+            .DistinctBy(item => $"{item.DomainCode}\u001f{item.TargetClassCode}\u001f{item.TargetLookup}", StringComparer.Ordinal)
+            .OrderBy(item => item.TargetClassCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TargetLookup, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    return byCause;
 }
 
 static async Task<IReadOnlyList<ServiceObjectTemplateRelationIntent>> LoadServiceObjectTemplateRelationsAsync(
@@ -2280,6 +2569,48 @@ static AggregationCommandPlan BuildServiceTopologyCommandPlan(
     };
 }
 
+static AggregationCommandPlan BuildSuppressionTopologyCommandPlan(
+    ServiceTopologyCard item,
+    IReadOnlyList<AggregationTargetRelation> relations)
+{
+    var attributes = ServiceCardAttributes(item.Card);
+    var displayName = ServiceCardDisplayName(item.Card);
+    var command = new AggregationCommand
+    {
+        CommandId = $"suppression-topology-{item.ClassCode}-{item.Card.Id}-{Guid.NewGuid():N}",
+        CorrelationId = $"suppression-topology-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}",
+        SourceEventId = $"suppression-topology-{item.ClassCode}-{item.Card.Id}",
+        CommandType = AggregationCommandTypes.EnsureMembership,
+        Layer = "suppression",
+        RuleId = $"suppression-object-{item.ClassCode}-{item.Card.Id}",
+        RuleName = string.IsNullOrWhiteSpace(displayName)
+            ? $"Объект каскадного подавления {item.ClassCode}/{item.Card.Id}"
+            : displayName,
+        EventType = "UPDATE",
+        Source = new AggregationSourceObject(),
+        Target = new AggregationTargetObject
+        {
+            ClassCode = item.ClassCode,
+            CardId = item.Card.Id,
+            CardDescription = displayName,
+            CreateInstance = false,
+            Attributes = attributes,
+            Relations = relations
+        }
+    };
+    var semanticKey = $"suppression-topology:{item.ClassCode}:{item.Card.Id}";
+    var semanticFingerprint = string.Join(
+        "\n",
+        semanticKey,
+        string.Join("|", relations.Select(relation => $"{relation.DomainCode}:{relation.TargetClassCode}:{relation.TargetLookup}")));
+    return new AggregationCommandPlan
+    {
+        Command = command,
+        SemanticKey = semanticKey,
+        SemanticFingerprint = semanticFingerprint
+    };
+}
+
 static IReadOnlyList<AggregationCommandPlan> SortServiceTopologyPlans(IReadOnlyList<AggregationCommandPlan> plans)
 {
     var byKey = plans
@@ -2384,10 +2715,42 @@ static ServiceTopologyRelationDirection ServiceTopologyDirection(string prefix, 
     return ServiceTopologyRelationDirection.Skip;
 }
 
+static ServiceTopologyRelationDirection SuppressionTopologyDirection(string prefix, string domainCode)
+{
+    var baseCode = RemoveManagedPrefix(prefix, domainCode);
+    if (baseCode.Contains("Suppresses", StringComparison.OrdinalIgnoreCase))
+    {
+        return ServiceTopologyRelationDirection.SourceParentDestinationChild;
+    }
+
+    if (baseCode.Contains("DependsOn", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("RunsOn", StringComparison.OrdinalIgnoreCase)
+        || baseCode.Contains("MonitoredVia", StringComparison.OrdinalIgnoreCase))
+    {
+        return ServiceTopologyRelationDirection.SourceChildDestinationParent;
+    }
+
+    return ServiceTopologyRelationDirection.Skip;
+}
+
+static bool IsManagedServiceObjectClass(string prefix, string classCode)
+{
+    var baseCode = RemoveManagedPrefix(prefix, classCode);
+    return baseCode.StartsWith("Service", StringComparison.OrdinalIgnoreCase)
+        && !baseCode.Equals("ServiceManagedObject", StringComparison.OrdinalIgnoreCase);
+}
+
 static bool IsManualServiceObjectClass(string prefix, string classCode)
 {
     return RemoveManagedPrefix(prefix, classCode)
         .Equals("ServicePlatformService", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsManualSuppressionObjectClass(string prefix, string classCode)
+{
+    var baseCode = RemoveManagedPrefix(prefix, classCode);
+    return baseCode.StartsWith("Suppression", StringComparison.OrdinalIgnoreCase)
+        && !baseCode.Equals("SuppressionManagedObject", StringComparison.OrdinalIgnoreCase);
 }
 
 static string RemoveManagedPrefix(string prefix, string code)
@@ -2816,6 +3179,8 @@ public sealed record ApplyCurrentRulesRequest
 
     public string ZabbixPublishMode { get; init; } = "changes";
 
+    public string BuildMode { get; init; } = "membership";
+
     public IReadOnlyList<string> ZabbixScopeKeys { get; init; } = [];
 
     public int ZabbixScopeDepth { get; init; }
@@ -2832,7 +3197,7 @@ public sealed record ApplyCurrentRulesRequest
 public sealed record PendingApplyCurrentPlan(
     AggregationCommandPlan Plan,
     ApplyCurrentRulesClassResult ClassResult,
-    bool ServiceTopology);
+    string TopologyLayer);
 
 public sealed record RuleScopeEdges(
     IReadOnlyDictionary<int, HashSet<int>> ChildrenByParent,
@@ -2917,22 +3282,22 @@ public sealed record ApplyCurrentRulesScopeSelection(
     {
         if (!Enabled)
         {
-            return "Scope публикации не задан; правила и карточки не сужались.";
+            return "Область публикации не задана; правила и карточки не сужались.";
         }
 
         if (MatchedSeedCount == 0)
         {
             return serviceObjectScopeHints.MatchedServiceObjectCount > 0
-                ? $"Scope сопоставлен с сервисными объектами ({serviceObjectScopeHints.MatchedServiceObjectCount}), но связанные правила не найдены; source-карточки правил не читаются."
-                : "Scope задан, но статически не сопоставлен с rule id/name/managed key; без строгой проверки подготовка выполняется полным набором.";
+                ? $"Область сопоставлена с сервисными объектами ({serviceObjectScopeHints.MatchedServiceObjectCount}), но связанные правила не найдены; исходные карточки правил не читаются."
+                : "Область задана, но статически не сопоставлена с rule id/name/managed key; без строгой проверки подготовка выполняется полным набором.";
         }
 
         if (!Applied)
         {
-            return "Scope сопоставлен, но после раскрытия связей выбраны все правила; чтение CMDBuild не сократилось.";
+            return "Область сопоставлена, но после раскрытия связей выбраны все правила; чтение CMDBuild не сократилось.";
         }
 
-        return $"Scope сократил подготовку: правил {SelectedRuleCount}/{OriginalRuleCount}, source-классов {selectedSourceClassCount}/{OriginalSourceClassCount}.";
+        return $"Область сократила подготовку: правил {SelectedRuleCount}/{OriginalRuleCount}, исходных классов {selectedSourceClassCount}/{OriginalSourceClassCount}.";
     }
 }
 
@@ -2984,6 +3349,8 @@ public sealed class ApplyCurrentRulesScopePrefilterSummary
 
 public sealed class ApplyCurrentRulesScopePreviewResult
 {
+    public string BuildMode { get; init; } = "membership";
+
     public string Layer { get; init; } = "";
 
     public int RuleCount { get; init; }
@@ -3020,6 +3387,8 @@ public sealed class ApplyCurrentRulesResult
 
     public bool DryRun { get; init; }
 
+    public string BuildMode { get; init; } = "membership";
+
     public string Topic { get; init; } = "";
 
     public IReadOnlyList<string> Topics { get; init; } = [];
@@ -3037,6 +3406,8 @@ public sealed class ApplyCurrentRulesResult
     public int CardsScanned { get; set; }
 
     public int ServiceObjectsScanned { get; set; }
+
+    public int SuppressionObjectsScanned { get; set; }
 
     public int CommandsBuilt { get; set; }
 
@@ -3113,6 +3484,10 @@ public sealed class ApplyCurrentRulesPerformance
 
     public long ServiceTopologyPublishMs { get; set; }
 
+    public long SuppressionTopologyBuildMs { get; set; }
+
+    public long SuppressionTopologyPublishMs { get; set; }
+
     public ApplyCurrentRulesPerformance Clone()
     {
         return new ApplyCurrentRulesPerformance
@@ -3129,7 +3504,9 @@ public sealed class ApplyCurrentRulesPerformance
             KafkaPublishMs = KafkaPublishMs,
             KafkaPublishCalls = KafkaPublishCalls,
             ServiceTopologyBuildMs = ServiceTopologyBuildMs,
-            ServiceTopologyPublishMs = ServiceTopologyPublishMs
+            ServiceTopologyPublishMs = ServiceTopologyPublishMs,
+            SuppressionTopologyBuildMs = SuppressionTopologyBuildMs,
+            SuppressionTopologyPublishMs = SuppressionTopologyPublishMs
         };
     }
 }

@@ -58,7 +58,7 @@ public sealed class ZabbixTriggerDependencyApplier(
             if (!currentOptions.Enabled)
             {
                 result.Status = "skipped";
-                result.Message = "Публикация trigger dependencies выключена в конфигурации.";
+                result.Message = "Публикация зависимостей триггеров выключена в конфигурации.";
                 return Complete(result);
             }
 
@@ -66,14 +66,14 @@ public sealed class ZabbixTriggerDependencyApplier(
             if (result.Errors.Count > 0)
             {
                 result.Status = "error";
-                result.Message = "Trigger dependencies не рассчитаны: есть блокирующие ошибки.";
+                result.Message = "Зависимости триггеров не рассчитаны: есть блокирующие ошибки.";
                 return Complete(result);
             }
 
             if (dryRun)
             {
                 result.Status = "dry-run";
-                result.Message = "Dry-run конфигурации trigger dependencies и calculated aggregate triggers завершен без изменения Zabbix.";
+                result.Message = "Проверка конфигурации зависимостей триггеров и calculated aggregate triggers завершена без изменения Zabbix.";
                 return Complete(result);
             }
 
@@ -81,7 +81,7 @@ public sealed class ZabbixTriggerDependencyApplier(
             if (result.Errors.Count > 0)
             {
                 result.Status = "error";
-                result.Message = "Trigger dependencies не применены: reconcile содержит ошибки.";
+                result.Message = "Зависимости триггеров не применены: reconcile содержит ошибки.";
                 return Complete(result);
             }
 
@@ -98,14 +98,14 @@ public sealed class ZabbixTriggerDependencyApplier(
                 Layer,
                 result.DesiredDependencies.Select(item => item.ToManaged(Layer)).ToArray());
             result.Status = "applied";
-            result.Message = $"Конфигурация trigger dependencies применена: обновлено триггеров {result.TriggersUpdated}, добавлено зависимостей {result.DependenciesAdded}, удалено устаревших {result.DependenciesRemoved}.";
+            result.Message = $"Конфигурация зависимостей триггеров применена: обновлено триггеров {result.TriggersUpdated}, добавлено зависимостей {result.DependenciesAdded}, удалено устаревших {result.DependenciesRemoved}.";
             return Complete(result);
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or TimeoutException or InvalidOperationException)
         {
             logger.LogError(ex, "Zabbix trigger dependencies apply failed.");
             result.Status = "error";
-            result.Message = "Trigger dependencies не применены в Zabbix.";
+            result.Message = "Зависимости триггеров не применены в Zabbix.";
             result.Errors.Add(ex.Message);
             return Complete(result);
         }
@@ -190,50 +190,55 @@ public sealed class ZabbixTriggerDependencyApplier(
         var hostIds = SourceHostIds(memberships);
         if (hostIds.Length == 0)
         {
-            result.Warnings.Add("В suppression membership нет source-карточек с zabbix_main_hostid; trigger dependencies не из чего строить.");
-            return;
+            result.Warnings.Add(
+                "В составе подавления нет исходных карточек с zabbix_main_hostid; будет рассчитан skeleton-граф групп без зависимостей от source-триггеров.");
         }
-
-        (memberships, hostIds) = await ReconcileSourceHostBindingsAsync(
-            memberships,
-            hostIds,
-            currentOptions,
-            currentZabbixOptions,
-            dryRun,
-            result,
-            cancellationToken);
-        result.HostCount = hostIds.Length;
-        result.TriggerGetBatchCount = BatchCount(hostIds.Length, currentOptions.TriggerGetBatchSize);
-        if (hostIds.Length == 0)
+        else
         {
-            result.Warnings.Add("После очистки stale source-host bindings в suppression membership не осталось source-карточек с zabbix_main_hostid.");
-            return;
-        }
-
-        var triggerGetStopwatch = Stopwatch.StartNew();
-        IReadOnlyList<ZabbixTriggerInfo> triggers;
-        try
-        {
-            triggers = await GetTriggersByHostIdsWithLookupCacheAsync(
+            (memberships, hostIds) = await ReconcileSourceHostBindingsAsync(
+                memberships,
                 hostIds,
-                currentOptions.IncludeDisabledTriggers,
-                currentOptions.TriggerGetBatchSize,
-                useCache: dryRun,
+                currentOptions,
+                currentZabbixOptions,
+                dryRun,
                 result,
                 cancellationToken);
+            if (hostIds.Length == 0)
+            {
+                result.Warnings.Add(
+                    "После очистки stale source-host bindings в составе подавления не осталось исходных карточек с zabbix_main_hostid; будет рассчитан skeleton-граф групп без зависимостей от source-триггеров.");
+            }
         }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+
+        result.HostCount = hostIds.Length;
+        result.TriggerGetBatchCount = BatchCount(hostIds.Length, currentOptions.TriggerGetBatchSize);
+        IReadOnlyList<ZabbixTriggerInfo> triggers = [];
+        if (hostIds.Length > 0)
         {
-            throw new TimeoutException(
-                $"Zabbix trigger.get по source-hosts не успел завершиться за {currentZabbixOptions.RequestTimeoutMs} ms. "
-                + $"hostids={hostIds.Length}, batch={currentOptions.TriggerGetBatchSize}, batches={result.TriggerGetBatchCount}. "
-                + "Увеличьте Zabbix:RequestTimeoutMs или уменьшите ZabbixTriggerDependencies:TriggerGetBatchSize.",
-                ex);
-        }
-        finally
-        {
-            triggerGetStopwatch.Stop();
-            result.TriggerGetElapsedMs = (int)triggerGetStopwatch.ElapsedMilliseconds;
+            var triggerGetStopwatch = Stopwatch.StartNew();
+            try
+            {
+                triggers = await GetTriggersByHostIdsWithLookupCacheAsync(
+                    hostIds,
+                    currentOptions.IncludeDisabledTriggers,
+                    currentOptions.TriggerGetBatchSize,
+                    useCache: dryRun,
+                    result,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Zabbix trigger.get по source-hosts не успел завершиться за {currentZabbixOptions.RequestTimeoutMs} ms. "
+                    + $"hostids={hostIds.Length}, batch={currentOptions.TriggerGetBatchSize}, batches={result.TriggerGetBatchCount}. "
+                    + "Увеличьте Zabbix:RequestTimeoutMs или уменьшите ZabbixTriggerDependencies:TriggerGetBatchSize.",
+                    ex);
+            }
+            finally
+            {
+                triggerGetStopwatch.Stop();
+                result.TriggerGetElapsedMs = (int)triggerGetStopwatch.ElapsedMilliseconds;
+            }
         }
 
         result.TriggerCount = triggers.Count;
@@ -372,12 +377,12 @@ public sealed class ZabbixTriggerDependencyApplier(
         if (result.DesiredDependencyCount > currentOptions.MaxDependenciesPerRun)
         {
             result.Errors.Add(
-                $"Рассчитано {result.DesiredDependencyCount} trigger dependencies, лимит ZabbixTriggerDependencies:MaxDependenciesPerRun={currentOptions.MaxDependenciesPerRun}.");
+                $"Рассчитано {result.DesiredDependencyCount} зависимостей триггеров, лимит ZabbixTriggerDependencies:MaxDependenciesPerRun={currentOptions.MaxDependenciesPerRun}.");
         }
 
         foreach (var cycle in FindCycles(result.DesiredDependencies))
         {
-            result.Errors.Add($"Цикл trigger dependencies: {cycle}.");
+            result.Errors.Add($"Цикл зависимостей триггеров: {cycle}.");
         }
 
         result.SampleDependencies.AddRange(result.DesiredDependencies.Take(currentOptions.SampleLimit));
@@ -1742,7 +1747,7 @@ public sealed class ZabbixTriggerDependencyApplier(
         if (matches.Length == 0)
         {
             result.Warnings.Add(
-                $"Для relation {relation.DomainCode} не найден suppression membership target {relation.TargetClassCode}/{relation.TargetLookup}.");
+                $"Для relation {relation.DomainCode} не найден target состава подавления {relation.TargetClassCode}/{relation.TargetLookup}.");
             return null;
         }
 

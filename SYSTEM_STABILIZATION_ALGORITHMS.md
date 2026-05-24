@@ -152,16 +152,23 @@ webhook. Это сделано намеренно: потоковая обраб
 Полный запуск нужен для построения базового состояния:
 
 1. Применить CMDBuild схему.
-2. Создать или обновить правила из шаблонов и связей.
-3. Прогнать текущие source-карточки.
-4. Создать managed CMDBuild aggregation objects and relations.
-5. Опубликовать service graph в Zabbix.
-6. Опубликовать suppression membership/dependencies в Zabbix.
+2. Создать или обновить правила из шаблонов и связей. Для lookup/reference
+   dimensions использовать catalog-driven подготовку, чтобы до полного обхода
+   source-карточек уже были созданы skeleton target-узлы.
+3. Создать managed CMDBuild aggregation objects and relations.
+4. Выполнить `Наложить граф`: положить сервисный граф и skeleton-граф
+   подавления без обхода source-карточек.
+5. Для больших систем запускать пересчет состава по ограниченным областям; для
+   малых систем можно выполнить полный обход source-карточек.
+6. Опубликовать зависимости триггеров подавления; пустые suppression-группы уже
+   имеют aggregate skeleton и не блокируют запуск.
 7. Сформировать начальный membership-state.
 8. Выполнить SLA publication, если SLA уже настроены.
 9. Проверить stale managed objects и coverage snapshot.
 
-После этого операционный режим работает дельтами и scheduled/scoped reconcile.
+После этого операционный режим работает наложением графа, дельтами состава и
+scheduled/scoped reconcile. Полный обход source-карточек остается recovery
+режимом и не предназначен для инсталляций больше 500 объектов.
 
 ## 5. Операционный цикл
 
@@ -247,6 +254,20 @@ stale membership после обычных операционных измене
 
 Такие поля допустимы только если они регулярным выражением сводятся к малому и
 предсказуемому набору значений.
+
+Подготовка шаблонов выбирает стратегию чтения значений:
+
+- `lookup_catalog`: берет значения из CMDBuild lookup metadata и не читает
+  source-карточки.
+- `reference_catalog`: если dimension строится по non-self reference path,
+  например `ARM -> Building.City`, читает карточки конечного класса `Building`.
+  Это позволяет положить базовый граф для 9000 ARM по 353 building/city
+  значениям без полного обхода ARM.
+- `source_scan`: остается для прямых distinct source fields, self-reference,
+  domain path и regex capture, где множество значений действительно известно
+  только через карточки source.
+- `static`: bool, range/list и static list не требуют чтения карточек для
+  подготовки узлов.
 
 Для lookup/reference/domain leaf-значений система разделяет стабильную и
 отображаемую часть:

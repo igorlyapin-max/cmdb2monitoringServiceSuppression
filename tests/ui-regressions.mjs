@@ -229,7 +229,7 @@ function assertStaticUiContracts() {
     'removed legacy menu mode must not remain in UI state.');
   assertNotIncludes(appText, 'renderTechnicalModelMenuVisibility',
     'removed legacy menu visibility renderer must not remain.');
-  assertIncludes(indexText, 'Старые прямые service/suppression пункты меню удалены',
+  assertIncludes(indexText, 'Старые прямые пункты меню сервиса и подавления удалены',
     'model workspace help must explain legacy direct menus were removed.');
   assertIncludes(indexText, 'id="modelWorkspaceLayerSelect"',
     'model workspace must expose service/suppression layer selector.');
@@ -322,7 +322,17 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'data-zabbix-publish-layer',
     'compact Zabbix publication must allow service/suppression/both layer selection.');
   assertIncludes(indexText, 'data-zabbix-publish-scope',
-    'compact Zabbix publication must allow changes/full/manual scope selection.');
+    'compact Zabbix publication must allow graph/changes/full/manual mode selection.');
+  assertIncludes(indexText, '<option value="graph">Наложить граф</option>',
+    'compact Zabbix publication must expose topology-only graph overlay as the default operator mode.');
+  assertIncludes(indexText, '<option value="full">Полный обход источников</option>',
+    'compact Zabbix publication must label full mode as source traversal, not graph overlay.');
+  assertIncludes(appText, "buildMode: scopeMode === 'graph' ? 'graph-overlay' : 'membership'",
+    'compact Zabbix publication must send graph-overlay build mode separately from publishMode.');
+  assertIncludes(appText, 'полный обход источников не предназначен для инсталляций более 500 объектов',
+    'full source traversal mode must show a red operator warning for large installations.');
+  assertIncludes(stylesText, '.status-line.full-warning',
+    'full source traversal warning must have explicit warning styling.');
   assertIncludes(indexText, 'data-zabbix-publish-manual-scope',
     'compact Zabbix publication must expose manual scope input.');
   assertIncludes(indexText, 'data-zabbix-publish-include-sla',
@@ -339,9 +349,9 @@ function assertStaticUiContracts() {
     'legacy direct SLA dry-run button must not remain in markup.');
   assertNotIncludes(indexText, 'id="zabbixSlaPublishButton"',
     'legacy direct SLA publish button must not remain in markup.');
-  assertIncludes(indexText, 'Показать план и детали service-публикации',
+  assertIncludes(indexText, 'Показать план и детали сервисной публикации',
     'service Zabbix apply details must be collapsed behind a details block.');
-  assertIncludes(indexText, 'Показать план и детали suppression-публикации',
+  assertIncludes(indexText, 'Показать план и детали публикации подавления',
     'suppression Zabbix apply details must be collapsed behind a details block.');
   assertIncludes(indexText, 'Показать план подготовки правил',
     'template apply plan must be collapsed behind a details block.');
@@ -375,9 +385,9 @@ function assertStaticUiContracts() {
     'long preflight cycle examples must be collapsed.');
   assertIncludes(indexText, 'Показать графические примеры циклов',
     'long relation graph examples must be collapsed.');
-  assertIncludes(indexText, 'Показать пояснение публикации service',
+  assertIncludes(indexText, 'Показать пояснение публикации сервиса',
     'service Zabbix publication help must be collapsed.');
-  assertIncludes(indexText, 'Показать пояснение публикации suppression',
+  assertIncludes(indexText, 'Показать пояснение публикации подавления',
     'suppression Zabbix publication help must be collapsed.');
   assertIncludes(indexText, 'Показать пояснение подготовки правил',
     'template apply help must be collapsed.');
@@ -389,7 +399,7 @@ function assertStaticUiContracts() {
     'Zabbix preflight diagnostics must be collapsed behind a details block.');
   assertIncludes(indexText, 'Показать план SLA',
     'SLA publication plan must be collapsed behind a details block.');
-  assertIncludes(indexText, 'Показать диагностику trigger dependencies',
+  assertIncludes(indexText, 'Показать диагностику зависимостей триггеров',
     'trigger dependency diagnostics must be collapsed behind a details block.');
   assertIncludes(indexText, 'id="zabbixPreflightDetailFilter"',
     'preflight diagnostics must expose an errors/warnings/all filter.');
@@ -809,7 +819,7 @@ function assertReadinessConfigContracts() {
     'Zabbix stale diagnostics must show visible non-root managed services that reached the root.');
   assertIncludes(appText, 'renderZabbixRootNonRootManagedServices',
     'UI must render root-level non-root managed services as actionable stale diagnostics.');
-  assertIncludes(appText, 'orphan visible nodes',
+  assertIncludes(appText, 'видимых узлов без родителя',
     'Zabbix dry-run plan must show visible service nodes that would be published without parents.');
   assertIncludes(appText, 'managed key: ${escapeHtml(item?.managedKey || \'-\')} · role',
     'Zabbix object plan must expose managed key, role and visibility for topology diagnostics.');
@@ -839,6 +849,20 @@ function assertReadinessConfigContracts() {
     'template-generated rules must be matched by explicit template_generation or legacy generated_from_template.');
   assertIncludes(cmdbConfigBuilderText, 'TargetLookup = target.ManagedKey',
     'service-object-to-template topology must link to generated aggregate managed keys, not only CMDBuild card ids.');
+  assertIncludes(cmdbConfigBuilderText, 'BuildMode',
+    'current Zabbix apply must accept a build mode separate from publish mode.');
+  assertIncludes(cmdbConfigBuilderText, 'IsGraphOverlayBuildMode',
+    'current Zabbix apply must have a graph overlay mode that skips source-card traversal.');
+  assertIncludes(cmdbConfigBuilderText, 'BuildSuppressionTopologyCommandPlansAsync',
+    'graph overlay must build suppression skeleton targets and relations from CMDBuild managed objects.');
+  assertIncludes(cmdbConfigBuilderText, 'SuppressionTopologyDirection',
+    'suppression graph overlay must preserve cause/dependent relation direction.');
+  assertIncludes(cmdbConfigBuilderText, 'IsManagedServiceObjectClass',
+    'service graph overlay must include all managed service target classes, not only manual platform services.');
+  assertIncludes(cmdbConfigBuilderText, 'исходные карточки CMDBuild не читаются',
+    'graph overlay progress must explicitly say source cards are not read.');
+  assertIncludes(serverText, 'normalizeZabbixBuildMode',
+    'monitoring UI BFF must forward graph-overlay build mode to cmdbconfigbuilder.');
   assertIncludes(cmdbConfigBuilderText, 'PublishPendingZabbixPlansAsync',
     'current Zabbix apply must publish only after the full desired graph is built and validated.');
   assertIncludes(cmdbConfigBuilderText, 'ApplyZabbixGraphDirectAsync',
@@ -899,7 +923,7 @@ function assertReadinessConfigContracts() {
     'Zabbix apply UI must explain why publication is disabled before a successful graph check.');
   assertIncludes(appText, 'Проверка графа',
     'Zabbix apply UI must show the current graph-check gate state to the operator.');
-  assertIncludes(indexText, 'Scope из последних изменений',
+  assertIncludes(indexText, 'Область из последних изменений',
     'Zabbix apply UI must show pending dirty scope from recent rule/template changes.');
   assertIncludes(indexText, 'data-zabbix-dirty-scope-use',
     'Zabbix apply UI must let operators paste dirty scope into the publication scope field.');
@@ -907,7 +931,7 @@ function assertReadinessConfigContracts() {
     'Zabbix apply UI must let operators preview scope before a long publication run.');
   assertIncludes(indexText, 'data-zabbix-apply-scope-require-match',
     'Zabbix apply UI must expose strict scope matching before publication.');
-  assertIncludes(indexText, 'Не запускать, если заполненный scope не найден',
+  assertIncludes(indexText, 'Не запускать, если заполненная область не найдена',
     'strict scope matching must be explained in operator language.');
   assertIncludes(appText, 'previewZabbixApplyScope',
     'Zabbix apply UI must call a lightweight scope preview endpoint.');
@@ -919,11 +943,11 @@ function assertReadinessConfigContracts() {
     'dirty Zabbix scope journal must be loaded on UI startup.');
   assertIncludes(appText, 'loadServerZabbixDirtyScopes',
     'dirty Zabbix scope journal must be synchronized with server-side durable scopes.');
-  assertIncludes(appText, 'Dirty scope failed',
+  assertIncludes(appText, 'Ошибка области последних изменений',
     'UI must surface failed server-side dirty scopes instead of hiding them as processed work.');
   assertIncludes(appText, 'ensureZabbixDirtyScopeDefault',
     'Zabbix apply UI must use pending server-side dirty scopes as the default scope when the input is empty.');
-  assertIncludes(appText, 'подставлен из dirty scopes',
+  assertIncludes(appText, 'подставлена из последних изменений',
     'Zabbix apply UI must explain when scope was automatically taken from dirty scopes.');
   assertIncludes(serverText, '/api/zabbix/runtime-storage/dirty-scopes',
     'monitoring UI BFF must proxy server-side Zabbix dirty scopes.');
@@ -939,6 +963,8 @@ function assertReadinessConfigContracts() {
     'cmdbconfigbuilder must accept strict scope matching in current apply requests.');
   assertIncludes(cmdbConfigBuilderText, 'CurrentApplyScopeMatchError',
     'cmdbconfigbuilder must stop unmatched strict scope before source-card reads.');
+  assertIncludes(cmdbConfigBuilderText, '|| IsGraphOverlayBuildMode(request)',
+    'graph overlay must not be blocked by source-scope prefilter matching before target skeleton commands exist.');
   assertIncludes(appText, 'markZabbixDirtyScopeFromTemplateApplyResult',
     'template materialization must mark affected Zabbix publication scope.');
   assertIncludes(appText, 'markZabbixDirtyScopeForLinkRelationChange',
@@ -953,7 +979,7 @@ function assertReadinessConfigContracts() {
     'service object scope prefilter must account for service object template links.');
   assertIncludes(appText, 'serviceObjectMatchedCount',
     'Zabbix apply report must expose service-object scope prefilter counters.');
-  assertIncludes(cmdbConfigBuilderText, 'Scope сократил подготовку',
+  assertIncludes(cmdbConfigBuilderText, 'Область сократила подготовку',
     'current Zabbix apply scope prefilter must report how much preparation was reduced.');
   assertIncludes(cmdbConfigBuilderText, 'scopePrefilter.Applied',
     'current Zabbix apply must apply the prefiltered rule set only when safe static matching succeeded.');
@@ -1236,6 +1262,8 @@ function assertReadinessConfigContracts() {
     'suppression source trigger dependency selection must be separate from aggregate state selection.');
   assertIncludes(zabbixTriggerDependencyApplierText, 'LoadAggregateItemDiagnosticsAsync',
     'suppression dependency reconcile must load calculated item diagnostics after Zabbix recalculation.');
+  assertIncludes(zabbixTriggerDependencyApplierText, 'skeleton-граф групп без зависимостей от source-триггеров',
+    'suppression dependency reconcile must allow empty skeleton groups without source hosts.');
   assertIncludes(zabbixTriggerDependencyApplierText, 'EvaluateAggregateComplexityLimits',
     'suppression dependency reconcile must guard aggregate formula complexity before publishing.');
   assertIncludes(zabbixTriggerDependencyApplierText, 'AggregateComplexityWarningRatio',
@@ -1282,7 +1310,7 @@ function assertReadinessConfigContracts() {
     'suppression Zabbix apply must gate Zabbix Services creation behind configuration.');
   assertIncludes(indexText, 'Zabbix Services по умолчанию не создаются',
     'suppression Zabbix apply UI must explain that suppression does not create Zabbix Services by default.');
-  assertIncludes(appText, 'suppression membership',
+  assertIncludes(appText, 'состав подавления',
     'suppression Zabbix apply UI must render membership-oriented status.');
   assertIncludes(zabbixProgramText, 'PendingSources',
     'zabbixconfig2api must retain unready source cards as pending membership diagnostics.');
@@ -1819,6 +1847,85 @@ function assertTemplateMaterializationContracts() {
     'a template matching only empty source classes must keep the no-card message as a warning.');
   assert(emptyOnlyPlan.generatedRules.length === 0,
     'a template matching only empty source classes must not generate rules.');
+
+  api.state.cmdbClasses = [
+    { code: 'ARM', description: 'АРМ' },
+    { code: 'Building', description: 'Здание' }
+  ];
+  api.state.cmdbClassSchemas = [
+    {
+      code: 'ARM',
+      attributes: [{ code: 'locationFloorBuilding', type: 'reference', targetClassCode: 'Building', description: 'Здание' }]
+    },
+    {
+      code: 'Building',
+      attributes: [{ code: 'City', type: 'string', description: 'Город' }]
+    }
+  ];
+  api.state.cmdbSourceDomains = [];
+  api.state.cmdbClassInstances = [
+    { layer: 'Source', classCode: 'Building', cards: [{ Id: 'b1', City: 'City04' }, { Id: 'b2', City: 'City05' }] }
+  ];
+  api.state.templateDocuments.suppression = {
+    version: '1',
+    layer: 'suppression',
+    templates: [
+      materializationTemplate('arm-by-building-city', 'АРМ по городам зданий', '(?i)^АРМ$', 'C2M_SuppressionResource')
+    ]
+  };
+  const referenceCatalogPlan = api.templateMaterializationPlan('suppression', { safe: true });
+  assert(referenceCatalogPlan.errors.length === 0,
+    `reference catalog dimension must not require ARM source-card scan: ${referenceCatalogPlan.errors.join('; ')}`);
+  assert(referenceCatalogPlan.generatedRules.length === 2,
+    `reference catalog dimension must generate one rule per Building.City value, got ${referenceCatalogPlan.generatedRules.length}.`);
+  assert(referenceCatalogPlan.generatedRules.every((rule) =>
+    rule.template_generation?.dimension_read_strategy === 'reference_catalog'),
+    'reference path dimensions must persist reference_catalog strategy in generated rule metadata.');
+  assert(referenceCatalogPlan.templates[0]?.dimensions[0]?.read_strategy === 'reference_catalog',
+    'template materialization plan must expose reference_catalog read strategy for ARM -> Building.City.');
+
+  api.state.cmdbClasses = [{ code: 'ARM', description: 'АРМ' }];
+  api.state.cmdbClassSchemas = [
+    {
+      code: 'ARM',
+      attributes: [{ code: 'Status', type: 'lookup', lookupTypeCode: 'AssetStatus', description: 'Статус' }]
+    }
+  ];
+  api.state.cmdbClassInstances = [];
+  api.state.lookups = [
+    {
+      code: 'AssetStatus',
+      values: [
+        { code: 'active', description: 'Активен' },
+        { code: 'reserve', description: 'Резерв' }
+      ]
+    }
+  ];
+  api.state.templateDocuments.suppression = {
+    version: '1',
+    layer: 'suppression',
+    templates: [
+      {
+        ...materializationTemplate('arm-by-status', 'АРМ по статусу', '(?i)^АРМ$', 'C2M_SuppressionResource'),
+        population_dimension: {
+          enabled: true,
+          type: 'source_lookup',
+          source_field: 'Status',
+          key_template: '${template.id}:${dimension.key}',
+          name_template: '${dimension.name}',
+          max_rules: 1000
+        }
+      }
+    ]
+  };
+  const lookupCatalogPlan = api.templateMaterializationPlan('suppression', { safe: true });
+  assert(lookupCatalogPlan.errors.length === 0,
+    `lookup catalog dimension must not require ARM source-card scan: ${lookupCatalogPlan.errors.join('; ')}`);
+  assert(lookupCatalogPlan.generatedRules.length === 2,
+    `lookup catalog dimension must generate one rule per lookup value, got ${lookupCatalogPlan.generatedRules.length}.`);
+  assert(lookupCatalogPlan.generatedRules.every((rule) =>
+    rule.template_generation?.dimension_read_strategy === 'lookup_catalog'),
+    'lookup dimensions must persist lookup_catalog strategy in generated rule metadata.');
 }
 
 function materializationTemplate(templateId, name, sourceRegex, targetClass) {

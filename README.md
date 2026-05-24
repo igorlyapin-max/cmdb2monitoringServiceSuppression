@@ -549,6 +549,12 @@ Suppression schema is intentionally uniform:
   field values, lookup values, bool, reference/domain paths, regex capture
   from a source field, range/list generators such as `00-99`, static lists
   with `key|name|condition-regex`, and a legacy one-rule-per-class mode.
+- Dimension preparation chooses the cheapest safe read strategy. Lookup
+  dimensions read the CMDBuild lookup catalog. A distinct field that is reached
+  through a non-self reference path, for example `ARM -> Building.City`, reads
+  the referenced catalog class (`Building`) and does not scan all `ARM` cards.
+  Direct source fields, self-references, domain paths, and regex capture fall
+  back to `source_scan`.
 - Operators should fill population fields from top to bottom. First choose the
   template `Source class regex` and refresh the CMDBuild catalog, then choose
   the dimension type. The UI hides fields that do not participate in the
@@ -572,13 +578,13 @@ Suppression schema is intentionally uniform:
 - The template editor shows a live `dimension.*` preview inside the
   `What is dimension.*` help block. It renders the first calculated
   `dimension.key`, `dimension.value`, `dimension.name`, `dimension.regexKey`,
-  and target key. Distinct-field and regex-capture previews depend on the
-  source-card cache; the UI tries to load the needed candidate and reference
-  cards automatically when the preview has enough field information.
-- During template application, CMDB path fields used by population dimensions
-  also load intermediate reference classes and resolve the final leaf value.
-  For example, `locationFloorBuildingCity` is read through a path such as
-  `ARM.Location.Floor.Building.City`, not as a direct source-card property.
+  target key, and the selected read strategy. Distinct-field and regex-capture
+  previews depend on source-card cache only when the strategy is `source_scan`;
+  `reference_catalog` previews load only the final referenced class.
+- During template application, CMDB reference-path dimensions can be prepared
+  from the final referenced class. For example, `locationFloorBuildingCity`
+  can read `Building.City` values from `Building` cards before any full
+  traversal of `ARM` cards.
 - Population dimension field ownership:
   - `Type`: operator-selected source of dimension values.
   - `Source attribute/path`: operator-selected final leaf source field for
@@ -843,14 +849,16 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
   the source and updates the cache.
   Hovering over CMDBuild/Zabbix traffic lights shows the cache timestamp and
   cache lifetime since it was written.
-- `Модель -> Применить в Zabbix` runs the same current-card
-  evaluation for the selected layer. The technical service/suppression apply screens run the same
-  evaluation only for one layer. `Проверить изменения ...` builds the desired
-  graph without writes and, with direct apply configured, shows the diff against
-  the last applied graph snapshot. `Опубликовать изменения ...` sends only
-  added/changed graph objects to Zabbix; `Проверить полный граф ...` and
-  `Опубликовать полный граф ...` intentionally replay everything. Removed
-  desired objects are reported as stale and are not deleted automatically.
+- `Модель -> Применить в Zabbix` publishes the selected layer or both layers.
+  The default `Наложить граф` mode reads existing managed target cards and
+  CMDBuild relations, builds a skeleton graph, and does not read source cards.
+  Use it for large first startups and topology-only changes. `Изменения
+  состава` rebuilds source membership from rules/source cards and, with direct
+  apply configured, shows the diff against the last applied graph snapshot.
+  `Полный обход источников` intentionally replays everything after reading
+  source cards; it is a recovery mode and is not intended for routine runs above
+  500 source objects. Removed desired objects are reported as stale and are not
+  deleted automatically.
   Publication reuses the same graph check and blocks before any Zabbix write or
   Kafka publish when it finds orphan visible service nodes, cycles, conflicting
   managed keys, or source-read/auth errors. With
@@ -887,12 +895,12 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
   The UI requires a successful graph check in the current session before
   enabling publication, and the backend repeats blocking graph validation before
   any Zabbix commands are sent.
-  `Scope публикации` can restrict direct Zabbix apply to selected managed keys,
+  `Область публикации` can restrict direct Zabbix apply to selected managed keys,
   rule ids, or names. Service scope includes the matched node, parents, and
   children; suppression scope includes the connected relation chain. Depth `0`
-  means unlimited. `Scope из последних изменений` is a local UI helper that is
+  means unlimited. `Область из последних изменений` is a local UI helper that is
   filled from changed static rules, managed relations, and template
-  materialization results; the operator can paste it into scope and run the
+  materialization results; the operator can paste it into the area field and run the
   normal check/publish sequence. When scope matches static rule metadata,
   `cmdbconfigbuilder` narrows selected rules and source classes before loading
   CMDBuild cards. Service-object scope, for example a business service name,
@@ -901,12 +909,12 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
   has no linked aggregate/template rules, source-card reading is skipped and
   only service topology is prepared. When scope cannot be matched, the backend
   keeps the full preparation scan and only the downstream Zabbix graph apply is
-  scoped. `Проверить scope` performs this matching as a separate preview: it
+  scoped. `Проверить область` performs this matching as a separate preview: it
   reports the selected rules/source classes without reading source cards and
-  without publishing anything. The UI default `Не запускать, если заполненный
-  scope не найден...` sends `RequireZabbixScopeMatch`; with non-empty unmatched
+  without publishing anything. The UI default `Не запускать, если заполненная
+  область не найдена...` sends `RequireZabbixScopeMatch`; with non-empty unmatched
   scope, `cmdbconfigbuilder` stops before the full CMDBuild scan. The
-  `Scope из последних изменений` hint is persisted only in the browser-local
+  `Область из последних изменений` hint is persisted only in the browser-local
   journal `cmdb2monitoring.serviceSuppression.zabbixDirtyScope.v1`, not in
   conversion configs or microservice state.
   The applier updates membership state, upserts service nodes with parents,
@@ -1020,13 +1028,13 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
   publication is a separate Webhooks action.
 - `Управление правилами -> Подготовить и сохранить правила`
   contains the `Проверить шаблоны` preflight step before materializing
-  templates. It loads the needed source cards, calculates `dimension.*`, shows
-  generated-rule and managed-relation create/update/remove counts, target
-  attributes, and blocking errors such as empty dimensions, missing
-  domains/targets, or duplicate generated rule IDs. A source class with
-  successfully loaded but empty cards is only a warning; a missing source
-  field/path is still blocking because the template is incompatible with that
-  source schema.
+  templates. It loads only the classes required by the dimension read strategy,
+  calculates `dimension.*`, shows generated-rule and managed-relation
+  create/update/remove counts, target attributes, and blocking errors such as
+  empty dimensions, missing domains/targets, or duplicate generated rule IDs.
+  A source class with successfully loaded but empty cards is only a warning
+  when that class really had to be scanned; a missing source field/path is
+  still blocking because the template is incompatible with that source schema.
 - `Управление правилами -> Контроль модели` is the compact readiness screen.
   It builds a normalized findings list for sources, templates, relations,
   graph, Zabbix, runtime changes, and microservices. The top surface shows

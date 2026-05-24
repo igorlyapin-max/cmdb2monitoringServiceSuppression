@@ -2317,6 +2317,11 @@ textarea {
   color: #b42318;
 }
 
+.status-line.full-warning {
+  color: #b42318;
+  font-weight: 700;
+}
+
 .error-text {
   color: #b42318;
 }

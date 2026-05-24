@@ -710,6 +710,7 @@ function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
     suppressionModelRoot: stringValue(body?.suppressionModelRoot),
     zabbixCommandApplyUrl: directApplyUrl,
     zabbixPublishMode: stringValue(body?.publishMode || body?.zabbixPublishMode) || 'changes',
+    buildMode: normalizeZabbixBuildMode(body?.buildMode || body?.zabbixBuildMode),
     zabbixScopeKeys: Array.isArray(body?.scopeKeys) ? body.scopeKeys.map((item) => stringValue(item)).filter(Boolean) : [],
     zabbixScopeDepth: Number.isInteger(body?.scopeDepth) ? body.scopeDepth : 0,
     requireZabbixScopeMatch: body?.requireScopeMatch === undefined
@@ -720,6 +721,16 @@ function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
     maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
     eventType: stringValue(body?.eventType) || 'UPDATE'
   };
+}
+
+function normalizeZabbixBuildMode(value) {
+  const normalized = stringValue(value).toLowerCase();
+  return normalized === 'graph'
+    || normalized === 'graph-overlay'
+    || normalized === 'topology'
+    || normalized === 'topology-only'
+    ? 'graph-overlay'
+    : 'membership';
 }
 
 function sendJson(response, statusCode, body) {

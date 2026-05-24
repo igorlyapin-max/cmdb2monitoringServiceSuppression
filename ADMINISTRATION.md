@@ -120,18 +120,23 @@ Zabbix application is split by layer:
 | Service | `Модель -> Применить в Zabbix`, layer `Сервис` | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` |
 | Suppression | `Модель -> Применить в Zabbix`, layer `Каскадное подавление` | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` |
 
-The UI evaluates and publishes each layer in two modes:
+The UI evaluates and publishes each layer in three modes:
 
-- `Проверить изменения ...` / `Опубликовать изменения ...` is the routine mode.
-  `cmdbconfigbuilder` still builds the current desired graph from CMDBuild cards
-  and rules, but `zabbixconfig2api` compares it with the persisted applied graph
+- `Наложить граф` is the routine topology mode. `cmdbconfigbuilder` reads
+  existing managed target cards and CMDBuild relations for the service and
+  suppression layers, builds skeleton graph commands, and does not read source
+  cards. Use it for first startup of large installations and for topology-only
+  changes.
+- `Изменения состава` rebuilds source membership from rules and source cards,
+  then `zabbixconfig2api` compares the graph with the persisted applied graph
   snapshot in `ZabbixApplyState:FilePath` and sends to Zabbix only added or
   changed graph objects. The report shows `desired`, previously applied objects,
   added, changed, unchanged, stale/removed, and `к публикации`.
-- `Проверить полный граф ...` / `Опубликовать полный граф ...` intentionally
-  replays the whole desired graph. Use it after applier state loss, manual
-  Zabbix repair, deployment recovery, or when an operator wants to force a full
-  reconciliation.
+- `Полный обход источников` intentionally replays the whole desired graph after
+  reading source cards. Treat it as recovery mode after applier state loss,
+  manual Zabbix repair, or deployment recovery. It is not intended for routine
+  runs on installations above 500 source objects; use `Наложить граф` and
+  scoped membership recalculation instead.
 
 Each Zabbix apply screen also has `Scope публикации`. Leave it empty for the
 whole layer. To publish a smaller part of the graph, enter one or more managed
@@ -155,7 +160,9 @@ be matched, preparation falls back to the full rule/card scan and the later
 Before starting a long check or publication, press `Проверить scope`: the UI
 calls `cmdbconfigbuilder /rules/apply-current/scope-preview`, shows matched
 rules/source classes and the same `scope подготовки` counters, but does not
-read source cards and does not send commands to Kafka or Zabbix.
+read source cards and does not send commands to Kafka or Zabbix. In
+`Наложить граф` mode the same scope is applied after target skeleton commands
+are built, so a topology change can be checked without source-card reads.
 The checkbox `Не запускать, если заполненный scope не найден...` is enabled by
 default. With a non-empty scope it makes `cmdbconfigbuilder` stop with
 `scope_not_matched` before source-card reads when keys match neither static
@@ -895,8 +902,9 @@ three explicit actions:
 
 Before materialization, open `Управление правилами -> Создать/обновить правила
 по шаблонам и связям` and run `Проверить шаблоны`. The check loads the needed
-source cards, computes `dimension.*`, shows create/update/remove counts for
-generated rules and managed relations, and blocks materialization while
+classes for the selected dimension read strategies, computes `dimension.*`,
+shows create/update/remove counts for generated rules and managed relations,
+and blocks materialization while
 template/domain/target errors remain. A source class with successfully loaded
 but empty cards is reported only as a warning and does not block
 materialization; a missing source field/path still blocks because the template
@@ -973,6 +981,12 @@ Administrative constraints for that workflow:
   rules. Dimension values can come from lookup/bool catalogs, source-card
   distinct values, reference/domain paths, regex capture, range/list
   generators, or static lists.
+- Dimension preparation selects a read strategy per candidate class. `lookup`
+  uses the CMDBuild lookup catalog. A non-self reference path such as
+  `ARM -> Building.City` uses `reference_catalog` and reads `Building` cards
+  only, so a 9000-card ARM class does not have to be scanned just to enumerate
+  353 building/city values. Direct source fields, self-references, domain
+  paths, and regex capture still use `source_scan`.
 - Population dimension fields are intentionally conditional. Operators first
   select the dimension type; then the UI shows only the fields that affect that
   type. `Source attribute/path` is edited for distinct, lookup, bool, and
@@ -999,13 +1013,14 @@ Administrative constraints for that workflow:
   values in keys or relation matching is a bad practice and the template audit
   warns about it.
 - The Monitoring UI help block for `dimension.*` includes a live preview of the
-  first calculated dimension values and target keys. For distinct-field and
-  regex-capture dimensions the UI tries to load the needed candidate and
-  reference cards automatically when the preview has enough field information.
+  first calculated dimension values, target keys, and read strategy. For
+  `source_scan` dimensions the UI loads source cards. For `reference_catalog`
+  it loads only the final referenced class; for `lookup_catalog` it reads only
+  lookup metadata.
 - When a population field is a CMDB path, for example
-  `locationFloorBuildingCity`, template application loads the intermediate
-  reference classes and resolves the final leaf attribute before creating
-  generated rules.
+  `locationFloorBuildingCity`, template application prefers catalog-driven
+  preparation from the final referenced class. It falls back to full source
+  scan only when the path cannot be represented as a non-self reference catalog.
 - The population `Key template` and `Dimension name template` are advanced
   fields with safe defaults. Keep `${template.id}:${dimension.key}` when all
   matched source classes should share one target object per dimension value.

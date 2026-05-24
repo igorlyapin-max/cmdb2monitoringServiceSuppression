@@ -130,7 +130,7 @@
             <div id="modelWorkspaceActions" class="model-workspace-grid"></div>
             <details class="details-section compact-details">
               <summary>Показать принцип единого слоя</summary>
-              <p>Сервис и подавление остаются разными слоями данных, но основные действия сведены к одному набору: схема, статические правила, шаблоны, связи и публикация в Zabbix. Слой-специфичные операции остаются отдельными: объекты сервиса и SLA доступны только для service, trigger dependencies доступны только для suppression. Старые прямые service/suppression пункты меню удалены; диагностические детали открываются из соответствующих единых экранов.</p>
+              <p>Сервис и подавление остаются разными слоями данных, но основные действия сведены к одному набору: схема, статические правила, шаблоны, связи и публикация в Zabbix. Слой-специфичные операции остаются отдельными: объекты сервиса и SLA доступны только для сервиса, зависимости триггеров доступны только для подавления. Старые прямые пункты меню сервиса и подавления удалены; диагностические детали открываются из соответствующих единых экранов.</p>
             </details>
           </section>
         </section>
@@ -170,13 +170,13 @@
         <section id="modelZabbixApplyView" class="view hidden">
           <div class="section-heading">
             <h2>Публикация в Zabbix</h2>
-            <p>Единый операторский сценарий публикации service-графа, SLA, suppression membership и trigger dependencies. Старые слой-специфичные экраны остаются как технические детали.</p>
+            <p>Единый операторский сценарий публикации сервисного графа, SLA, состава каскадного подавления и зависимостей триггеров. Старые слой-специфичные экраны остаются как технические детали.</p>
           </div>
           <section class="panel">
             <div class="zabbix-publish-console" data-zabbix-publish-console data-default-layer="service">
               <div>
                 <strong>Публикация в Zabbix</strong>
-                <span>Выберите слой, scope и выполните проверку или публикацию. Dry-run выполняется кнопкой <strong>Проверить</strong>.</span>
+                <span>Выберите слой, режим и выполните проверку или публикацию. Проверка без записи выполняется кнопкой <strong>Проверить</strong>.</span>
               </div>
               <label class="select-field">
                 <span>Слой</span>
@@ -187,11 +187,12 @@
                 </select>
               </label>
               <label class="select-field">
-                <span>Scope</span>
+                <span>Режим</span>
                 <select data-zabbix-publish-scope>
-                  <option value="changes">Изменения</option>
-                  <option value="full">Полный граф</option>
-                  <option value="manual">Ручной scope</option>
+                  <option value="graph">Наложить граф</option>
+                  <option value="changes">Изменения состава</option>
+                  <option value="full">Полный обход источников</option>
+                  <option value="manual">Ручная область</option>
                 </select>
               </label>
               <div class="sync-actions">
@@ -199,16 +200,16 @@
                 <button class="primary-button" type="button" data-zabbix-publish-apply>Опубликовать</button>
               </div>
               <label class="zabbix-publish-manual-scope hidden">
-                <span>Ручной scope</span>
-                <textarea data-zabbix-publish-manual-scope rows="2" placeholder="Managed key / rule id / имя. Для двух слоев значение будет подставлено в оба технических scope-поля."></textarea>
+                <span>Ручная область</span>
+                <textarea data-zabbix-publish-manual-scope rows="2" placeholder="Managed key / rule id / имя. Для двух слоев значение будет подставлено в оба технических поля области."></textarea>
               </label>
               <label class="checkbox-line zabbix-publish-substep">
                 <input type="checkbox" data-zabbix-publish-include-sla checked>
-                <span>После service-графа выполнить SLA</span>
+                <span>После сервисного графа выполнить SLA</span>
               </label>
               <label class="checkbox-line zabbix-publish-substep">
                 <input type="checkbox" data-zabbix-publish-include-dependencies checked>
-                <span>После suppression-графа выполнить trigger dependencies</span>
+                <span>После графа подавления выполнить зависимости триггеров</span>
               </label>
               <p class="status-line" data-zabbix-publish-status></p>
               <div class="zabbix-publish-progress" data-zabbix-publish-progress></div>
@@ -217,10 +218,10 @@
             <details class="details-section compact-details">
               <summary>Показать технические детали публикации</summary>
               <div class="rule-summary">
-                <span>Здесь открываются подробные слой-специфичные экраны с полным планом, scope-полями, stale cleanup, SLA и dependencies. Используйте их для диагностики, когда компактный сценарий сообщает ошибку.</span>
+                <span>Здесь открываются подробные слой-специфичные экраны с полным планом, полями области, очисткой устаревших объектов, SLA и зависимостями. Используйте их для диагностики, когда компактный сценарий сообщает ошибку.</span>
                 <div id="modelZabbixApplyTechnicalActions" class="rule-summary-actions">
-                  <button class="secondary-button" type="button" data-model-zabbix-technical-view="serviceZabbixApply">Открыть детали service</button>
-                  <button class="secondary-button" type="button" data-model-zabbix-technical-view="suppressionZabbixApply">Открыть детали suppression</button>
+                  <button class="secondary-button" type="button" data-model-zabbix-technical-view="serviceZabbixApply">Открыть детали сервиса</button>
+                  <button class="secondary-button" type="button" data-model-zabbix-technical-view="suppressionZabbixApply">Открыть детали подавления</button>
                 </div>
               </div>
             </details>
@@ -358,7 +359,7 @@
               </label>
               <div class="rule-attribute-editor rule-editor-wide">
                 <span class="field-label">Атрибуты объекта</span>
-                <p class="selection-filter-help">Заполняются только атрибуты выбранного типа. Общие поля агрегации здесь скрыты, потому что эти объекты создаются вручную и не разворачиваются из source-карточек.</p>
+                <p class="selection-filter-help">Заполняются только атрибуты выбранного типа. Общие поля агрегации здесь скрыты, потому что эти объекты создаются вручную и не разворачиваются из исходных карточек.</p>
                 <div id="serviceObjectAttributeList" class="rule-attribute-list"></div>
               </div>
             </div>
@@ -683,6 +684,7 @@
                     <div><dt><code>${dimension.displayValue}</code></dt><dd>отображаемое значение lookup/reference/domain leaf: description/name/label. Используйте только в именах и описаниях.</dd></div>
                     <div><dt><code>${dimension.regexKey}</code></dt><dd>экранированный <code>${dimension.key}</code> для вставки в <strong>регулярное выражение отбора карточек-источников</strong>.</dd></div>
                   </dl>
+                  <p class="selection-filter-help">Предпросмотр показывает стратегию чтения: lookup catalog и reference catalog не сканируют карточки класса-источника; source scan нужен только для уникальных значений самого source и regex-вырезки.</p>
                   <div id="serviceTemplatePopulationPreview" class="template-dimension-preview" data-template-population-preview></div>
                 </details>
                 <div class="template-dimension-grid">
@@ -854,6 +856,7 @@
                     <div><dt><code>${dimension.displayValue}</code></dt><dd>отображаемое значение lookup/reference/domain leaf: description/name/label. Используйте только в именах и описаниях.</dd></div>
                     <div><dt><code>${dimension.regexKey}</code></dt><dd>экранированный <code>${dimension.key}</code> для вставки в <strong>регулярное выражение отбора карточек-источников</strong>.</dd></div>
                   </dl>
+                  <p class="selection-filter-help">Предпросмотр показывает стратегию чтения: lookup catalog и reference catalog не сканируют карточки класса-источника; source scan нужен только для уникальных значений самого source и regex-вырезки.</p>
                   <div id="suppressionTemplatePopulationPreview" class="template-dimension-preview" data-template-population-preview></div>
                 </details>
                 <div class="template-dimension-grid">
@@ -952,7 +955,7 @@
         <section id="zabbixPreflightView" class="view hidden">
           <div class="section-heading">
             <h2>Контроль модели</h2>
-            <p>Единый итог по шаблонам, generated rules, управляемым связям, циклам, dirty scopes и готовности к Zabbix. Техническая проверка графа остается ниже как деталь.</p>
+            <p>Единый итог по шаблонам, generated rules, управляемым связям, циклам, областям последних изменений и готовности к Zabbix. Техническая проверка графа остается ниже как деталь.</p>
           </div>
           <section class="panel model-control-panel">
             <div class="sync-actions">
@@ -1092,9 +1095,9 @@
         <section id="serviceZabbixApplyView" class="view hidden" data-zabbix-apply-layer="service">
           <div class="section-heading">
             <h2>Применить сервисную модель в Zabbix</h2>
-            <p>Проверка и публикация service-графа, SLA и связанных деталей в Zabbix.</p>
+            <p>Проверка и публикация сервисного графа, SLA и связанных деталей в Zabbix.</p>
             <details class="details-section compact-details">
-              <summary>Показать пояснение публикации service</summary>
+              <summary>Показать пояснение публикации сервиса</summary>
               <p>Если в UI настроен прямой endpoint <code>zabbixconfig2api /commands/apply</code>, кнопка применяет команды сразу; иначе команды отправляются в отдельный Zabbix-топик. Этот шаг создает дерево Zabbix Services и связи parents/children, включая ручные сервисные объекты и их CMDBuild-связи с агрегатами; выполняйте его до публикации SLA.</p>
             </details>
           </div>
@@ -1102,7 +1105,7 @@
             <div class="zabbix-publish-console" data-zabbix-publish-console data-default-layer="service">
               <div>
                 <strong>Публикация в Zabbix</strong>
-                <span>Один сценарий: выберите слой, scope и выполните проверку или публикацию. Подробные кнопки ниже оставлены как технические детали.</span>
+                <span>Один сценарий: выберите слой, режим и выполните проверку или публикацию. Подробные кнопки ниже оставлены как технические детали.</span>
               </div>
               <label class="select-field">
                 <span>Слой</span>
@@ -1113,11 +1116,12 @@
                 </select>
               </label>
               <label class="select-field">
-                <span>Scope</span>
+                <span>Режим</span>
                 <select data-zabbix-publish-scope>
-                  <option value="changes">Изменения</option>
-                  <option value="full">Полный граф</option>
-                  <option value="manual">Ручной scope</option>
+                  <option value="graph">Наложить граф</option>
+                  <option value="changes">Изменения состава</option>
+                  <option value="full">Полный обход источников</option>
+                  <option value="manual">Ручная область</option>
                 </select>
               </label>
               <div class="sync-actions">
@@ -1125,16 +1129,16 @@
                 <button class="primary-button" type="button" data-zabbix-publish-apply>Опубликовать</button>
               </div>
               <label class="zabbix-publish-manual-scope hidden">
-                <span>Ручной scope</span>
-                <textarea data-zabbix-publish-manual-scope rows="2" placeholder="Managed key / rule id / имя. Для двух слоев значение будет подставлено в оба технических scope-поля."></textarea>
+                <span>Ручная область</span>
+                <textarea data-zabbix-publish-manual-scope rows="2" placeholder="Managed key / rule id / имя. Для двух слоев значение будет подставлено в оба технических поля области."></textarea>
               </label>
               <label class="checkbox-line zabbix-publish-substep">
                 <input type="checkbox" data-zabbix-publish-include-sla checked>
-                <span>После service-графа выполнить SLA</span>
+                <span>После сервисного графа выполнить SLA</span>
               </label>
               <label class="checkbox-line zabbix-publish-substep">
                 <input type="checkbox" data-zabbix-publish-include-dependencies checked>
-                <span>После suppression-графа выполнить trigger dependencies</span>
+                <span>После графа подавления выполнить зависимости триггеров</span>
               </label>
               <p class="status-line" data-zabbix-publish-status></p>
               <div class="zabbix-publish-progress" data-zabbix-publish-progress></div>
@@ -1142,7 +1146,7 @@
             <div class="sync-grid" data-zabbix-apply-summary></div>
             <p class="status-line" data-zabbix-apply-status></p>
             <div class="rule-summary">
-              <span class="structure-mark">Scope публикации</span>
+              <span class="structure-mark">Область публикации</span>
               <label>
                 <span>Managed key / rule id / имя</span>
                 <textarea data-zabbix-apply-scope-keys rows="2" placeholder="Пусто = весь слой. Например: Рабочие места филиала или network-access-zone-by-city:City48"></textarea>
@@ -1153,23 +1157,23 @@
               </label>
               <label class="checkbox-line">
                 <input type="checkbox" data-zabbix-apply-scope-require-match checked>
-                <span>Не запускать, если заполненный scope не найден в правилах или сервисных объектах</span>
+                <span>Не запускать, если заполненная область не найдена в правилах или сервисных объектах</span>
               </label>
-              <span>0 означает без ограничения. Для service публикуется выбранный узел, его родители и потомки; для suppression - связанная цепочка.</span>
+              <span>0 означает без ограничения. Для сервиса публикуется выбранный узел, его родители и потомки; для подавления - связанная цепочка.</span>
               <div class="scope-dirty-block">
-                <span class="structure-mark">Scope из последних изменений</span>
+                <span class="structure-mark">Область из последних изменений</span>
                 <div data-zabbix-dirty-scope-summary>
-                  <span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>
+                  <span>Область по последним изменениям пустая. Заполните область вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>
                 </div>
                 <div class="rule-summary-actions">
-                  <button class="secondary-button compact-button" type="button" data-zabbix-scope-preview>Проверить scope</button>
-                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-use disabled>Подставить scope из последних изменений</button>
-                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-clear disabled>Очистить pending scope</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-scope-preview>Проверить область</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-use disabled>Подставить область из последних изменений</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-clear disabled>Очистить область</button>
                 </div>
               </div>
             </div>
             <details class="details-section compact-details">
-              <summary>Показать план и детали service-публикации</summary>
+              <summary>Показать план и детали сервисной публикации</summary>
               <div class="details-toolbar">
                 <label class="select-field">
                   <span>Фильтр</span>
@@ -1212,15 +1216,15 @@
             <h2>Подготовить подавление в Zabbix</h2>
             <p>Проверка и публикация графа каскадного подавления для Zabbix.</p>
             <details class="details-section compact-details">
-              <summary>Показать пояснение публикации suppression</summary>
-              <p>Команды каскадного подавления публикуются в отдельный Zabbix-топик или через прямой endpoint. Zabbix Services по умолчанию не создаются: контур сохраняет source membership и связи для aggregate triggers и trigger dependencies.</p>
+              <summary>Показать пояснение публикации подавления</summary>
+              <p>Команды каскадного подавления публикуются в отдельный Zabbix-топик или через прямой endpoint. Zabbix Services по умолчанию не создаются: контур сохраняет состав исходных карточек и связи для агрегатных триггеров и зависимостей триггеров.</p>
             </details>
           </div>
           <section class="panel">
             <div class="zabbix-publish-console" data-zabbix-publish-console data-default-layer="suppression">
               <div>
                 <strong>Публикация в Zabbix</strong>
-                <span>Один сценарий: выберите слой, scope и выполните проверку или публикацию. Подробные кнопки ниже оставлены как технические детали.</span>
+                <span>Один сценарий: выберите слой, режим и выполните проверку или публикацию. Подробные кнопки ниже оставлены как технические детали.</span>
               </div>
               <label class="select-field">
                 <span>Слой</span>
@@ -1231,11 +1235,12 @@
                 </select>
               </label>
               <label class="select-field">
-                <span>Scope</span>
+                <span>Режим</span>
                 <select data-zabbix-publish-scope>
-                  <option value="changes">Изменения</option>
-                  <option value="full">Полный граф</option>
-                  <option value="manual">Ручной scope</option>
+                  <option value="graph">Наложить граф</option>
+                  <option value="changes">Изменения состава</option>
+                  <option value="full">Полный обход источников</option>
+                  <option value="manual">Ручная область</option>
                 </select>
               </label>
               <div class="sync-actions">
@@ -1243,16 +1248,16 @@
                 <button class="primary-button" type="button" data-zabbix-publish-apply>Опубликовать</button>
               </div>
               <label class="zabbix-publish-manual-scope hidden">
-                <span>Ручной scope</span>
-                <textarea data-zabbix-publish-manual-scope rows="2" placeholder="Managed key / rule id / имя. Для двух слоев значение будет подставлено в оба технических scope-поля."></textarea>
+                <span>Ручная область</span>
+                <textarea data-zabbix-publish-manual-scope rows="2" placeholder="Managed key / rule id / имя. Для двух слоев значение будет подставлено в оба технических поля области."></textarea>
               </label>
               <label class="checkbox-line zabbix-publish-substep">
                 <input type="checkbox" data-zabbix-publish-include-dependencies checked>
-                <span>После suppression-графа выполнить trigger dependencies</span>
+                <span>После графа подавления выполнить зависимости триггеров</span>
               </label>
               <label class="checkbox-line zabbix-publish-substep">
                 <input type="checkbox" data-zabbix-publish-include-sla checked>
-                <span>После service-графа выполнить SLA</span>
+                <span>После сервисного графа выполнить SLA</span>
               </label>
               <p class="status-line" data-zabbix-publish-status></p>
               <div class="zabbix-publish-progress" data-zabbix-publish-progress></div>
@@ -1260,7 +1265,7 @@
             <div class="sync-grid" data-zabbix-apply-summary></div>
             <p class="status-line" data-zabbix-apply-status></p>
             <div class="rule-summary">
-              <span class="structure-mark">Scope публикации</span>
+              <span class="structure-mark">Область публикации</span>
               <label>
                 <span>Managed key / rule id / имя</span>
                 <textarea data-zabbix-apply-scope-keys rows="2" placeholder="Пусто = весь слой. Например: МаршрутизаторыSupp / City48 или suppression-supp-routerg-city48"></textarea>
@@ -1271,18 +1276,18 @@
               </label>
               <label class="checkbox-line">
                 <input type="checkbox" data-zabbix-apply-scope-require-match checked>
-                <span>Не запускать, если заполненный scope не найден в правилах или сервисных объектах</span>
+                <span>Не запускать, если заполненная область не найдена в правилах или сервисных объектах</span>
               </label>
-              <span>0 означает без ограничения. Для suppression scope раскрывает связанную цепочку по relations; для service - выбранный узел, родителей и потомков.</span>
+              <span>0 означает без ограничения. Для подавления область раскрывает связанную цепочку по relations; для сервиса - выбранный узел, родителей и потомков.</span>
               <div class="scope-dirty-block">
-                <span class="structure-mark">Scope из последних изменений</span>
+                <span class="structure-mark">Область из последних изменений</span>
                 <div data-zabbix-dirty-scope-summary>
-                  <span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>
+                  <span>Область по последним изменениям пустая. Заполните область вручную или оставьте поле пустым для всего слоя. Подсказка сохраняется в локальном журнале браузера.</span>
                 </div>
                 <div class="rule-summary-actions">
-                  <button class="secondary-button compact-button" type="button" data-zabbix-scope-preview>Проверить scope</button>
-                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-use disabled>Подставить scope из последних изменений</button>
-                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-clear disabled>Очистить pending scope</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-scope-preview>Проверить область</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-use disabled>Подставить область из последних изменений</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-dirty-scope-clear disabled>Очистить область</button>
                 </div>
               </div>
             </div>
@@ -1290,21 +1295,21 @@
           <section class="panel">
             <div class="section-heading">
               <h2>Зависимости триггеров</h2>
-              <p>Публикация Zabbix trigger dependencies по suppression-графу.</p>
+              <p>Публикация зависимостей триггеров Zabbix по графу подавления.</p>
               <details class="details-section compact-details">
-                <summary>Показать пояснение trigger dependencies</summary>
-                <p>Штатное каскадное подавление в Zabbix: зависимые триггеры source-хостов получают dependencies на триггеры причины по suppression-графу. Ручные dependencies в Zabbix сохраняются.</p>
+                <summary>Показать пояснение зависимостей триггеров</summary>
+                <p>Штатное каскадное подавление в Zabbix: зависимые триггеры исходных хостов получают зависимости на триггеры причины по графу подавления. Ручные зависимости в Zabbix сохраняются.</p>
               </details>
             </div>
             <div id="zabbixTriggerDependenciesSummary" class="sync-grid"></div>
             <div class="sync-actions">
               <button id="zabbixTriggerDependenciesRefreshButton" class="secondary-button" type="button">Обновить статус зависимостей</button>
-              <button id="zabbixTriggerDependenciesDryRunButton" class="secondary-button" type="button">Dry-run зависимостей</button>
+              <button id="zabbixTriggerDependenciesDryRunButton" class="secondary-button" type="button">Проверить зависимости</button>
               <button id="zabbixTriggerDependenciesApplyButton" class="primary-button" type="button">Опубликовать зависимости триггеров в Zabbix</button>
             </div>
             <p id="zabbixTriggerDependenciesStatus" class="status-line"></p>
             <details class="details-section compact-details">
-              <summary>Показать диагностику trigger dependencies</summary>
+              <summary>Показать диагностику зависимостей триггеров</summary>
               <div class="details-toolbar">
                 <label class="select-field">
                   <span>Фильтр</span>
@@ -1326,7 +1331,7 @@
               <p>План команд и результаты dry-run/publish для объектов модели подавления.</p>
             </div>
             <details class="details-section compact-details">
-              <summary>Показать план и детали suppression-публикации</summary>
+              <summary>Показать план и детали публикации подавления</summary>
               <div class="details-toolbar">
                 <label class="select-field">
                   <span>Фильтр</span>
@@ -1704,7 +1709,7 @@
                 <li>Проверьте планируемые и готовые классы/домены отдельно для сервиса и подавления.</li>
                 <li>Для конкретных классов добавьте связи наполнения с существующими классами CMDBuild заказчика.</li>
                 <li>Отправьте выбранные классы и домены в CMDBuild кнопкой <strong>Отправить выбранное в CMDBuild</strong>.</li>
-                <li>Настройте правила конвертации, подготовьте и сохраните правила по шаблонам и связям, затем откройте <strong>Модель -> Применить в Zabbix</strong>: в одном блоке выберите слой, scope, SLA и trigger dependencies.</li>
+                <li>Настройте правила конвертации, подготовьте и сохраните правила по шаблонам и связям, затем откройте <strong>Модель -> Применить в Zabbix</strong>: в одном блоке выберите слой, режим, SLA и зависимости триггеров.</li>
                 <li><strong>Подготовить и сохранить правила</strong> создает сгенерированные правила и <code>managed_relations</code>, затем сохраняет конфигурацию в папку и обновляет manifest. Целевые карточки сервиса/подавления появляются позже, когда обработчик правил получит подходящие CMDBuild webhooks.</li>
               </ol>
             </section>
@@ -1764,13 +1769,13 @@
               <h2>Как Zabbix привязывает проблемы к модели</h2>
               <ul class="help-list">
                 <li>Managed service в Zabbix показывает объект сервисной модели, например <code>ВПН филиалов</code>. Сам по себе service tag не говорит Zabbix, какие события хостов входят в этот объект.</li>
-                <li>В сервисном слое для source-карточки с <code>zabbix_main_hostid</code> applier создает source leaf service и добавляет его child-узлом к целевому managed service.</li>
+                <li>В сервисном слое для исходной карточки с <code>zabbix_main_hostid</code> applier создает leaf-сервис источника и добавляет его child-узлом к целевому managed service.</li>
                 <li>На source leaf service выставляется <code>problem_tags</code> по <code>cmdb2monitoring:source_hostid=&lt;zabbix_main_hostid&gt;</code>, а такой же tag добавляется на Zabbix host с сохранением уже существующих host tags.</li>
                 <li>После этого реальные проблемы Zabbix host наследуют tag и могут попадать в source leaf, а статус поднимается вверх по дереву сервисов.</li>
-                <li>В suppression по умолчанию <code>Apply:CreateSuppressionServices=false</code>: source leaf, problem tags и отдельное дерево Services не создаются; publish обновляет только membership для aggregate triggers и trigger dependencies.</li>
+                <li>В подавлении по умолчанию <code>Apply:CreateSuppressionServices=false</code>: leaf-узлы источников, problem tags и отдельное дерево Services не создаются; публикация обновляет только состав для aggregate triggers и зависимостей триггеров.</li>
                 <li>Если <code>zabbix_main_hostid</code> пустой, карточка считается неготовой: dry-run покажет отсутствующую привязку, publish уберет прежнее активное membership этой карточки и оставит ее в pending-диагностике до следующего UPDATE с hostid.</li>
                 <li>Сервисный слой строит модель влияния в Zabbix Services. Реальное штатное каскадное подавление строится публикацией aggregate triggers и <code>trigger dependencies</code>; разовое подавление активных событий в UI не используется.</li>
-                <li>Для сайзинга trigger dependencies leaf/source trigger-ы должны подавляться только ближайшей suppression-группой. Причины между группами разворачиваются транзитивно в выражениях aggregate trigger на N уровней, где N задается в конфигурации <code>zabbixconfig2api</code>. UI читает это значение из настроек микросервиса; если администратор изменил N в UI, но еще не нажал <strong>Применить настройки UI</strong>, ручной dry-run/apply зависимостей использует выбранное значение как одноразовый override, а автоматический reconcile продолжает брать сохраненную настройку микросервиса. При N=2 городская группа видит прямую upstream-группу и следующую причину выше; при N=3 добавляется еще один уровень. Aggregate trigger группы становится PROBLEM, если отказали свои source-hosts по <code>aggregation_type</code> или если upstream-группа в пределах N уже в PROBLEM. Selector состояния группы и selector dependency-покрытия разделены: первый выбирает triggers для формулы calculated item, второй — leaf/source triggers, на которые ставятся dependencies. В деталях dependencies показывается причина состояния: <code>свои source-hosts</code>, <code>upstream</code> или оба варианта, а также unsupported aggregate items с текстом ошибки Zabbix, если формула calculated item не принята.</li>
+                <li>Для сайзинга зависимостей триггеров leaf/source trigger-ы должны подавляться только ближайшей suppression-группой. Причины между группами разворачиваются транзитивно в выражениях aggregate trigger на N уровней, где N задается в конфигурации <code>zabbixconfig2api</code>. UI читает это значение из настроек микросервиса; если администратор изменил N в UI, но еще не нажал <strong>Применить настройки UI</strong>, ручной dry-run/apply зависимостей использует выбранное значение как одноразовый override, а автоматический reconcile продолжает брать сохраненную настройку микросервиса. При N=2 городская группа видит прямую upstream-группу и следующую причину выше; при N=3 добавляется еще один уровень. Aggregate trigger группы становится PROBLEM, если отказали свои source-hosts по <code>aggregation_type</code> или если upstream-группа в пределах N уже в PROBLEM. Selector состояния группы и selector dependency-покрытия разделены: первый выбирает triggers для формулы calculated item, второй - leaf/source triggers, на которые ставятся dependencies. В деталях dependencies показывается причина состояния: <code>свои source-hosts</code>, <code>upstream</code> или оба варианта, а также unsupported aggregate items с текстом ошибки Zabbix, если формула calculated item не принята.</li>
               </ul>
             </section>
 
@@ -1800,11 +1805,11 @@
               <h2>Шаблоны автонаполнения</h2>
               <ul class="help-list">
                 <li>Шаблон не исполняется микросервисом напрямую: он материализуется в обычные правила с меткой <code>generated_from_template</code>.</li>
-                <li><strong>Управление правилами -> Подготовить и сохранить правила -> Проверить шаблоны</strong> выполняется перед материализацией: проверяет выбранные source-классы, значения <code>dimension.*</code>, целевые атрибуты, будущие create/update/remove и управляемые связи. Кнопка подготовки правил активна только после проверки без блокирующих ошибок.</li>
+                <li><strong>Управление правилами -> Подготовить и сохранить правила -> Проверить шаблоны</strong> выполняется перед материализацией: проверяет выбранные исходные классы, значения <code>dimension.*</code>, целевые атрибуты, будущие create/update/remove и управляемые связи. Кнопка подготовки правил активна только после проверки без блокирующих ошибок.</li>
                 <li><strong>ID шаблона</strong> является стабильным ключом управляемых правил. После первого сохранения он блокируется в редакторе; новый шаблон с уже существующим ID не сохраняется поверх старого.</li>
                 <li>Классы-источники выбираются регулярным выражением по коду, описанию или пути наследования класса.</li>
                 <li><strong>Измерение заполнения</strong> задает, по каким значениям шаблон развернется в статические правила. Новая модель генерирует правила по схеме <code>класс-источник x значение измерения</code>: например один шаблон для <code>NTBook|ThinClient|ARM</code> и измерение "город" создают отдельные сгенерированные правила на каждый город.</li>
-                <li>Типы измерения: уникальные значения поля источника, lookup, bool, reference/domain, regex-вырезка, генератор диапазона/списка и статический список. Для <code>source_field</code> и <code>regex_capture</code> UI перед применением подгружает карточки класса-источника, чтобы вычислить набор значений.</li>
+                <li>Типы измерения: уникальные значения поля источника, lookup, bool, reference/domain, regex-вырезка, генератор диапазона/списка и статический список. Lookup берется из CMDBuild lookup catalog; reference path вроде <code>ARM -> Building.City</code> читает карточки <code>Building</code>, а не полный набор <code>ARM</code>. Полный source scan остается только для уникальных значений самого source и regex-вырезки.</li>
                 <li>Если source-regexp выбрал несколько классов и у одного класса нет карточек или значений <code>dimension.*</code>, проверка показывает предупреждение и продолжает строить правила по остальным классам. Это становится блокирующей ошибкой только когда шаблон в целом не породил ни одного правила.</li>
                 <li><code>${dimension.key}</code> — стабильный технический ключ значения измерения. <code>${dimension.value}</code> — значение для сравнения, обычно совпадает с key. <code>${dimension.name}</code> — отображаемое имя после поля <strong>Шаблон имени измерения</strong>. Для lookup/reference/domain leaf <code>${dimension.stableValue}</code> хранит code/key/id, а <code>${dimension.displayValue}</code> хранит description/name/label. <code>${dimension.regexKey}</code> — безопасная для regexp версия key.</li>
                 <li>Пути reference/domain классифицируются по конечному leaf-атрибуту: lookup leaf показывается в <strong>Значения lookup</strong>, boolean leaf в <strong>Булевы значения</strong>, строковый/числовой leaf в уникальных значениях или regex. Если рекурсии не хватило и путь остановился на ссылке на объект, поле попадает в диагностический тип "Неразрешенные reference/domain-ссылки" и такой шаблон нельзя сохранить.</li>
@@ -1864,7 +1869,7 @@
                 <li><code>${dimension.key}</code> — стабильный ключ: код lookup, bool <code>true/false</code>, capture-группа, уникальное значение поля или левая часть строки <code>ключ|имя|regex-условия</code>. Его используют в managed/idempotency key.</li>
                 <li><code>${dimension.value}</code> — значение для сравнения карточек; обычно оно равно key. <code>${dimension.name}</code> — имя для текста, которое формирует поле <strong>Шаблон имени ${dimension.name}</strong>; внутри этого поля <code>${dimension.name}</code> означает исходное отображаемое имя до шаблона. Для lookup/reference/domain leaf <code>${dimension.stableValue}</code> означает code/key/id, а <code>${dimension.displayValue}</code> означает description/name/label. <code>${dimension.regexKey}</code> — экранированный key для вставки в regexp.</li>
                 <li>Изменение lookup display/name не перемещает membership и не меняет managed key. Подписи обновятся при следующей пересборке affected объекта или после scoped/full reconcile. Использовать display/name как ключ агрегации — плохая практика.</li>
-                <li>В раскрытой подсказке <strong>Что такое dimension.*</strong> редактор показывает текущий предпросмотр: первые рассчитанные <code>dimension.key</code>, <code>dimension.value</code>, <code>dimension.name</code>, <code>dimension.regexKey</code> и итоговый ключ цели. Для уникальных значений и regex предпросмотр использует уже загруженные карточки класса-источника.</li>
+                <li>В раскрытой подсказке <strong>Что такое dimension.*</strong> редактор показывает текущий предпросмотр: стратегию чтения, первые рассчитанные <code>dimension.key</code>, <code>dimension.value</code>, <code>dimension.name</code>, <code>dimension.regexKey</code> и итоговый ключ цели. Для reference catalog предпросмотр догружает только конечный класс пути, например <code>Building</code> для <code>ARM.Building.City</code>.</li>
                 <li><strong>Regex вырезки значения</strong> и <strong>Группа -> ${dimension.key}</strong> нужны только для <strong>Вырезка regex из поля источника</strong>. Пример: regex <code>(?i)^w([0-9]{2})[0-9]{2}-.*$</code>, группа <code>1</code>. Для именованной группы <code>(?&lt;city&gt;[0-9]{2})</code> укажите <code>city</code>.</li>
                 <li><strong>Значения измерения / диапазон</strong> используется только для <strong>Генератор диапазона/списка</strong> и <strong>Статический список</strong>. Диапазон пишется как <code>00-99</code>; список строками <code>ключ|имя|regex-условия</code>, где ключ станет <code>${dimension.key}</code>, имя станет базовым именем, а третья часть необязательна.</li>
                 <li><strong>Шаблон ключа цели</strong> обычно не меняют: <code>${template.id}:${dimension.key}</code> дает одну цель на значение измерения. Если нужна отдельная цель на каждый класс-источник, используйте <code>${template.id}:${class.code}:${dimension.key}</code>.</li>
@@ -1983,8 +1988,8 @@
                 </select>
               </label>
               <details class="details-section compact-details">
-                <summary>Показать справку по настройкам trigger dependencies</summary>
-                <p class="settings-help">Поля ниже являются настройками микросервиса <code>zabbixconfig2api</code>. UI читает их из файла конфигурации микросервиса и применяет через эту панель: кнопка <strong>Применить настройки UI</strong> записывает allowlist параметров в <code>src/zabbixconfig2api/appsettings.json</code> и вызывает штатный reload микросервиса по Bearer token. Основной параметр глубины хранится как <code>ZabbixTriggerDependencies:TransitiveGroupDependencyDepth</code>. Если N изменен в UI, но еще не применен, ручной dry-run/apply зависимостей использует выбранное значение как одноразовый override; автоматический reconcile берет сохраненное значение микросервиса до применения настроек. Значение N не меняет потоковую обработку webhook/Kafka, правила конвертации и создание membership. Рекомендуемое значение N=2. Leaf/source-хосты не получают полную матрицу dependencies на все верхние причины: их trigger-ы зависят только от ближайшей suppression-группы. Upstream-причины передаются между агрегатными suppression-группами через выражения aggregate trigger.</p>
+                <summary>Показать справку по настройкам зависимостей триггеров</summary>
+                <p class="settings-help">Поля ниже являются настройками микросервиса <code>zabbixconfig2api</code>. UI читает их из файла конфигурации микросервиса и применяет через эту панель: кнопка <strong>Применить настройки UI</strong> записывает allowlist параметров в <code>src/zabbixconfig2api/appsettings.json</code> и вызывает штатный reload микросервиса по Bearer token. Основной параметр глубины хранится как <code>ZabbixTriggerDependencies:TransitiveGroupDependencyDepth</code>. Если N изменен в UI, но еще не применен, ручной dry-run/apply зависимостей использует выбранное значение как одноразовый override; автоматический reconcile берет сохраненное значение микросервиса до применения настроек. Значение N не меняет потоковую обработку webhook/Kafka, правила конвертации и создание membership. Рекомендуемое значение N=2. Leaf/source-хосты не получают полную матрицу dependencies на все верхние причины: их trigger-ы зависят только от ближайшей группы подавления. Upstream-причины передаются между агрегатными группами подавления через выражения aggregate trigger.</p>
               </details>
               <p id="transitiveGroupDependencyDepthStatus" class="status-line"></p>
               <div class="settings-list">
@@ -2127,7 +2132,7 @@
               </label>
               <details class="details-section compact-details">
                 <summary>Показать пояснение durable state</summary>
-                <p class="settings-help">Durable state предназначен для membership-state, dirty scopes и сохраненных snapshot-отчетов. В текущем плане доступны file backend и SQLite backend.</p>
+                <p class="settings-help">Durable state предназначен для membership-state, областей последних изменений и сохраненных snapshot-отчетов. В текущем плане доступны file backend и SQLite backend.</p>
               </details>
 
               <h3>Разовые срезы покрытия мониторингом</h3>
@@ -2190,7 +2195,7 @@
               </label>
               <details class="details-section compact-details">
                 <summary>Показать пояснение срезов покрытия</summary>
-                <p class="settings-help">Срез покрытия мониторингом не является непрерывной online-метрикой. Он запускается по кнопке администратора или по отдельному расписанию, читает CMDBuild и Zabbix неатомарно и может иметь допустимую операционную дельту. Основной показатель: сколько объектов должно мониториться, сколько имеет <code>zabbix_main_hostid</code>, сколько реально найдено в Zabbix и сколько попало в service/suppression membership.</p>
+                <p class="settings-help">Срез покрытия мониторингом не является непрерывной online-метрикой. Он запускается по кнопке администратора или по отдельному расписанию, читает CMDBuild и Zabbix неатомарно и может иметь допустимую операционную дельту. Основной показатель: сколько объектов должно мониториться, сколько имеет <code>zabbix_main_hostid</code>, сколько реально найдено в Zabbix и сколько попало в сервисный состав или состав подавления.</p>
               </details>
 
               <div class="sync-actions settings-actions">

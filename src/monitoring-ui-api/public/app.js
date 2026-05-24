@@ -60,6 +60,12 @@ const DEFAULT_TEMPLATE_POPULATION_SOURCE_KEY = '${source.id}';
 const TEMPLATE_DIMENSION_DEFAULT_MAX_RULES = 1000;
 const TEMPLATE_DIMENSION_MAX_RULES = 10000;
 const TEMPLATE_DIMENSION_PREVIEW_LIMIT = 5;
+const TEMPLATE_DIMENSION_READ_STRATEGIES = {
+  static: 'static',
+  sourceScan: 'source_scan',
+  lookupCatalog: 'lookup_catalog',
+  referenceCatalog: 'reference_catalog'
+};
 const TEMPLATE_POPULATION_DIMENSION_TYPES = new Set([
   'legacy',
   'source_field',
@@ -2775,7 +2781,7 @@ function applyGeneralSettingsPayload(payload, options = {}) {
 
 function normalizeZabbixPublishPreferences(value = {}) {
   const layer = ['service', 'suppression', 'all'].includes(value?.layer) ? value.layer : 'service';
-  const scope = ['changes', 'full', 'manual'].includes(value?.scope) ? value.scope : 'changes';
+  const scope = ['graph', 'changes', 'full', 'manual'].includes(value?.scope) ? value.scope : 'graph';
   return {
     layer,
     scope,
@@ -3296,7 +3302,7 @@ function renderRuntimeStorageMigrationResult(result) {
     return `
       <div class="rule-summary">
         <span class="structure-mark">миграция state</span>
-        <span>Dry-run покажет, сколько membership targets, source bindings, trigger dependencies и graph objects будет перенесено в выбранный DurableStore. Apply уже пишет SQLite.</span>
+        <span>Проверка покажет, сколько membership targets, source bindings, зависимостей триггеров и graph objects будет перенесено в выбранный DurableStore. Apply уже пишет SQLite.</span>
       </div>
     `;
   }
@@ -3307,7 +3313,7 @@ function renderRuntimeStorageMigrationResult(result) {
       <span class="structure-mark">${escapeHtml(result.dryRun ? 'dry-run migration' : 'migration')}</span>
       <strong>${escapeHtml(result.status || 'planned')}</strong>
       <span>${escapeHtml(result.sourceBackend || '-')} -> ${escapeHtml(result.targetProvider || '-')}</span>
-      <span>targets ${escapeHtml(result.membershipCount ?? 0)} · sources ${escapeHtml(result.sourceMembershipCount ?? 0)} · pending ${escapeHtml(result.pendingSourceCount ?? 0)} · dependencies ${escapeHtml(result.triggerDependencyCount ?? 0)} · graph objects ${escapeHtml(result.appliedGraphObjectCount ?? 0)}</span>
+      <span>targets ${escapeHtml(result.membershipCount ?? 0)} · sources ${escapeHtml(result.sourceMembershipCount ?? 0)} · pending ${escapeHtml(result.pendingSourceCount ?? 0)} · зависимости ${escapeHtml(result.triggerDependencyCount ?? 0)} · graph objects ${escapeHtml(result.appliedGraphObjectCount ?? 0)}</span>
       ${result.message ? `<span>${escapeHtml(result.message)}</span>` : ''}
     </div>
     ${layers.length > 0 ? `
@@ -3377,7 +3383,7 @@ function renderMonitoringCoverageSnapshotResult(result) {
     return `
       <div class="rule-summary">
         <span class="structure-mark">срез покрытия</span>
-        <span>Кнопка формирует one-shot отчет по текущему membership-state: ожидаемые объекты, заполненный hostid, реально найденные Zabbix hosts и присутствие в service/suppression membership.</span>
+        <span>Кнопка формирует one-shot отчет по текущему membership-state: ожидаемые объекты, заполненный hostid, реально найденные Zabbix hosts и присутствие в сервисном составе или составе подавления.</span>
       </div>
     `;
   }
@@ -3398,7 +3404,7 @@ function renderMonitoringCoverageSnapshotResult(result) {
     ${renderMonitoringCoverageSampleBlock('Без hostid', result.missingHostIdSamples)}
     ${renderMonitoringCoverageSampleBlock('Hostid не найден в Zabbix', result.missingZabbixHostSamples)}
     ${renderMonitoringCoverageSampleBlock('Только service membership', result.serviceOnlySamples)}
-    ${renderMonitoringCoverageSampleBlock('Только suppression membership', result.suppressionOnlySamples)}
+    ${renderMonitoringCoverageSampleBlock('Только состав подавления', result.suppressionOnlySamples)}
   `;
 }
 
@@ -4750,7 +4756,7 @@ function renderModelWorkspaceView() {
   const stats = modelWorkspaceStats(layerKey);
   hint.textContent = layerKey === 'service'
     ? 'Service-слой: сервисные агрегаты, объекты сервиса, SLA и публикация service graph.'
-    : 'Suppression-слой: группы подавления, связи причин и trigger dependencies.';
+    : 'Слой подавления: группы подавления, связи причин и зависимости триггеров.';
   summary.innerHTML = `
     <div>
       <span class="metric-label">Классы схемы</span>
@@ -4773,7 +4779,7 @@ function renderModelWorkspaceView() {
       <strong>${escapeHtml(stats.relations)}</strong>
     </div>
     <div>
-      <span class="metric-label">Pending scope</span>
+      <span class="metric-label">Область изменений</span>
       <strong>${escapeHtml(stats.dirtyScopes)}</strong>
     </div>
   `;
@@ -4880,15 +4886,15 @@ function renderModelZabbixApplySummary() {
   const suppressionErrors = Number(suppressionStatus.errorCommands ?? 0) + (suppression.error ? 1 : 0);
   summary.innerHTML = `
     <div>
-      <span class="metric-label">Service graph</span>
+      <span class="metric-label">Сервисный граф</span>
       <strong>${escapeHtml(zabbixApplyStatusLabel(serviceStatus.lastStatus || serviceStatus.status || '-'))}</strong>
     </div>
     <div>
-      <span class="metric-label">Service проверка</span>
+      <span class="metric-label">Проверка сервиса</span>
       <strong>${escapeHtml(service.lastGraphCheckOk ? 'успешна' : 'требуется')}</strong>
     </div>
     <div>
-      <span class="metric-label">Service ошибки</span>
+      <span class="metric-label">Ошибки сервиса</span>
       <strong>${escapeHtml(serviceErrors)}</strong>
     </div>
     <div>
@@ -4896,19 +4902,19 @@ function renderModelZabbixApplySummary() {
       <strong>${escapeHtml(zabbixApplyStatusLabel(state.zabbixSla.status?.status || state.zabbixSla.result?.status || '-'))}</strong>
     </div>
     <div>
-      <span class="metric-label">Suppression graph</span>
+      <span class="metric-label">Граф подавления</span>
       <strong>${escapeHtml(zabbixApplyStatusLabel(suppressionStatus.lastStatus || suppressionStatus.status || '-'))}</strong>
     </div>
     <div>
-      <span class="metric-label">Suppression проверка</span>
+      <span class="metric-label">Проверка подавления</span>
       <strong>${escapeHtml(suppression.lastGraphCheckOk ? 'успешна' : 'требуется')}</strong>
     </div>
     <div>
-      <span class="metric-label">Suppression ошибки</span>
+      <span class="metric-label">Ошибки подавления</span>
       <strong>${escapeHtml(suppressionErrors)}</strong>
     </div>
     <div>
-      <span class="metric-label">Dependencies</span>
+      <span class="metric-label">Зависимости</span>
       <strong>${escapeHtml(zabbixApplyStatusLabel(state.zabbixTriggerDependencies.status?.status || state.zabbixTriggerDependencies.result?.status || '-'))}</strong>
     </div>
   `;
@@ -4987,9 +4993,9 @@ function dashboardSyncLightItems() {
       }),
       summary: state.webhooksCheckError
         || state.webhookRuleCoverageError
-        || (webhooksMissingCount > 0 ? `не покрыто source-классов: ${webhooksMissingCount}` : dashboardUpdatedSummary(state.webhooksCacheUpdatedAt, 'кэш не загружен')),
+        || (webhooksMissingCount > 0 ? `не покрыто исходных классов: ${webhooksMissingCount}` : dashboardUpdatedSummary(state.webhooksCacheUpdatedAt, 'кэш не загружен')),
       actionLabel: 'Нажмите, чтобы проверить webhooks и покрытие правил.',
-      tooltip: 'Проверить managed webhooks и покрытие source-классов.'
+      tooltip: 'Проверить managed webhooks и покрытие исходных классов.'
     },
     {
       id: 'rules',
@@ -5059,8 +5065,8 @@ function dashboardSyncLightItems() {
       summary: dirtyTotal > 0
         ? `ожидают публикации: сервис ${dirtyServiceCount}, подавление ${dirtySuppressionCount}`
         : 'нет локальных отложенных областей публикации',
-      actionLabel: 'Нажмите, чтобы обновить журнал dirty scopes с сервера.',
-      tooltip: 'Загрузить серверный журнал dirty scopes для scoped reconcile.'
+      actionLabel: 'Нажмите, чтобы обновить журнал областей с сервера.',
+      tooltip: 'Загрузить серверный журнал областей для ограниченного reconcile.'
     }
   ].map((item) => ({
     ...item,
@@ -7061,7 +7067,7 @@ async function applyRuleEditorChange(layerKey) {
         [deleted],
         `Удалено статическое правило ${deleted.name || deleted.rule_id || selectedIndex}`,
         {
-          warning: 'Удаление правила формирует stale: публикация изменений покажет расхождение, а фактическая очистка выполняется через stale cleanup или полный граф.'
+          warning: 'Удаление правила формирует устаревший объект: публикация изменений покажет расхождение, а фактическая очистка выполняется через cleanup или полный обход источников.'
         });
       setRuleEditorStatus(layerKey, `Удалено правило ${deleted.name || deleted.rule_id || selectedIndex}.`);
       renderRuleEditor(layerKey);
@@ -8079,7 +8085,7 @@ function renderTemplatePopulationDimensionPreview(layerKey) {
     void queueTemplatePopulationPreviewCardLoad(layerKey, dimension, missingClassCodes);
     config.populationPreview.innerHTML = `
       <span class="template-dimension-preview-title">Текущий предпросмотр dimension.*</span>
-      <p class="template-dimension-preview-empty">Догружаю карточки для предпросмотра: ${escapeHtml(missingClassCodes.join(', '))}.</p>
+      <p class="template-dimension-preview-empty">Догружаю карточки классов для стратегии чтения: ${escapeHtml(missingClassCodes.join(', '))}.</p>
     `;
     return;
   }
@@ -8177,10 +8183,12 @@ function templatePopulationDimensionPreview(layerKey, dimension) {
       const rows = values.slice(0, TEMPLATE_DIMENSION_PREVIEW_LIMIT)
         .map((value) => templatePopulationDimensionPreviewRow(template, candidate, dimension, value));
       const extraCount = Math.max(values.length - rows.length, 0);
+      const readPlan = templatePopulationDimensionReadStrategy(candidate.code, dimension);
       return {
         rows,
         meta: [
           `класс-источник: ${candidate.code || 'предпросмотр'}`,
+          templatePopulationDimensionReadPlanText(readPlan),
           `значений: ${values.length}`,
           extraCount > 0 ? `показано первых ${rows.length}` : 'показаны все',
           candidates.items.length > 1 ? `классов-кандидатов: ${candidates.items.length}` : ''
@@ -8196,7 +8204,7 @@ function templatePopulationDimensionPreview(layerKey, dimension) {
     rows: [],
     message: errors.length > 0
       ? `Не удалось вычислить dimension.*: ${errors.slice(0, 2).join('; ')}`
-      : 'По выбранным полям пока нет значений. Для уникальных значений/regex предпросмотра нужны загруженные карточки класса-источника.'
+      : 'По выбранным полям пока нет значений. Проверьте стратегию чтения: source scan требует карточки источника, reference catalog - карточки конечного класса пути, lookup catalog - значения lookup.'
   };
 }
 
@@ -8299,7 +8307,7 @@ async function queueTemplatePopulationPreviewCardLoad(layerKey, dimension, class
     if (config.populationPreview) {
       config.populationPreview.innerHTML = `
         <span class="template-dimension-preview-title">Текущий предпросмотр dimension.*</span>
-        <p class="template-dimension-preview-empty">Не удалось догрузить карточки для предпросмотра (${escapeHtml(classCodes.join(', '))}): ${escapeHtml(error.message)}</p>
+        <p class="template-dimension-preview-empty">Не удалось догрузить карточки для стратегии чтения (${escapeHtml(classCodes.join(', '))}): ${escapeHtml(error.message)}</p>
       `;
     }
   } finally {
@@ -8308,10 +8316,6 @@ async function queueTemplatePopulationPreviewCardLoad(layerKey, dimension, class
 }
 
 function templatePopulationPreviewRequiredClassCodes(layerKey, dimension) {
-  if (!templatePopulationDimensionUsesSourceCards(dimension)) {
-    return [];
-  }
-
   if (!dimension.source_field || (dimension.type === 'regex_capture' && !dimension.regex)) {
     return [];
   }
@@ -8324,13 +8328,9 @@ function templatePopulationPreviewRequiredClassCodes(layerKey, dimension) {
 
   const classCodes = new Set();
   for (const candidate of candidates.items) {
-    if (!sourceClassCardsAvailable(candidate.code)) {
-      classCodes.add(candidate.code);
-    }
-
-    for (const dependencyClass of templatePopulationDimensionDependencyClasses(candidate.code, dimension)) {
-      if (!sourceClassCardsAvailable(dependencyClass)) {
-        classCodes.add(dependencyClass);
+    for (const classCode of templateDimensionRequiredCardClasses(candidate.code, dimension)) {
+      if (!sourceClassCardsLoaded(classCode)) {
+        classCodes.add(classCode);
       }
     }
   }
@@ -8339,8 +8339,7 @@ function templatePopulationPreviewRequiredClassCodes(layerKey, dimension) {
 }
 
 function templatePopulationDimensionUsesSourceCards(dimension) {
-  return ['source_field', 'source_lookup', 'regex_capture'].includes(dimension.type)
-    || Boolean(String(dimension.condition_field ?? '').trim());
+  return ['source_field', 'source_lookup', 'regex_capture'].includes(dimension?.type);
 }
 
 function validateTemplatePopulationDimensionLeafFields(layerKey, dimension) {
@@ -8966,7 +8965,7 @@ function renderRuleTargetObjectValue(rawValue, context, attributeCodeValue) {
 
   const rendered = renderTemplateString(text, context);
   if (/\$\{source\.[A-Za-z_][A-Za-z0-9_]*\}/.test(rendered)) {
-    throw new Error(`Атрибут ${attributeCodeValue} создаваемого целевого объекта не может использовать ${'${source.*}'}; конкретная source-карточка еще не обрабатывается.`);
+    throw new Error(`Атрибут ${attributeCodeValue} создаваемого целевого объекта не может использовать ${'${source.*}'}; конкретная исходная карточка еще не обрабатывается.`);
   }
 
   return rendered;
@@ -10539,7 +10538,7 @@ function removeGeneratedRulesForTemplate(layerKey, templateId, template, reason)
     rulesToRemove,
     `Удалены правила шаблона ${template?.name || templateId || '-'}`,
     {
-      warning: 'Удаление шаблонных правил формирует stale: для фактического удаления объектов используйте планы удаления/stale cleanup или полный граф.'
+      warning: 'Удаление шаблонных правил формирует устаревший объект: для фактического удаления объектов используйте планы удаления/cleanup или полный обход источников.'
     });
   return {
     detachedRules: 0,
@@ -11044,12 +11043,12 @@ async function loadZabbixTriggerDependenciesStatus(options = {}) {
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || result.error || `статус trigger dependencies не получен: ${response.status}`);
+      throw new Error(result.detail || result.error || `статус зависимостей триггеров не получен: ${response.status}`);
     }
 
     stateItem.status = result;
     syncTransitiveGroupDependencyDepthFromPayload(result);
-    stateItem.message = 'Статус trigger dependencies обновлен.';
+    stateItem.message = 'Статус зависимостей триггеров обновлен.';
   } catch (error) {
     stateItem.error = error.message;
   } finally {
@@ -11496,8 +11495,8 @@ async function runZabbixTriggerDependencies(options = {}) {
     stateItem.applying = true;
     stateItem.error = '';
     stateItem.message = dryRun
-      ? 'Dry-run конфигурации trigger dependencies...'
-      : 'Публикация конфигурации trigger dependencies в Zabbix...';
+      ? 'Проверка конфигурации зависимостей триггеров...'
+      : 'Публикация конфигурации зависимостей триггеров в Zabbix...';
     renderZabbixTriggerDependenciesView();
 
     const response = await fetch(
@@ -11512,12 +11511,12 @@ async function runZabbixTriggerDependencies(options = {}) {
       });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || result.error || `trigger dependencies не выполнены: ${response.status}`);
+      throw new Error(result.detail || result.error || `зависимости триггеров не выполнены: ${response.status}`);
     }
 
     stateItem.result = result;
     syncTransitiveGroupDependencyDepthFromPayload(result);
-    const finalMessage = result.message || (dryRun ? 'Dry-run конфигурации dependencies завершен.' : 'Конфигурация dependencies опубликована в Zabbix.');
+    const finalMessage = result.message || (dryRun ? 'Проверка конфигурации зависимостей завершена.' : 'Конфигурация зависимостей опубликована в Zabbix.');
     stateItem.message = finalMessage;
     await loadZabbixTriggerDependenciesStatus();
     stateItem.message = finalMessage;
@@ -11545,8 +11544,8 @@ async function previewZabbixApplyScope(layerKey) {
     stateItem.scopePreviewError = '';
     stateItem.error = '';
     stateItem.message = scope.scopeKeys.length > 0
-      ? `Проверяю scope ${zabbixLayerTitle(layerKey, 'genitive')} без чтения source-карточек${defaultScope.applied ? ' (подставлен из dirty scopes)' : ''}...`
-      : 'Scope пуст: следующий запуск будет готовить весь слой.';
+      ? `Проверяю область ${zabbixLayerTitle(layerKey, 'genitive')} без чтения исходных карточек${defaultScope.applied ? ' (подставлена из последних изменений)' : ''}...`
+      : 'Область пустая: следующий запуск будет готовить весь слой.';
     renderZabbixApplyView(layerKey);
 
     const response = await fetch('/api/zabbix/apply-current/scope-preview', {
@@ -11570,12 +11569,12 @@ async function previewZabbixApplyScope(layerKey) {
     const result = await response.json();
     stateItem.scopePreview = result;
     if (!response.ok) {
-      const detail = result.detail || result.error || `scope не проверен: ${response.status}`;
+      const detail = result.detail || result.error || `область не проверена: ${response.status}`;
       handleCmdbuildAuthFailure(detail);
       throw new Error(detail);
     }
 
-    stateItem.message = 'Scope проверен. Перед запуском видно, какие правила и source-классы попадут в подготовку.';
+    stateItem.message = 'Область проверена. Перед запуском видно, какие правила и исходные классы попадут в подготовку.';
   } catch (error) {
     handleCmdbuildAuthFailure(error.message);
     stateItem.scopePreviewError = error.message;
@@ -11589,6 +11588,7 @@ async function previewZabbixApplyScope(layerKey) {
 async function applyZabbixLayer(layerKey, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const publishMode = options.publishMode === 'full' ? 'full' : 'changes';
+  const buildMode = normalizeZabbixBuildMode(options.buildMode);
   const defaultScope = ensureZabbixDirtyScopeDefault(layerKey, dryRun ? 'preview' : 'apply');
   const scope = collectZabbixApplyScope(layerKey);
   const stateItem = zabbixApplyState(layerKey);
@@ -11616,8 +11616,8 @@ async function applyZabbixLayer(layerKey, options = {}) {
       dryRun
     };
     stateItem.message = dryRun
-      ? `Проверка ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''}${defaultScope.applied ? ' из dirty scopes' : ''} перед публикацией в Zabbix...`
-      : `Публикация ${zabbixPublishModeTitle(publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по scope' : ''}${defaultScope.applied ? ' из dirty scopes' : ''} в Zabbix...`;
+      ? `Проверка ${zabbixBuildModeTitle(buildMode, publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по области' : ''}${defaultScope.applied ? ' из последних изменений' : ''} перед публикацией в Zabbix...`
+      : `Публикация ${zabbixBuildModeTitle(buildMode, publishMode)} ${zabbixLayerTitle(layerKey, 'genitive')}${scope.scopeKeys.length ? ' по области' : ''}${defaultScope.applied ? ' из последних изменений' : ''} в Zabbix...`;
     renderZabbixApplyView(layerKey);
 
     progressTimer = window.setInterval(() => {
@@ -11638,6 +11638,7 @@ async function applyZabbixLayer(layerKey, options = {}) {
         suppressionModelRoot: state.suppressionModelRoot || defaultModelRoot(state.language),
         dryRun,
         publishMode,
+        buildMode,
         scopeKeys: scope.scopeKeys,
         scopeDepth: scope.scopeDepth,
         requireScopeMatch: scope.requireMatch,
@@ -11712,7 +11713,7 @@ async function runCompactZabbixPublication(panel, options = {}) {
     const missingManualScope = targets.filter((layerKey) => collectZabbixApplyScope(layerKey).scopeKeys.length === 0);
     if (missingManualScope.length > 0) {
       if (status) {
-        status.textContent = `Для ручного scope заполните поле scope в технических деталях слоя: ${missingManualScope.map((item) => zabbixLayerTitle(item)).join(', ')}.`;
+        status.textContent = `Для ручной области заполните поле области в технических деталях слоя: ${missingManualScope.map((item) => zabbixLayerTitle(item)).join(', ')}.`;
         status.classList.add('error');
       }
       return;
@@ -11741,13 +11742,13 @@ async function runCompactZabbixPublication(panel, options = {}) {
     if (status) {
       status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: ${zabbixLayerTitle(layerKey)}, ${compactZabbixScopeText(mode.scopeMode)}...`;
     }
-    await applyZabbixLayer(layerKey, { dryRun, publishMode: mode.publishMode });
+    await applyZabbixLayer(layerKey, { dryRun, publishMode: mode.publishMode, buildMode: mode.buildMode });
     if (zabbixApplyState(layerKey).error) {
       break;
     }
     if (layerKey === 'service' && substeps.sla) {
       if (status) {
-        status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: SLA после service-графа...`;
+        status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: SLA после сервисного графа...`;
       }
       await runZabbixSlaPublication({ dryRun });
       if (state.zabbixSla.error) {
@@ -11756,7 +11757,7 @@ async function runCompactZabbixPublication(panel, options = {}) {
     }
     if (layerKey === 'suppression' && substeps.dependencies) {
       if (status) {
-        status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: trigger dependencies после suppression-графа...`;
+        status.textContent = `${dryRun ? 'Проверка' : 'Публикация'}: зависимости триггеров после графа подавления...`;
       }
       await runZabbixTriggerDependencies({ dryRun });
       if (state.zabbixTriggerDependencies.error) {
@@ -11809,18 +11810,22 @@ function renderCompactZabbixPublicationConsole(panel) {
   checkButton.disabled = busy || targets.length === 0;
   applyButton.disabled = busy || targets.length === 0 || unchecked.length > 0 || manualScopeMissing;
   applyButton.title = manualScopeMissing
-    ? 'Для ручного scope заполните поле в компактной консоли или в техническом блоке слоя.'
+    ? 'Для ручной области заполните поле в компактной консоли или в техническом блоке слоя.'
     : unchecked.length > 0
     ? `Сначала выполните успешную проверку: ${unchecked.map((item) => zabbixLayerTitle(item)).join(', ')}.`
     : '';
   const readyText = unchecked.length > 0
     ? `к публикации не готово: ${unchecked.map((item) => zabbixLayerTitle(item)).join(', ')}`
     : manualScopeMissing
-      ? 'для ручного scope нужно заполнить поле'
+      ? 'для ручной области нужно заполнить поле'
     : 'проверка пройдена для выбранных слоев';
+  const fullWarning = mode.scopeMode === 'full'
+    ? ' · Внимание: полный обход источников не предназначен для инсталляций более 500 объектов'
+    : '';
   status.textContent = errors[0]
-    || `${compactZabbixPublicationTargetsText(targets)} · ${compactZabbixScopeText(mode.scopeMode)}${compactZabbixSubstepsText(substeps)} · ${readyText}`;
+    || `${compactZabbixPublicationTargetsText(targets)} · ${compactZabbixScopeText(mode.scopeMode)}${compactZabbixSubstepsText(substeps)} · ${readyText}${fullWarning}`;
   status.classList.toggle('error', errors.length > 0);
+  status.classList.toggle('full-warning', errors.length === 0 && mode.scopeMode === 'full');
   if (progress) {
     progress.innerHTML = renderCompactZabbixPublicationProgress(targets, substeps);
   }
@@ -11868,15 +11873,15 @@ function rememberCompactZabbixPublicationPreferences(panel) {
 function renderCompactZabbixPublicationProgress(targets, substeps) {
   const rows = [];
   if (targets.includes('service')) {
-    rows.push(compactZabbixPublicationProgressRow('service', 'Service graph', zabbixApplyState('service')));
+    rows.push(compactZabbixPublicationProgressRow('service', 'Сервисный граф', zabbixApplyState('service')));
     if (substeps.sla) {
       rows.push(compactZabbixPublicationProgressRow('sla', 'SLA', state.zabbixSla));
     }
   }
   if (targets.includes('suppression')) {
-    rows.push(compactZabbixPublicationProgressRow('suppression', 'Suppression graph', zabbixApplyState('suppression')));
+    rows.push(compactZabbixPublicationProgressRow('suppression', 'Граф подавления', zabbixApplyState('suppression')));
     if (substeps.dependencies) {
-      rows.push(compactZabbixPublicationProgressRow('dependencies', 'Trigger dependencies', state.zabbixTriggerDependencies));
+      rows.push(compactZabbixPublicationProgressRow('dependencies', 'Зависимости триггеров', state.zabbixTriggerDependencies));
     }
   }
   return rows.length > 0 ? rows.join('') : '';
@@ -11904,7 +11909,7 @@ function compactZabbixPublicationProgressDetails(kind, payload) {
     return `SLA к публикации ${payload?.slasPlanned ?? 0}, сервисов ${payload?.serviceCandidates ?? 0}, применено SLA ${payload?.slasApplied ?? 0}`;
   }
   if (kind === 'dependencies') {
-    return `dependencies ${payload?.desiredDependencyCount ?? 0}, aggregate ${payload?.aggregateCount ?? 0}, к обновлению ${payload?.triggersToUpdate ?? 0}`;
+    return `зависимостей ${payload?.desiredDependencyCount ?? 0}, агрегатов ${payload?.aggregateCount ?? 0}, к обновлению ${payload?.triggersToUpdate ?? 0}`;
   }
   return `команд ${payload?.commandsReceived ?? payload?.commandsBuilt ?? 0}, применено ${payload?.appliedCommands ?? payload?.commandsAppliedDirect ?? payload?.commandsPublished ?? 0}, ошибки ${payload?.errorCommands ?? 0}`;
 }
@@ -11918,10 +11923,11 @@ function compactZabbixPublicationTargets(panel) {
 }
 
 function compactZabbixPublicationMode(panel) {
-  const scopeMode = panel.querySelector('[data-zabbix-publish-scope]')?.value ?? 'changes';
+  const scopeMode = panel.querySelector('[data-zabbix-publish-scope]')?.value ?? 'graph';
   return {
     scopeMode,
-    publishMode: scopeMode === 'full' ? 'full' : 'changes'
+    publishMode: scopeMode === 'full' ? 'full' : 'changes',
+    buildMode: scopeMode === 'graph' ? 'graph-overlay' : 'membership'
   };
 }
 
@@ -11958,19 +11964,22 @@ function compactZabbixPublicationTargetsText(targets) {
 }
 
 function compactZabbixScopeText(scopeMode) {
+  if (scopeMode === 'graph') {
+    return 'наложение графа';
+  }
   if (scopeMode === 'full') {
-    return 'полный граф';
+    return 'полный обход источников';
   }
   if (scopeMode === 'manual') {
-    return 'ручной scope';
+    return 'ручная область';
   }
-  return 'изменения';
+  return 'изменения состава';
 }
 
 function compactZabbixSubstepsText(substeps) {
   const items = [
     substeps.sla ? 'SLA' : '',
-    substeps.dependencies ? 'trigger dependencies' : ''
+    substeps.dependencies ? 'зависимости триггеров' : ''
   ].filter(Boolean);
   return items.length > 0 ? ` + ${items.join(' + ')}` : '';
 }
@@ -12052,21 +12061,25 @@ function zabbixApplyFinalMessage(layerKey, result, dryRun) {
   const serviceObjectsText = result?.serviceObjectsScanned
     ? `, сервисных объектов ${result.serviceObjectsScanned}`
     : '';
+  const suppressionObjectsText = result?.suppressionObjectsScanned
+    ? `, объектов подавления ${result.suppressionObjectsScanned}`
+    : '';
+  const graphObjectsText = `${serviceObjectsText}${suppressionObjectsText}`;
   const diff = latestZabbixGraphDiff(result);
   const diffText = diff
-    ? ` diff: к публикации ${diff.publishCandidates ?? 0}, добавлено ${diff.added ?? 0}, изменено ${diff.changed ?? 0}, stale ${diff.removed ?? 0}.`
+    ? ` разница: к публикации ${diff.publishCandidates ?? 0}, добавлено ${diff.added ?? 0}, изменено ${diff.changed ?? 0}, устарело ${diff.removed ?? 0}.`
     : '';
   if (dryRun) {
-    return `Проверка графа завершена: карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, команд ${result?.commandsBuilt ?? 0}.${diffText}`;
+    return `Проверка графа завершена: исходных карточек ${result?.cardsScanned ?? 0}${graphObjectsText}, команд ${result?.commandsBuilt ?? 0}.${diffText}`;
   }
 
   if (deliveryMode === 'direct') {
-    return `Применено в Zabbix: команд ${result?.commandsAppliedDirect ?? result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.${diffText}`;
+    return `Применено в Zabbix: команд ${result?.commandsAppliedDirect ?? result?.commandsPublished ?? 0}, исходных карточек ${result?.cardsScanned ?? 0}${graphObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.${diffText}`;
   }
 
   return layerKey === 'suppression'
-    ? `Отправлено в Zabbix-топик для обновления suppression membership: команд ${result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`
-    : `Опубликовано в Zabbix-топик: команд ${result?.commandsPublished ?? 0}, карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`;
+    ? `Отправлено в Zabbix-топик для обновления состава подавления: команд ${result?.commandsPublished ?? 0}, исходных карточек ${result?.cardsScanned ?? 0}${suppressionObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`
+    : `Опубликовано в Zabbix-топик: команд ${result?.commandsPublished ?? 0}, исходных карточек ${result?.cardsScanned ?? 0}${serviceObjectsText}, дублей ${result?.commandsSkippedAsDuplicates ?? 0}.`;
 }
 
 function latestZabbixGraphDiff(result) {
@@ -12179,7 +12192,7 @@ async function loadServerZabbixDirtyScopes() {
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || result.error || `server dirty scope не загружен: ${response.status}`);
+      throw new Error(result.detail || result.error || `серверная область последних изменений не загружена: ${response.status}`);
     }
 
     mergeServerZabbixDirtyScopeSnapshot(result);
@@ -12215,7 +12228,7 @@ function mergeServerZabbixDirtyScopeSnapshot(snapshot) {
       omittedCount: localScope.omittedCount,
       warnings: [
         ...(snapshot?.error ? [`Server dirty scope: ${snapshot.error}`] : []),
-        ...failedEntries.slice(0, 5).map((entry) => `Dirty scope failed: ${entry.key}${entry.lastResult ? ` - ${entry.lastResult}` : ''}`),
+        ...failedEntries.slice(0, 5).map((entry) => `Ошибка области последних изменений: ${entry.key}${entry.lastResult ? ` - ${entry.lastResult}` : ''}`),
         ...(localScope.warnings ?? [])
       ]
     });
@@ -12251,7 +12264,7 @@ async function persistZabbixDirtyScopeToServer(layerKey, entries, reason) {
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || result.message || result.error || `server dirty scope не сохранен: ${response.status}`);
+      throw new Error(result.detail || result.message || result.error || `серверная область последних изменений не сохранена: ${response.status}`);
     }
 
     mergeServerZabbixDirtyScopeSnapshot(result.snapshot);
@@ -12268,7 +12281,7 @@ async function clearServerZabbixDirtyScope(layerKey) {
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || result.message || result.error || `server dirty scope не очищен: ${response.status}`);
+      throw new Error(result.detail || result.message || result.error || `серверная область последних изменений не очищена: ${response.status}`);
     }
 
     mergeServerZabbixDirtyScopeSnapshot(result.snapshot);
@@ -12359,7 +12372,7 @@ function markZabbixDirtyScopeFromTemplateApplyResult(layerKey, result) {
   }
 
   const warning = Number(reconcile.removed ?? 0) > 0
-    ? 'В результате материализации есть удаленные правила: они будут видны как stale; для фактической очистки используйте stale cleanup или полный граф.'
+    ? 'В результате материализации есть удаленные правила: они будут видны как устаревшие; для фактической очистки используйте cleanup или полный обход источников.'
     : '';
   markZabbixDirtyScopeFromRules(
     layerKey,
@@ -12462,8 +12475,8 @@ function applyZabbixDirtyScopeToInput(layerKey) {
   input.value = keys.join('\n');
   const stateItem = zabbixApplyState(layerKey);
   stateItem.message = keys.length > 0
-    ? `Scope из последних изменений подставлен: ${keys.length} ключей. Выполните проверку изменений перед публикацией.`
-    : 'Нет pending scope из последних изменений.';
+    ? `Область из последних изменений подставлена: ${keys.length} ключей. Выполните проверку изменений перед публикацией.`
+    : 'Нет области последних изменений для подстановки.';
   renderZabbixApplyView(layerKey);
 }
 
@@ -12494,8 +12507,8 @@ function ensureZabbixDirtyScopeDefault(layerKey, reason = 'apply') {
   const stateItem = zabbixApplyState(layerKey);
   stateItem.dirtyScopeDefaultApplied = true;
   stateItem.message = reason === 'preview'
-    ? `Scope из server-side dirty scopes подставлен автоматически для проверки: ${keys.length} ключей.`
-    : `Scope из server-side dirty scopes подставлен автоматически: ${keys.length} ключей.`;
+    ? `Область из серверного журнала последних изменений подставлена автоматически для проверки: ${keys.length} ключей.`
+    : `Область из серверного журнала последних изменений подставлена автоматически: ${keys.length} ключей.`;
   return { applied: true, count: keys.length };
 }
 
@@ -12532,7 +12545,7 @@ function renderZabbixDirtyScope(layerKey) {
   }
 
   if (entries.length === 0 && warnings.length === 0) {
-    summary.innerHTML = '<span>Pending scope по последним изменениям пуст. Заполните scope вручную или оставьте поле пустым для всего слоя. Подсказка синхронизируется с server-side dirty scopes и локальным журналом браузера.</span>';
+    summary.innerHTML = '<span>Область по последним изменениям пустая. Заполните область вручную или оставьте поле пустым для всего слоя. Подсказка синхронизируется с серверным журналом и локальным журналом браузера.</span>';
     return;
   }
 
@@ -12544,10 +12557,10 @@ function renderZabbixDirtyScope(layerKey) {
     ? ` · не показано из-за лимита ${escapeHtml(scope.omittedCount)}`
     : '';
   summary.innerHTML = `
-    <strong>Pending scope: ${escapeHtml(entries.length)} ключей${omittedText}</strong>
+    <strong>Область последних изменений: ${escapeHtml(entries.length)} ключей${omittedText}</strong>
     <span>${escapeHtml(scope.lastReason || 'Последние изменения правил/шаблонов')}</span>
-    <span>Если поле scope пустое, dry-run/apply возьмет эти ключи автоматически.</span>
-    <span>${escapeHtml(scope.updatedAt ? `обновлено: ${formatCacheTimestamp(scope.updatedAt)}` : 'синхронизируется с server-side dirty scopes')}</span>
+    <span>Если поле области пустое, проверка или публикация возьмет эти ключи автоматически.</span>
+    <span>${escapeHtml(scope.updatedAt ? `обновлено: ${formatCacheTimestamp(scope.updatedAt)}` : 'синхронизируется с серверным журналом последних изменений')}</span>
     ${examples ? `<span>Примеры: ${escapeHtml(examples)}</span>` : ''}
     ${warnings.map((warning) => `<span class="error-text">${escapeHtml(warning)}</span>`).join('')}
   `;
@@ -12705,7 +12718,7 @@ function renderZabbixApplyView(layerKey) {
     || progressText
     || stateItem.message
     || (layerKey === 'suppression'
-      ? 'Команды этого слоя обновляют suppression membership для aggregate triggers и trigger dependencies; Zabbix Services по умолчанию не создаются.'
+      ? 'Команды этого слоя обновляют состав подавления для агрегатных триггеров и зависимостей триггеров; Zabbix Services по умолчанию не создаются.'
       : 'Команды этого слоя публикуются в отдельный Zabbix-топик; статус ведется независимо от второго слоя.');
   status.classList.toggle('error', Boolean(stateItem.error));
 
@@ -12743,7 +12756,7 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
     <div class="rule-summary">
       <span class="structure-mark">${escapeHtml(zabbixLayerTitle(layerKey))}</span>
       <strong>${escapeHtml(result ? (result.dryRun ? 'последний dry-run' : zabbixApplyLastRunLabel(layerKey)) : 'ожидание запуска')}</strong>
-      <span>правил ${escapeHtml(result?.ruleCount ?? 0)} · классов-источников ${escapeHtml(result?.sourceClassCount ?? 0)} · карточек ${escapeHtml(result?.cardsScanned ?? 0)} · команд ${escapeHtml(result?.commandsBuilt ?? 0)}</span>
+      <span>режим ${escapeHtml(zabbixBuildModeTitle(result?.buildMode, result?.zabbixPublishMode))} · правил ${escapeHtml(result?.ruleCount ?? 0)} · исходных классов ${escapeHtml(result?.sourceClassCount ?? 0)} · исходных карточек ${escapeHtml(result?.cardsScanned ?? 0)} · объектов графа ${escapeHtml((result?.serviceObjectsScanned ?? 0) + (result?.suppressionObjectsScanned ?? 0))} · команд ${escapeHtml(result?.commandsBuilt ?? 0)}</span>
       ${topProblems.length > 0 ? `<span class="error-text">главные проблемы: ${escapeHtml(topProblems.join('; '))}</span>` : ''}
       <span>топики: ${escapeHtml((result?.topics ?? (result?.topic ? [result.topic] : [])).join(', ') || '-')}</span>
       <span>последняя команда: ${escapeHtml(layerStatus.lastRuleName || layerStatus.lastRuleId || '-')} -> ${escapeHtml(layerStatus.lastTargetClass || '-')}:${escapeHtml(layerStatus.lastTargetKey || '-')}</span>
@@ -12758,7 +12771,7 @@ function renderZabbixApplyDetails(layerKey, stateItem) {
     ${classes.map((item) => `
       <div class="rule-summary">
         <span class="structure-mark">${escapeHtml(item.sourceClass || '-')}</span>
-        <strong>${escapeHtml(item.cards ?? 0)} карточек</strong>
+        <strong>${escapeHtml(item.cards ?? 0)} ${String(item.sourceClass || '').includes('graph_objects') ? 'объектов' : 'карточек'}</strong>
         <span>${escapeHtml(applyCommandCountersText(result, item))}</span>
         ${item.error ? `<span>ошибка: ${escapeHtml(item.error)}</span>` : ''}
       </div>
@@ -12803,12 +12816,12 @@ function renderZabbixScopePreview(stateItem) {
     .join('; ');
   return `
     <div class="rule-summary">
-      <span class="structure-mark">проверка scope</span>
+      <span class="structure-mark">проверка области</span>
       <strong>${escapeHtml(loading ? 'выполняется' : error ? 'ошибка' : 'готово')}</strong>
-      ${loading ? '<span>Проверяю совпадения по rule id/name/managed key и сервисным объектам; source-карточки не читаются.</span>' : ''}
+      ${loading ? '<span>Проверяю совпадения по rule id/name/managed key и сервисным объектам; исходные карточки не читаются.</span>' : ''}
       ${error ? `<span class="error-text">${escapeHtml(error)}</span>` : ''}
-      ${preview ? `<span>правил ${escapeHtml(preview.ruleCount ?? 0)} · source-классов ${escapeHtml(preview.sourceClassCount ?? sourceClasses.length)} · слой ${escapeHtml(preview.layer || '-')}</span>` : ''}
-      ${sourceClasses.length > 0 ? `<span>source-классы: ${escapeHtml(sourceClasses.slice(0, 12).join(', '))}${sourceClasses.length > 12 ? escapeHtml(`; еще ${sourceClasses.length - 12}`) : ''}</span>` : ''}
+      ${preview ? `<span>правил ${escapeHtml(preview.ruleCount ?? 0)} · исходных классов ${escapeHtml(preview.sourceClassCount ?? sourceClasses.length)} · слой ${escapeHtml(preview.layer || '-')}</span>` : ''}
+      ${sourceClasses.length > 0 ? `<span>исходные классы: ${escapeHtml(sourceClasses.slice(0, 12).join(', '))}${sourceClasses.length > 12 ? escapeHtml(`; еще ${sourceClasses.length - 12}`) : ''}</span>` : ''}
       ${ruleText ? `<span>правила: ${escapeHtml(ruleText)}${rules.length > 8 ? escapeHtml(`; еще ${rules.length - 8}`) : ''}</span>` : ''}
     </div>
     ${renderZabbixScopePrefilter(preview)}
@@ -12824,11 +12837,11 @@ function renderZabbixScopePrefilter(result) {
   const missingKeys = Array.isArray(scope.missingKeys) ? scope.missingKeys : [];
   return `
     <div class="rule-summary">
-      <span class="structure-mark">scope подготовки</span>
+      <span class="structure-mark">область подготовки</span>
       <strong>${escapeHtml(scope.applied ? 'применен' : 'не сократил подготовку')}</strong>
       <span>${escapeHtml(scope.message || '')}</span>
-      <span>seed ${escapeHtml(scope.matchedSeedCount ?? 0)} · правил ${escapeHtml(scope.selectedRuleCount ?? 0)}/${escapeHtml(scope.originalRuleCount ?? 0)} · source-классов ${escapeHtml(scope.selectedSourceClassCount ?? 0)}/${escapeHtml(scope.originalSourceClassCount ?? 0)} · глубина ${escapeHtml(scope.depth ?? 0)}</span>
-      ${(scope.serviceObjectMatchedCount ?? 0) > 0 ? `<span>сервисных объектов scope ${escapeHtml(scope.serviceObjectMatchedCount)} · раскрыто ${escapeHtml(scope.serviceObjectTraversedCount ?? 0)} · ключей к правилам ${escapeHtml(scope.serviceObjectScopeKeyCount ?? 0)}</span>` : ''}
+      <span>начальных узлов ${escapeHtml(scope.matchedSeedCount ?? 0)} · правил ${escapeHtml(scope.selectedRuleCount ?? 0)}/${escapeHtml(scope.originalRuleCount ?? 0)} · исходных классов ${escapeHtml(scope.selectedSourceClassCount ?? 0)}/${escapeHtml(scope.originalSourceClassCount ?? 0)} · глубина ${escapeHtml(scope.depth ?? 0)}</span>
+      ${(scope.serviceObjectMatchedCount ?? 0) > 0 ? `<span>сервисных объектов области ${escapeHtml(scope.serviceObjectMatchedCount)} · раскрыто ${escapeHtml(scope.serviceObjectTraversedCount ?? 0)} · ключей к правилам ${escapeHtml(scope.serviceObjectScopeKeyCount ?? 0)}</span>` : ''}
       ${missingKeys.length > 0 ? `<span class="error-text">не сопоставлены статически: ${escapeHtml(missingKeys.slice(0, 10).join(', '))}</span>` : ''}
     </div>
   `;
@@ -12847,20 +12860,20 @@ function renderZabbixGraphDiffResults(result) {
 
   return diffs.map((diff) => {
     const samples = Array.isArray(diff.samples) ? diff.samples.slice(0, 12) : [];
-    const mode = diff.publishMode === 'full' ? 'полный граф' : 'только изменения';
+    const mode = diff.publishMode === 'full' ? 'полный обход источников' : 'только изменения';
     const graphResult = graphResults.find((item) => item?.diff === diff) || {};
     const scope = graphResult.scope || {};
     const scopeText = scope.enabled
-      ? `scope: seed ${scope.matchedSeedCount ?? 0}, target ${scope.targetCount ?? 0}, команд ${scope.commandCount ?? 0}, глубина ${scope.depth ?? 0}`
-      : 'scope: весь слой';
+      ? `область: начальных узлов ${scope.matchedSeedCount ?? 0}, целей ${scope.targetCount ?? 0}, команд ${scope.commandCount ?? 0}, глубина ${scope.depth ?? 0}`
+      : 'область: весь слой';
     return `
       <details class="rule-summary" open>
         <summary>
-          <strong>diff Zabbix desired graph: ${escapeHtml(mode)}</strong>
-          <span>desired ${escapeHtml(diff.desired ?? 0)} · применено ранее ${escapeHtml(diff.applied ?? 0)} · добавлено ${escapeHtml(diff.added ?? 0)} · изменено ${escapeHtml(diff.changed ?? 0)} · без изменений ${escapeHtml(diff.unchanged ?? 0)} · stale ${escapeHtml(diff.removed ?? 0)} · к публикации ${escapeHtml(diff.publishCandidates ?? 0)}</span>
+          <strong>Разница целевого графа Zabbix: ${escapeHtml(mode)}</strong>
+          <span>в расчете ${escapeHtml(diff.desired ?? 0)} · применено ранее ${escapeHtml(diff.applied ?? 0)} · добавлено ${escapeHtml(diff.added ?? 0)} · изменено ${escapeHtml(diff.changed ?? 0)} · без изменений ${escapeHtml(diff.unchanged ?? 0)} · устарело ${escapeHtml(diff.removed ?? 0)} · к публикации ${escapeHtml(diff.publishCandidates ?? 0)}</span>
         </summary>
         <span>${escapeHtml(scopeText)}</span>
-        ${Array.isArray(scope.missingKeys) && scope.missingKeys.length ? `<span class="error-text">не найдены scope-ключи: ${escapeHtml(scope.missingKeys.slice(0, 8).join(', '))}</span>` : ''}
+        ${Array.isArray(scope.missingKeys) && scope.missingKeys.length ? `<span class="error-text">не найдены ключи области: ${escapeHtml(scope.missingKeys.slice(0, 8).join(', '))}</span>` : ''}
         ${samples.length > 0 ? `<span>${escapeHtml(samples.map((item) => `${zabbixGraphDiffActionLabel(item.action)} ${item.displayName || item.objectKey || '-'} (${item.objectType || '-'})`).join('; '))}</span>` : '<span>Примеры изменений отсутствуют.</span>'}
       </details>
     `;
@@ -13232,23 +13245,23 @@ function renderZabbixTriggerDependenciesDetails(payload, filter = 'all') {
     <div class="rule-summary">
       <span class="structure-mark">глубина транзитивных связей</span>
       <strong>N=${escapeHtml(zabbixTransitiveGroupDependencyDepth(payload))}</strong>
-      <span>Leaf/source trigger-ы зависят только от ближайшей suppression-группы. Upstream-причины включаются в выражения aggregate trigger-ов групп на N уровней, чтобы модель не росла полной матрицей от каждого host trigger-а до всех верхних причин.</span>
+      <span>Leaf/source trigger-ы зависят только от ближайшей группы подавления. Upstream-причины включаются в выражения aggregate trigger-ов групп на N уровней, чтобы модель не росла полной матрицей от каждого host trigger-а до всех верхних причин.</span>
     </div>
     <div class="rule-summary">
       <span class="structure-mark">selector состояния группы</span>
       <span>${escapeHtml(payload?.aggregateStateTriggerSelector || payload?.aggregateStateTriggerSelectorSummary || '-')}</span>
-      <span>Используется только для calculated item suppression-группы; сюда должны попадать корневые признаки недоступности.</span>
+      <span>Используется только для calculated item группы подавления; сюда должны попадать корневые признаки недоступности.</span>
       <span>Порог aggregation_type считается по host-ам, чьи выбранные поддержанные trigger-ы реально попали в calculated item; host-ы без выбранных trigger-ов показываются как unknown/skipped и не считаются отказавшими.</span>
     </div>
     <div class="rule-summary">
       <span class="structure-mark">семантика aggregation_type</span>
-      <span>В suppression <code>all</code> означает: aggregate trigger становится PROBLEM, если здоровы не все выбранные source-hosts. <code>any</code> означает: PROBLEM только когда не осталось ни одного здорового source-host.</span>
+      <span>В подавлении <code>all</code> означает: aggregate trigger становится PROBLEM, если здоровы не все выбранные source-hosts. <code>any</code> означает: PROBLEM только когда не осталось ни одного здорового source-host.</span>
       <span><code>threshold</code> сравнивает процент здоровых source-hosts с полем threshold, <code>n_of_m</code> сравнивает число здоровых source-hosts с полем n. Это не алгоритм дерева Zabbix Services: там service-узел <code>all</code> становится Problem только когда все прямые дочерние service уже Problem.</span>
     </div>
     <div class="rule-summary">
       <span class="structure-mark">selector dependency-покрытия</span>
       <span>${escapeHtml(payload?.dependencyTriggerSelector || payload?.dependencyTriggerSelectorSummary || '-')}</span>
-      <span>Определяет, какие leaf/source trigger-ы получают Zabbix dependencies от ближайшей suppression-группы.</span>
+      <span>Определяет, какие leaf/source trigger-ы получают Zabbix dependencies от ближайшей группы подавления.</span>
     </div>
     `);
   }
@@ -13258,9 +13271,9 @@ function renderZabbixTriggerDependenciesDetails(payload, filter = 'all') {
   if (diagnosticItemVisible('info', filter) && aggregates.length > 0) {
     blocks.push(`
       <div class="rule-summary">
-        <span class="structure-mark">aggregate triggers</span>
+        <span class="structure-mark">агрегатные триггеры</span>
         <strong>${escapeHtml(aggregates.length)} примеров</strong>
-        <span>Каждый suppression-объект получает calculated item и trigger причины; текущее состояние считает Zabbix.</span>
+        <span>Каждый объект подавления получает calculated item и trigger причины; текущее состояние считает Zabbix.</span>
       </div>
       ${aggregates.slice(0, 100).map(renderZabbixSuppressionAggregateSample).join('')}
     `);
@@ -13513,11 +13526,11 @@ function renderZabbixMembershipTargets(targets, layerKey = 'service') {
   const suppressionMode = layerKey === 'suppression';
   return `
     <div class="rule-summary">
-      <span class="structure-mark">${escapeHtml(suppressionMode ? 'suppression membership' : 'membership Zabbix')}</span>
+      <span class="structure-mark">${escapeHtml(suppressionMode ? 'состав подавления' : 'состав Zabbix')}</span>
       <strong>${escapeHtml(targets.length)} последних объектов</strong>
       <span>${escapeHtml(suppressionMode
-        ? 'Показывает source-карточки, из которых строятся aggregate triggers и trigger dependencies. Zabbix Services по умолчанию не создаются.'
-        : 'Показывает, какие source-карточки сейчас закреплены за managed service и готовы попасть в Zabbix через source leaf/problem tags.')}</span>
+        ? 'Показывает исходные карточки, из которых строятся агрегатные триггеры и зависимости триггеров. Zabbix Services по умолчанию не создаются.'
+        : 'Показывает, какие исходные карточки сейчас закреплены за управляемым сервисом и готовы попасть в Zabbix через leaf-узлы и теги проблем.')}</span>
     </div>
     ${targets.slice(0, 10).map((target) => {
       const sources = Array.isArray(target?.sources) ? target.sources : [];
@@ -13528,12 +13541,12 @@ function renderZabbixMembershipTargets(targets, layerKey = 'service') {
         <details class="rule-summary zabbix-plan-object">
           <summary>
             <strong>${escapeHtml(target?.targetName || target?.targetManagedKey || '-')}</strong>
-            <span>готовых source ${escapeHtml(target?.sourceCount ?? 0)} · с ${escapeHtml(hostAttr)} ${escapeHtml(target?.hostBindingCount ?? 0)} · ожидают ${escapeHtml(hostAttr)} ${escapeHtml(target?.pendingSourceCount ?? target?.missingHostBindingCount ?? 0)}</span>
+            <span>готовых источников ${escapeHtml(target?.sourceCount ?? 0)} · с ${escapeHtml(hostAttr)} ${escapeHtml(target?.hostBindingCount ?? 0)} · ожидают ${escapeHtml(hostAttr)} ${escapeHtml(target?.pendingSourceCount ?? target?.missingHostBindingCount ?? 0)}</span>
           </summary>
           <span>ключ: ${escapeHtml(target?.targetManagedKey || '-')}</span>
           <span>агрегация: ${escapeHtml(zabbixMembershipAggregationText(target))}</span>
-          ${suppressionMode ? '' : `<span>leaf children: ${escapeHtml((target?.sourceLeafManagedKeys ?? []).join(', ') || '-')}</span>`}
-          <span>готовые source: ${escapeHtml(sourceText.join('; ') || '-')}</span>
+          ${suppressionMode ? '' : `<span>leaf-узлы: ${escapeHtml((target?.sourceLeafManagedKeys ?? []).join(', ') || '-')}</span>`}
+          <span>готовые источники: ${escapeHtml(sourceText.join('; ') || '-')}</span>
           <span>ожидают ${escapeHtml(hostAttr)}: ${escapeHtml(pendingText.join('; ') || '-')}</span>
         </details>
       `;
@@ -13582,7 +13595,7 @@ function zabbixApplyCommandSourceLabel(item) {
 }
 
 function zabbixApplyLastRunLabel(layerKey) {
-  return layerKey === 'suppression' ? 'последнее обновление membership' : 'последняя публикация';
+  return layerKey === 'suppression' ? 'последнее обновление состава' : 'последняя публикация';
 }
 
 function renderZabbixObjectPlan(plan, layerKey) {
@@ -13608,10 +13621,10 @@ function renderZabbixObjectPlan(plan, layerKey) {
   const orphanVisibleNodes = Array.isArray(plan.orphanVisibleNodes) ? plan.orphanVisibleNodes : [];
   return `
     <div class="rule-summary">
-      <span class="structure-mark">${escapeHtml(suppressionMode ? 'план suppression membership' : 'план объектов Zabbix')}</span>
-      <strong>${escapeHtml(plan.objectCount ?? objects.length)} ${escapeHtml(suppressionMode ? 'membership-объектов' : 'объектов')} · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
+      <span class="structure-mark">${escapeHtml(suppressionMode ? 'план состава подавления' : 'план объектов Zabbix')}</span>
+      <strong>${escapeHtml(plan.objectCount ?? objects.length)} ${escapeHtml(suppressionMode ? 'объектов состава' : 'объектов')} · ${escapeHtml(plan.relationCount ?? 0)} связей</strong>
       <span>${escapeHtml(`фильтр: ${zabbixPlanFilterLabel(filter)}; страница ${page} из ${pageCount}; показаны ${shownFrom}-${shownTo} из ${filteredObjects.length}`)}${hasMore ? escapeHtml(`; полный список ограничен первыми ${plan.objectSamplesLimit ?? objects.length}`) : ''}</span>
-      ${!suppressionMode ? `<span>root services: ${escapeHtml(plan.rootServiceCount ?? rootServices.length)} · orphan visible nodes: ${escapeHtml(plan.orphanVisibleNodeCount ?? orphanVisibleNodes.length)}</span>` : ''}
+      ${!suppressionMode ? `<span>корневых сервисов: ${escapeHtml(plan.rootServiceCount ?? rootServices.length)} · видимых узлов без родителя: ${escapeHtml(plan.orphanVisibleNodeCount ?? orphanVisibleNodes.length)}</span>` : ''}
       ${orphanVisibleNodes.length > 0 ? `<span class="error-text">${escapeHtml(orphanVisibleNodes.slice(0, 6).map((item) => `${item.name || item.managedKey || '-'} (${item.role || '-'})`).join('; '))}</span>` : ''}
       ${pageCount > 1 ? `
         <div class="rule-summary-actions">
@@ -13698,7 +13711,7 @@ function renderZabbixObjectPlanItem(item, layerKey = 'service') {
       <span>managed key: ${escapeHtml(item?.managedKey || '-')} · role ${escapeHtml(item?.role || '-')} · visibility ${escapeHtml(item?.visibility || '-')}</span>
       <span>правила: ${escapeHtml(ruleNames.length > 0 ? ruleNames.join(', ') : ruleIds.join(', ') || '-')}</span>
       <span>источники: ${escapeHtml(sources.join(', ') || '-')}</span>
-      ${sourceBindingText.length > 0 ? `<span>${escapeHtml(suppressionMode ? 'готовность к trigger dependencies' : 'привязка к проблемам Zabbix')}: ${escapeHtml(sourceBindingText.join('; '))}</span>` : ''}
+      ${sourceBindingText.length > 0 ? `<span>${escapeHtml(suppressionMode ? 'готовность к зависимостям триггеров' : 'привязка к проблемам Zabbix')}: ${escapeHtml(sourceBindingText.join('; '))}</span>` : ''}
       ${attributes.length > 0 ? `<span>атрибуты: ${escapeHtml(attributes.join('; '))}</span>` : ''}
       ${relationText.length > 0 ? `<span>связи: ${escapeHtml(relationText.join('; '))}</span>` : ''}
     </details>
@@ -13859,7 +13872,25 @@ function zabbixLayerTitle(layerKey, form = 'nominative') {
 }
 
 function zabbixPublishModeTitle(mode) {
-  return mode === 'full' ? 'полного графа' : 'изменений графа';
+  return mode === 'full' ? 'полного обхода источников' : 'изменений состава';
+}
+
+function normalizeZabbixBuildMode(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'graph'
+    || normalized === 'graph-overlay'
+    || normalized === 'topology'
+    || normalized === 'topology-only'
+    ? 'graph-overlay'
+    : 'membership';
+}
+
+function zabbixBuildModeTitle(buildMode, publishMode) {
+  if (normalizeZabbixBuildMode(buildMode) === 'graph-overlay') {
+    return 'наложения графа';
+  }
+
+  return zabbixPublishModeTitle(publishMode);
 }
 
 function zabbixApplyStatusLabel(status) {
@@ -14249,7 +14280,7 @@ function modelControlSummaryCards(report, findings) {
       title: 'Изменения',
       status: areaStatus('runtime'),
       metric: `${report.dirty.total} dirty`,
-      summary: `dirty scopes: service ${report.dirty.service}, suppression ${report.dirty.suppression}; deletion plans ${report.deletionPlans}`,
+      summary: `области изменений: сервис ${report.dirty.service}, подавление ${report.dirty.suppression}; планов удаления ${report.deletionPlans}`,
       action: { actionView: 'modelZabbixApply', actionLabel: 'Открыть публикацию' }
     },
     {
@@ -14310,7 +14341,7 @@ function modelControlFindings(report) {
     add('sources', 'warning', 'Zabbix-кэш не готов', 'Локальная проверка Zabbix не загружена или есть ошибка readiness.', 'dashboard', 'Открыть панель');
   }
   if (!report.readiness.webhooksReady) {
-    add('sources', 'warning', 'Webhooks требуют проверки', `Не покрыто source-классов: ${report.readiness.webhooksMissing}.`, 'webhooksSync', 'Открыть Webhooks');
+    add('sources', 'warning', 'Webhooks требуют проверки', `Не покрыто исходных классов: ${report.readiness.webhooksMissing}.`, 'webhooksSync', 'Открыть Webhooks');
   }
 
   if (state.templateAudit.error) {
@@ -14339,7 +14370,7 @@ function modelControlFindings(report) {
     add('runtime', 'warning', 'Есть планы удаления объектов', `Планов удаления: ${report.deletionPlans}.`, 'templateApply', 'Открыть подготовку');
   }
   if (report.dirty.total > 0) {
-    add('runtime', 'warning', 'Есть dirty scopes для Zabbix', `service ${report.dirty.service}, suppression ${report.dirty.suppression}.`, 'modelZabbixApply', 'Открыть публикацию');
+    add('runtime', 'warning', 'Есть области изменений для Zabbix', `сервис ${report.dirty.service}, подавление ${report.dirty.suppression}.`, 'modelZabbixApply', 'Открыть публикацию');
   }
 
   for (const layer of report.relationReport.layers) {
@@ -14520,7 +14551,7 @@ function modelControlActionForCard(key) {
     graph: { key: 'relationsGraph', label: 'Открыть граф' },
     zabbix: { key: 'microserviceSettings', label: 'Открыть настройки' },
     zabbixApply: { key: 'modelZabbixApply', label: 'Открыть публикацию Zabbix' },
-    dirty: { key: 'modelZabbixApply', label: 'Открыть dirty scopes' }
+    dirty: { key: 'modelZabbixApply', label: 'Открыть области изменений' }
   };
   return actions[key] ?? null;
 }
@@ -15426,10 +15457,6 @@ async function ensureTemplateMaterializationSourceCards(layerKey, options = {}) 
   const classCodes = new Set();
   for (const template of document.templates.filter((item) => item.enabled !== false)) {
     const dimension = templatePopulationDimension(template);
-    if (!templateDimensionNeedsSourceCards(dimension)) {
-      continue;
-    }
-
     let candidates = [];
     try {
       candidates = templateCandidateClasses(template);
@@ -15441,10 +15468,8 @@ async function ensureTemplateMaterializationSourceCards(layerKey, options = {}) 
     }
 
     for (const candidate of candidates) {
-      classCodes.add(candidate.code);
-
-      for (const dependencyClass of templatePopulationDimensionDependencyClasses(candidate.code, dimension)) {
-        classCodes.add(dependencyClass);
+      for (const classCode of templateDimensionRequiredCardClasses(candidate.code, dimension)) {
+        classCodes.add(classCode);
       }
     }
   }
@@ -15466,6 +15491,142 @@ function sourceClassCardsAvailable(classCode) {
 function sourceClassCardsLoaded(classCode) {
   return sourceClassInstanceItems(classCode).some((item) =>
     String(item.layer).toLowerCase() === 'source' && Array.isArray(item.cards));
+}
+
+function templateDimensionRequiredCardClasses(sourceClass, dimension) {
+  const plan = templatePopulationDimensionReadStrategy(sourceClass, dimension);
+  return plan.requiredClassCodes ?? [];
+}
+
+function templatePopulationDimensionReadStrategy(sourceClass, dimension) {
+  const normalized = normalizeTemplatePopulationDimension(dimension, { missingMode: 'legacy' });
+  const type = normalized.type;
+  const sourceField = String(normalized.source_field ?? '').trim();
+  const sourceCode = String(sourceClass ?? '').trim();
+  const staticPlan = (reason) => ({
+    strategy: TEMPLATE_DIMENSION_READ_STRATEGIES.static,
+    sourceClass: sourceCode,
+    sourceField,
+    requiredClassCodes: [],
+    reason
+  });
+
+  if (!isTemplateDimensionMaterialized(normalized)) {
+    return staticPlan('режим совместимости не вычисляет dimension.*');
+  }
+  if (['source_bool', 'range', 'static_list'].includes(type)) {
+    return staticPlan('значения задаются без чтения карточек источника');
+  }
+  if (!sourceField) {
+    return staticPlan('поле измерения не выбрано');
+  }
+
+  if (type === 'source_lookup') {
+    const lookupCatalog = lookupCatalogForTemplateSourceField(sourceCode, sourceField);
+    if (lookupCatalog.lookupType) {
+      return {
+        strategy: TEMPLATE_DIMENSION_READ_STRATEGIES.lookupCatalog,
+        sourceClass: sourceCode,
+        sourceField,
+        lookupType: lookupCatalog.lookupType,
+        valueCount: lookupCatalog.values.length,
+        requiredClassCodes: [],
+        reason: `lookup ${lookupCatalog.lookupType}`
+      };
+    }
+  }
+
+  if (type === 'source_field' || type === 'source_lookup') {
+    const referencePlan = templateReferenceCatalogPlanForField(sourceCode, sourceField);
+    if (referencePlan) {
+      return {
+        strategy: TEMPLATE_DIMENSION_READ_STRATEGIES.referenceCatalog,
+        sourceClass: sourceCode,
+        sourceField,
+        fieldRule: referencePlan.fieldRule,
+        cmdbPath: referencePlan.cmdbPath,
+        catalogClass: referencePlan.catalogClass,
+        catalogField: referencePlan.catalogField,
+        requiredClassCodes: [referencePlan.catalogClass].filter(Boolean),
+        reason: `${referencePlan.catalogClass}.${referencePlan.catalogField}`
+      };
+    }
+  }
+
+  if (!templateDimensionNeedsSourceCards(normalized)) {
+    return staticPlan('значения не требуют чтения карточек источника');
+  }
+
+  const requiredClassCodes = [sourceCode]
+    .concat(templatePopulationDimensionDependencyClasses(sourceCode, normalized))
+    .filter(Boolean);
+  return {
+    strategy: TEMPLATE_DIMENSION_READ_STRATEGIES.sourceScan,
+    sourceClass: sourceCode,
+    sourceField,
+    requiredClassCodes: uniqueTextList(requiredClassCodes),
+    reason: 'уникальные значения вычисляются по карточкам класса-источника'
+  };
+}
+
+function templateReferenceCatalogPlanForField(sourceClass, sourceField) {
+  const option = sourceFieldOptionForClass(sourceClass, sourceField);
+  const fieldRule = option?.fieldRule;
+  const path = cmdbPathSegmentsForFieldRule(sourceClass, fieldRule);
+  if (!fieldRule || fieldRule.unresolved || path.length < 2 || path.some((segment) => segment.startsWith('{domain:'))) {
+    return null;
+  }
+
+  let currentClass = sourceClass;
+  for (const segment of path.slice(0, -1)) {
+    const attribute = sourceAttributeByCode(currentClass, segment);
+    if (!isReferenceSourceAttribute(attribute)) {
+      return null;
+    }
+
+    const targetClass = referenceTargetClass(attribute, currentClass);
+    if (!targetClass) {
+      return null;
+    }
+
+    currentClass = targetClass;
+  }
+
+  if (!currentClass || canonicalToken(currentClass) === canonicalToken(sourceClass)) {
+    return null;
+  }
+
+  const catalogField = path[path.length - 1] || fieldRule.leafAttribute || '';
+  if (!catalogField || !sourceAttributeByCode(currentClass, catalogField)) {
+    return null;
+  }
+
+  return {
+    sourceClass,
+    sourceField,
+    fieldRule,
+    cmdbPath: fieldRule.cmdbPath || '',
+    catalogClass: currentClass,
+    catalogField
+  };
+}
+
+function templatePopulationDimensionReadPlanText(plan) {
+  if (!plan) {
+    return 'чтение: не определено';
+  }
+
+  if (plan.strategy === TEMPLATE_DIMENSION_READ_STRATEGIES.lookupCatalog) {
+    return `чтение: lookup catalog ${plan.lookupType || '-'} (${plan.valueCount ?? 0} значений), карточки source не читаются`;
+  }
+  if (plan.strategy === TEMPLATE_DIMENSION_READ_STRATEGIES.referenceCatalog) {
+    return `чтение: reference catalog ${plan.catalogClass || '-'} по ${plan.catalogField || '-'}, source ${plan.sourceClass || '-'} не сканируется`;
+  }
+  if (plan.strategy === TEMPLATE_DIMENSION_READ_STRATEGIES.sourceScan) {
+    return `чтение: source scan ${plan.requiredClassCodes?.join(', ') || plan.sourceClass || '-'}; требуется обход карточек`;
+  }
+
+  return `чтение: без обхода карточек (${plan.reason || 'статические значения'})`;
 }
 
 function templatePopulationDimensionDependencyClasses(sourceClass, dimension) {
@@ -18313,7 +18474,7 @@ function relationGraphNodeTitle(node) {
     node.sourceKeyAttribute ? `Ключ источника: ${node.sourceKeyAttribute}` : '',
     `Цель модели: ${node.targetClass || '-'}:${node.objectLookup || '-'}`,
     node.nodeType === 'manual_rule' && node.objectLookup
-      ? 'Ручное правило связывает все подходящие source-карточки с этим целевым объектом модели.'
+      ? 'Ручное правило связывает все подходящие исходные карточки с этим целевым объектом модели.'
       : '',
     `Ожидаемых объектов: ${node.objectCount}`,
     `Runtime-связей: ${node.runtimeRelationCount}`
@@ -19607,7 +19768,7 @@ function cleanupDetachedTemplateRules(layerKey, mode = 'keep_objects') {
         rules,
         `Убраны отвязанные правила шаблонов: ${rules.length}`,
         {
-          warning: 'Удаление отвязанных правил формирует stale: после cleanup CMDBuild проверьте stale managed objects и при необходимости выполните полный граф.'
+          warning: 'Удаление отвязанных правил формирует устаревшие объекты: после cleanup CMDBuild проверьте stale managed objects и при необходимости выполните полный обход источников.'
         });
       state.templateApplyMessage = `${layerHumanLabel(layerKey)}: убрано ${rules.length} отвязанных правил, создано ${afterPlans - beforePlans} планов удаления на ${targets} объектов, удалено ссылок на правила ${relationCleanup.managedRelations}. Нажмите "Применить планы удаления в CMDBuild" для фактического удаления карточек.`;
       state.templateApplyError = '';
@@ -20066,7 +20227,20 @@ function templatePlanDimensionText(item) {
     .map((rule) => rule.template_generation?.dimension_name || rule.template_generation?.dimension_key || '')
     .filter(Boolean)
     .slice(0, 6);
-  return `измерение: ${dimension.type}, поле ${dimension.source_field || dimension.condition_field || '-'}, значений ${item.rules.length}, примеры ${examples.join(', ') || '-'}`;
+  const readText = templatePlanReadStrategiesText(item.dimensions ?? []);
+  return `измерение: ${dimension.type}, поле ${dimension.source_field || dimension.condition_field || '-'}, значений ${item.rules.length}, примеры ${examples.join(', ') || '-'}${readText ? `; ${readText}` : ''}`;
+}
+
+function templatePlanReadStrategiesText(dimensionPlans) {
+  const plans = Array.isArray(dimensionPlans) ? dimensionPlans : [];
+  const texts = uniqueTextList(plans
+    .map((plan) => plan.read_plan || '')
+    .filter(Boolean));
+  if (texts.length === 0) {
+    return '';
+  }
+
+  return `стратегии чтения: ${texts.slice(0, 4).join('; ')}${texts.length > 4 ? `; еще ${texts.length - 4}` : ''}`;
 }
 
 function renderCurrentGeneratedRulesCard(layerKey) {
@@ -20103,7 +20277,7 @@ async function runTemplateAudit(options = {}) {
   }
 
   state.templateAudit.checking = true;
-  state.templateAudit.message = 'Подгрузка карточек-источников и расчет шаблонов...';
+  state.templateAudit.message = 'Подгрузка классов по стратегиям чтения dimension и расчет шаблонов...';
   state.templateAudit.error = '';
   if (options.render !== false) {
     renderTemplateAuditView();
@@ -20246,7 +20420,7 @@ function templateAuditRowForTemplate(layerKey, template, planItem, context) {
     templateAuditMessageBelongsToTemplate(message, template, rules));
   const dimension = templatePopulationDimension(template);
   if (candidates.length === 0) {
-    warnings.push(`регулярное выражение source-класса не выбрало ни одного класса (${template.source_class_regex || 'пустое выражение'}).`);
+    warnings.push(`регулярное выражение исходного класса не выбрало ни одного класса (${template.source_class_regex || 'пустое выражение'}).`);
   }
   if (!template.source_class_regex && candidates.length > 10) {
     warnings.push(`source regex пустой и выбирает ${candidates.length} классов; проверьте, что такой широкий охват нужен.`);
@@ -20259,7 +20433,7 @@ function templateAuditRowForTemplate(layerKey, template, planItem, context) {
   }
   warnings.push(...templateLookupStableDisplayWarnings(template, dimension));
   if (planItem && candidates.length > 0 && rules.length === 0) {
-    warnings.push('шаблон выбрал source-классы, но не породил правил.');
+    warnings.push('шаблон выбрал исходные классы, но не породил правил.');
   }
 
   const reconcile = {
@@ -20295,6 +20469,7 @@ function templateAuditRowForTemplate(layerKey, template, planItem, context) {
     candidates,
     rules,
     dimension,
+    dimensionPlans: planItem?.dimensions ?? [],
     reconcile,
     relationCount: rules.reduce((sum, rule) => sum + runtimeRelationsFromRule(rule).length, 0),
     staleRules: reconcile.removed,
@@ -20407,8 +20582,9 @@ function renderTemplateAuditRow(row) {
   const warnings = row.warnings.length ? row.warnings : [];
   const details = [
     `source regex: ${template.source_class_regex || 'пусто'}`,
-    `source-классы: ${row.candidates.map((candidate) => `${candidate.code}${classDisplayName(candidate) !== candidate.code ? ` (${classDisplayName(candidate)})` : ''}`).join(', ') || '-'}`,
-    templatePlanDimensionText({ template, rules: row.rules }),
+    `исходные классы: ${row.candidates.map((candidate) => `${candidate.code}${classDisplayName(candidate) !== candidate.code ? ` (${classDisplayName(candidate)})` : ''}`).join(', ') || '-'}`,
+    templatePlanDimensionText({ template, rules: row.rules, dimensions: row.dimensionPlans }),
+    templatePlanReadStrategiesText(row.dimensionPlans),
     `target: ${targetClass} · атрибуты цели: ${templateAuditTargetAttributesText(row.layerKey, template, row.rules[0])}`,
     `dimension.*: ${templateAuditDimensionExamples(row.rules)}`,
     `target keys: ${templateAuditTargetKeyExamples(row.rules)}`,
@@ -20421,7 +20597,7 @@ function renderTemplateAuditRow(row) {
       <summary>
         <span class="structure-mark">${escapeHtml(row.layerKey === 'service' ? 'сервис' : 'подавление')} · шаблон</span>
         <strong>${escapeHtml(template.name || template.template_id)}</strong>
-        <span>source-классов ${escapeHtml(row.candidates.length)} · правил ${escapeHtml(row.rules.length)} · связей ${escapeHtml(row.relationCount)} · цель ${escapeHtml(targetClass)}</span>
+        <span>исходных классов ${escapeHtml(row.candidates.length)} · правил ${escapeHtml(row.rules.length)} · связей ${escapeHtml(row.relationCount)} · цель ${escapeHtml(targetClass)}</span>
         <span>создать ${escapeHtml(row.reconcile.created)} · обновить ${escapeHtml(row.reconcile.updated)} · без изменений ${escapeHtml(row.reconcile.unchanged)} · снять ${escapeHtml(row.reconcile.removed)} · отвязанных ${escapeHtml(row.detachedRules)}</span>
         ${errors.length ? `<span class="template-audit-message-error">${escapeHtml(`Ошибки: ${errors.join('; ')}`)}</span>` : ''}
         ${warnings.length ? `<span class="template-audit-message-warning">${escapeHtml(`Предупреждения: ${warnings.join('; ')}`)}</span>` : ''}
@@ -20595,19 +20771,27 @@ function templateMaterializationPlan(layerKey, options = {}) {
       const candidates = templateCandidateClasses(template);
       const rules = [];
       const dimensionPlans = [];
+      const dimension = templatePopulationDimension(template);
       for (const candidate of candidates) {
+        const readPlan = templatePopulationDimensionReadStrategy(candidate.code, dimension);
         try {
           const candidateRules = rulesFromTemplate(layerKey, template, candidate);
           rules.push(...candidateRules);
           dimensionPlans.push({
             source_class_code: candidate.code || '',
-            generated_rules: candidateRules.length
+            generated_rules: candidateRules.length,
+            read_strategy: readPlan.strategy,
+            read_plan: templatePopulationDimensionReadPlanText(readPlan),
+            read_classes: readPlan.requiredClassCodes ?? []
           });
         } catch (error) {
           const message = templateCandidateMaterializationMessage(template, candidate, error);
           dimensionPlans.push({
             source_class_code: candidate.code || '',
             generated_rules: 0,
+            read_strategy: readPlan.strategy,
+            read_plan: templatePopulationDimensionReadPlanText(readPlan),
+            read_classes: readPlan.requiredClassCodes ?? [],
             warning: error.message
           });
           if (isSkippableTemplateCandidateError(error)) {
@@ -20621,7 +20805,7 @@ function templateMaterializationPlan(layerKey, options = {}) {
           }
         }
       }
-      const maxRules = templatePopulationDimension(template).max_rules || TEMPLATE_DIMENSION_DEFAULT_MAX_RULES;
+      const maxRules = dimension.max_rules || TEMPLATE_DIMENSION_DEFAULT_MAX_RULES;
       if (rules.length > maxRules) {
         throw new Error(`Шаблон породил ${rules.length} правил при лимите ${maxRules}; сузьте regex, значения измерения или увеличьте лимит.`);
       }
@@ -21373,6 +21557,9 @@ function renderTemplateTargetInitialValues(layerKey, template, context, material
 function ruleFromTemplate(layerKey, template, candidate, dimensionValue = null) {
   const dimension = templatePopulationDimension(template);
   const materializedDimension = Boolean(dimensionValue) && isTemplateDimensionMaterialized(dimension);
+  const dimensionReadPlan = materializedDimension
+    ? templatePopulationDimensionReadStrategy(candidate.code, dimension)
+    : null;
   const context = templateContext(template, candidate, dimensionValue);
   const keyExpression = materializedDimension
     ? renderTemplateString(dimension.key_template || DEFAULT_TEMPLATE_POPULATION_DIMENSION.key_template, context)
@@ -21451,6 +21638,10 @@ function ruleFromTemplate(layerKey, template, candidate, dimensionValue = null) 
       dimension_value: materializedDimension ? dimensionValue.value : '',
       dimension_stable_value: materializedDimension ? dimensionValue.stableValue || dimensionValue.key : '',
       dimension_display_value: materializedDimension ? dimensionValue.displayValue || dimensionValue.name : '',
+      dimension_read_strategy: materializedDimension ? dimensionReadPlan?.strategy || '' : '',
+      dimension_value_source_class: materializedDimension
+        ? dimensionReadPlan?.catalogClass || dimensionReadPlan?.lookupType || candidate.code || ''
+        : '',
       target_class_code: template.target?.class_code || ''
     },
     source: {
@@ -21565,6 +21756,11 @@ function normalizeTemplateDimensionValue(template, candidate, dimension, value, 
 }
 
 function sourceFieldDimensionValues(candidate, dimension) {
+  const readPlan = templatePopulationDimensionReadStrategy(candidate.code, dimension);
+  if (readPlan.strategy === TEMPLATE_DIMENSION_READ_STRATEGIES.referenceCatalog) {
+    return referenceCatalogDimensionValues(readPlan, dimension);
+  }
+
   const values = sourceCardFieldDimensionEntries(candidate.code, dimension.source_field);
   if (values.length === 0) {
     const reason = sourceFieldDimensionEmptyReason(candidate.code, dimension.source_field);
@@ -21581,6 +21777,42 @@ function sourceFieldDimensionValues(candidate, dimension) {
     displayValue: value.displayValue || value.key,
     source_field: dimension.source_field
   }));
+}
+
+function referenceCatalogDimensionValues(readPlan, dimension) {
+  const values = referenceCatalogFieldDimensionEntries(readPlan.catalogClass, readPlan.catalogField);
+  if (values.length === 0) {
+    const reason = referenceCatalogDimensionEmptyReason(readPlan);
+    if (reason) {
+      throw templateDimensionNoValuesError(reason);
+    }
+  }
+
+  return values.map((value) => ({
+    key: value.key,
+    value: value.stableValue || value.key,
+    name: value.displayValue || value.key,
+    stableValue: value.stableValue || value.key,
+    displayValue: value.displayValue || value.key,
+    source_field: dimension.source_field
+  }));
+}
+
+function referenceCatalogFieldDimensionEntries(catalogClass, catalogField) {
+  const entries = [];
+  for (const card of sourceClassCards(catalogClass)) {
+    const stableValues = normalizeCardFieldValues(rawCardFieldValue(card, catalogField));
+    const displayValues = normalizeCardFieldDisplayValues(rawCardFieldDisplayValue(card, catalogField));
+    for (const [index, value] of stableValues.entries()) {
+      entries.push({
+        key: value,
+        stableValue: value,
+        displayValue: displayValues[index] || displayValues[0] || value
+      });
+    }
+  }
+
+  return uniqueNonEmptyDimensionEntries(entries);
 }
 
 function regexCaptureDimensionValues(candidate, dimension) {
@@ -21628,6 +21860,14 @@ function sourceFieldDimensionEmptyReason(sourceClass, sourceField) {
     return 'поле population dimension не выбрано.';
   }
 
+  const readPlan = templatePopulationDimensionReadStrategy(sourceClass, {
+    type: 'source_field',
+    source_field: field
+  });
+  if (readPlan.strategy === TEMPLATE_DIMENSION_READ_STRATEGIES.referenceCatalog) {
+    return referenceCatalogDimensionEmptyReason(readPlan);
+  }
+
   const items = sourceClassInstanceItems(sourceClass);
   const sourceItems = items.filter((item) => String(item.layer).toLowerCase() === 'source');
   const cards = (sourceItems.length > 0 ? sourceItems : items).flatMap((item) => item.cards ?? []);
@@ -21662,6 +21902,29 @@ function sourceFieldDimensionEmptyReason(sourceClass, sourceField) {
     fallbackValues.length > 0 ? `Резервная проверка пути видит значений: ${fallbackValues.length} (${fallbackValues.slice(0, 5).join(', ')}).` : '',
     cardSummary ? `Загружено карточек: ${cardSummary}.` : '',
     probe ? `Проверка первой карточки: ${probe}.` : ''
+  ].filter(Boolean).join(' ');
+}
+
+function referenceCatalogDimensionEmptyReason(readPlan) {
+  const catalogClass = readPlan?.catalogClass || '';
+  const catalogField = readPlan?.catalogField || '';
+  if (!catalogClass || !catalogField) {
+    return 'reference catalog для population dimension не определен.';
+  }
+  if (!sourceClassCardsLoaded(catalogClass)) {
+    return `карточки reference catalog ${catalogClass} для поля ${readPlan.sourceField || ''} не загружены.`;
+  }
+  if (!sourceClassCardsAvailable(catalogClass)) {
+    return `reference catalog ${catalogClass} для поля ${readPlan.sourceField || ''} не содержит карточек.`;
+  }
+  if (!sourceAttributeByCode(catalogClass, catalogField)) {
+    return `поле ${catalogField} не найдено в reference catalog ${catalogClass}.`;
+  }
+
+  return [
+    `по reference catalog ${catalogClass}.${catalogField} нет непустых значений.`,
+    readPlan.cmdbPath ? `Путь source: ${readPlan.cmdbPath}.` : '',
+    `Загружено карточек: ${catalogClass}:${sourceClassCardCount(catalogClass)}.`
   ].filter(Boolean).join(' ');
 }
 
@@ -21738,27 +22001,35 @@ function sourceFieldPathResolutionProbe(sourceClass, fieldRule, cards) {
 }
 
 function lookupDimensionValues(candidate, dimension) {
-  const lookupValues = lookupValuesForTemplateSourceField(candidate.code, dimension.source_field);
-  if (lookupValues.length > 0) {
-    return lookupValues;
+  const lookupCatalog = lookupCatalogForTemplateSourceField(candidate.code, dimension.source_field);
+  if (lookupCatalog.lookupType) {
+    if (lookupCatalog.values.length === 0) {
+      throw templateDimensionNoValuesError(`lookup ${lookupCatalog.lookupType} для поля ${dimension.source_field || ''} не содержит значений.`);
+    }
+
+    return lookupCatalog.values;
   }
 
   return sourceFieldDimensionValues(candidate, dimension);
 }
 
 function lookupValuesForTemplateSourceField(sourceClass, sourceField) {
+  return lookupCatalogForTemplateSourceField(sourceClass, sourceField).values;
+}
+
+function lookupCatalogForTemplateSourceField(sourceClass, sourceField) {
   const option = sourceFieldOptionsForClass(sourceClass).find((item) =>
     canonicalToken(item.value) === canonicalToken(sourceField));
   const lookupType = option?.fieldRule?.lookupType
     || option?.fieldRule?.resolve?.lookupType
     || '';
   if (!lookupType) {
-    return [];
+    return { lookupType: '', values: [] };
   }
 
   const lookup = state.lookups.find((item) =>
     canonicalToken(item.code || item.name) === canonicalToken(lookupType));
-  return (lookup?.values ?? []).map((value) => {
+  const values = (lookup?.values ?? []).map((value) => {
     const key = String(value.code ?? value.name ?? value.value ?? '').trim();
     const name = String(value.displayName ?? value.description ?? key).trim();
     return {
@@ -21769,6 +22040,7 @@ function lookupValuesForTemplateSourceField(sourceClass, sourceField) {
       displayValue: name
     };
   }).filter((value) => value.key);
+  return { lookupType, values };
 }
 
 function boolDimensionValues(dimension) {
@@ -22329,6 +22601,8 @@ function generatedRuleTemplateMetadataFingerprint(rule) {
       dimension_key: generation.dimension_key || '',
       dimension_name: generation.dimension_name || '',
       dimension_value: generation.dimension_value || '',
+      dimension_read_strategy: generation.dimension_read_strategy || '',
+      dimension_value_source_class: generation.dimension_value_source_class || '',
       target_class_code: generation.target_class_code || ''
     },
     created_by_template: {

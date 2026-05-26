@@ -8,9 +8,16 @@ const serverPath = path.join(repoRoot, 'src/monitoring-ui-api/server.mjs');
 const indexPath = path.join(repoRoot, 'src/monitoring-ui-api/public/index.html');
 const stylesPath = path.join(repoRoot, 'src/monitoring-ui-api/public/styles.css');
 const uiConfigPath = path.join(repoRoot, 'src/monitoring-ui-api/config/appsettings.json');
+const conversionConfigPostgresSqlPath = path.join(repoRoot, 'src/monitoring-ui-api/sql/conversion-config-store-postgresql.sql');
 const builderConfigPath = path.join(repoRoot, 'src/cmdbconfigbuilder/appsettings.json');
+const materializerConfigPath = path.join(repoRoot, 'src/cmdbmodelmaterializer/appsettings.json');
+const materializerProgramPath = path.join(repoRoot, 'src/cmdbmodelmaterializer/Program.cs');
 const zabbixConfigPath = path.join(repoRoot, 'src/zabbixconfig2api/appsettings.json');
 const cmdbConfigBuilderPath = path.join(repoRoot, 'src/cmdbconfigbuilder/Program.cs');
+const missingDimensionRequestPath = path.join(repoRoot, 'src/shared/Aggregation/CmdbModelMissingDimensionRequest.cs');
+const conversionRulesDocumentPath = path.join(repoRoot, 'src/shared/ConversionRules/ConversionRulesDocument.cs');
+const conversionRulesOptionsPath = path.join(repoRoot, 'src/shared/Configuration/ConversionRulesOptions.cs');
+const kafkaTopicsOptionsPath = path.join(repoRoot, 'src/shared/Configuration/KafkaTopicsOptions.cs');
 const cmdbAggregationBuilderPath = path.join(repoRoot, 'src/cmdbaggregation2cmdbuild/Program.cs');
 const cmdbuildClientPath = path.join(repoRoot, 'src/shared/Integrations/CmdbuildClient.cs');
 const zabbixClientPath = path.join(repoRoot, 'src/shared/Integrations/ZabbixClient.cs');
@@ -28,6 +35,11 @@ const serverText = fs.readFileSync(serverPath, 'utf8');
 const indexText = fs.readFileSync(indexPath, 'utf8');
 const stylesText = fs.readFileSync(stylesPath, 'utf8');
 const cmdbConfigBuilderText = fs.readFileSync(cmdbConfigBuilderPath, 'utf8');
+const materializerProgramText = fs.readFileSync(materializerProgramPath, 'utf8');
+const missingDimensionRequestText = fs.readFileSync(missingDimensionRequestPath, 'utf8');
+const conversionRulesDocumentText = fs.readFileSync(conversionRulesDocumentPath, 'utf8');
+const conversionRulesOptionsText = fs.readFileSync(conversionRulesOptionsPath, 'utf8');
+const kafkaTopicsOptionsText = fs.readFileSync(kafkaTopicsOptionsPath, 'utf8');
 const cmdbAggregationBuilderText = fs.readFileSync(cmdbAggregationBuilderPath, 'utf8');
 const cmdbuildClientText = fs.readFileSync(cmdbuildClientPath, 'utf8');
 const zabbixClientText = fs.readFileSync(zabbixClientPath, 'utf8');
@@ -39,8 +51,10 @@ const zabbixTriggerDependencyApplierText = fs.readFileSync(zabbixTriggerDependen
 const diagnosticsScriptText = fs.readFileSync(diagnosticsScriptPath, 'utf8');
 const integrationScriptText = fs.readFileSync(integrationScriptPath, 'utf8');
 const redisKafkaE2eText = fs.readFileSync(redisKafkaE2ePath, 'utf8');
+const conversionConfigPostgresSqlText = fs.readFileSync(conversionConfigPostgresSqlPath, 'utf8');
 const uiConfig = JSON.parse(fs.readFileSync(uiConfigPath, 'utf8'));
 const builderConfig = JSON.parse(fs.readFileSync(builderConfigPath, 'utf8'));
+const materializerConfig = JSON.parse(fs.readFileSync(materializerConfigPath, 'utf8'));
 const zabbixConfig = JSON.parse(fs.readFileSync(zabbixConfigPath, 'utf8'));
 
 const api = await loadAppApi();
@@ -56,6 +70,7 @@ assertStaticRuleTemplateFilterContracts();
 assertTemplateMaterializationContracts();
 assertTemplateRelationRegexContracts();
 assertRelationGraphContracts();
+assertMissingDimensionDetectionContracts();
 
 console.log('UI regression checks passed.');
 
@@ -212,6 +227,20 @@ function assertStaticUiContracts() {
     'conversion configuration actions must live inside template apply screen.');
   assert(indexText.indexOf('data-view="webhooksSync"') > indexText.indexOf('Администрирование'),
     'webhooks menu item must live under administration.');
+  assertIncludes(indexText, 'data-view="materializerOps"',
+    'administration must expose materializer operations UI.');
+  assertIncludes(indexText, 'id="materializerOpsView"',
+    'materializer operations view must exist.');
+  assertIncludes(appText, 'function renderMaterializerOpsView',
+    'UI must render materialization jobs and pending graph overlay.');
+  assertIncludes(appText, 'function retryMaterializerJob',
+    'UI must let operators retry failed materializer jobs.');
+  assertIncludes(appText, 'function loadMaterializerMissingDimensionEvents',
+    'UI must show recent missing-dimension Kafka events.');
+  assertIncludes(serverText, '/api/materializer/status',
+    'monitoring UI BFF must proxy materializer status.');
+  assertIncludes(serverText, '/api/materializer/retry',
+    'monitoring UI BFF must proxy materializer retry requests.');
   assertNotIncludes(indexText, 'id="loadCachedSourcesButton"',
     'CMDBuild source sync view must not expose a manual cache-load button.');
   assertNotIncludes(indexText, 'id="loadCachedZabbixButton"',
@@ -319,6 +348,12 @@ function assertStaticUiContracts() {
     'Zabbix apply views must expose the compact publication console.');
   assertIncludes(indexText, 'data-zabbix-publish-progress',
     'compact Zabbix publication must expose per-step progress rows.');
+  assertIncludes(indexText, 'data-zabbix-publish-operation',
+    'compact Zabbix publication must expose a visible online operation status panel.');
+  assertIncludes(indexText, 'data-zabbix-publish-operation-cancel',
+    'compact Zabbix publication must expose cancellation from the online status panel.');
+  assertIncludes(indexText, 'data-zabbix-publish-operation-refresh',
+    'compact Zabbix publication must allow manual progress refresh by operation id.');
   assertIncludes(indexText, 'data-zabbix-publish-layer',
     'compact Zabbix publication must allow service/suppression/both layer selection.');
   assertIncludes(indexText, 'data-zabbix-publish-scope',
@@ -333,6 +368,8 @@ function assertStaticUiContracts() {
     'full source traversal mode must show a red operator warning for large installations.');
   assertIncludes(stylesText, '.status-line.full-warning',
     'full source traversal warning must have explicit warning styling.');
+  assertIncludes(stylesText, '.zabbix-publish-operation',
+    'online Zabbix publication status must have dedicated visible styling.');
   assertIncludes(indexText, 'data-zabbix-publish-manual-scope',
     'compact Zabbix publication must expose manual scope input.');
   assertIncludes(indexText, 'data-zabbix-publish-include-sla',
@@ -353,7 +390,7 @@ function assertStaticUiContracts() {
     'service Zabbix apply details must be collapsed behind a details block.');
   assertIncludes(indexText, 'Показать план и детали публикации подавления',
     'suppression Zabbix apply details must be collapsed behind a details block.');
-  assertIncludes(indexText, 'Показать план подготовки правил',
+  assertIncludes(indexText, 'Показать план и диагностику подготовки правил',
     'template apply plan must be collapsed behind a details block.');
   assertIncludes(indexText, 'id="templateApplyPlanFilter"',
     'template apply plan must expose errors/warnings/all filtering.');
@@ -371,6 +408,13 @@ function assertStaticUiContracts() {
     'UI must support copying visible plan/detail text.');
   assertIncludes(appText, 'topTemplateApplyErrors',
     'template apply summary must show top blocking errors before details.');
+  const templateApplyRenderBody = textBetween(appText, 'function renderTemplateApplyView()', 'function templateApplyRenderSummary');
+  assertNotIncludes(templateApplyRenderBody, 'templateMaterializationPlan(',
+    'template apply render must not run heavy materialization plans on every UI redraw.');
+  assertIncludes(appText, 'renderTemplateAuditProgressCard',
+    'template audit must render intermediate progress while heavy checks are running.');
+  assertIncludes(appText, 'previewTextList',
+    'large generated-rule reports must be capped before rendering into the DOM.');
   assertIncludes(appText, 'topZabbixSlaProblems',
     'SLA publication summary must show top errors/warnings before details.');
   assertIncludes(appText, 'topZabbixTriggerDependencyProblems',
@@ -572,6 +616,40 @@ function assertStaticUiContracts() {
   assertIncludes(indexText, 'Подготовить и сохранить правила', 'template apply action must be the preparation-and-save pipeline.');
   assertIncludes(appText, 'saveConversionConfigsToFolder({ renderFinal: false, throwOnError: true })',
     'template apply pipeline must persist conversion configuration after materialization.');
+  assertIncludes(appText, '/api/conversion-config-store/deploy',
+    'UI must save conversion configuration through the conversion-config-store API.');
+  assertIncludes(appText, '/api/conversion-config-store/current',
+    'UI must load conversion configuration through the conversion-config-store API.');
+  assertIncludes(serverText, '/api/conversion-config-store/current',
+    'monitoring UI API must expose conversion-config-store current endpoint.');
+  assertIncludes(serverText, '/api/conversion-config-store/save-authoring',
+    'monitoring UI API must expose conversion-config-store authoring save endpoint.');
+  assertIncludes(serverText, '/api/conversion-config-store/deploy',
+    'monitoring UI API must expose conversion-config-store deploy endpoint.');
+  assertIncludes(serverText, '/api/conversion-config-store/audit',
+    'monitoring UI API must expose conversion-config-store audit endpoint.');
+  assertIncludes(serverText, 'withConversionConfigStoreWriteLock',
+    'conversion-config-store folder backend must serialize writes through a store lock.');
+  assertIncludes(serverText, 'appendConversionConfigAudit',
+    'conversion-config-store folder backend must record write audit metadata.');
+  assertIncludes(serverText, 'writeConversionConfigPostgres',
+    'conversion-config-store must have a PostgreSQL backend behind the same API.');
+  assertIncludes(serverText, 'pg_advisory_xact_lock',
+    'PostgreSQL conversion-config-store writes must use a database transaction lock.');
+  assertIncludes(serverText, 'conversion_config_documents',
+    'PostgreSQL conversion-config-store must store versioned documents.');
+  assertIncludes(serverText, 'conversion_config_materialization_jobs',
+    'PostgreSQL conversion-config-store must reserve transactional storage for materialization jobs.');
+  assertIncludes(serverText, 'conversion_config_materialized_dimensions',
+    'PostgreSQL conversion-config-store must reserve transactional storage for materialized dimensions.');
+  assertIncludes(serverText, 'conversion_config_audit',
+    'PostgreSQL conversion-config-store must keep audit records transactionally.');
+  assertIncludes(serverText, 'exportConversionConfigPayloadToFolder',
+    'PostgreSQL conversion-config-store must keep folder export for migration compatibility.');
+  assert(uiConfig.conversionConfig?.storeBackend === 'folder',
+    'folder must remain the default conversion-config-store backend.');
+  assertIncludes(conversionConfigPostgresSqlText, 'CREATE TABLE IF NOT EXISTS monitoring_ui.conversion_config_documents',
+    'PostgreSQL conversion-config-store DDL must be reviewable outside the service code.');
   assertIncludes(appText, 'Конфигурация сохранена: v',
     'template apply pipeline must report saved manifest version.');
   assertIncludes(indexText, 'id="runTemplateAuditButton"', 'template audit must be available inside template apply menu.');
@@ -657,18 +735,40 @@ function assertStaticUiContracts() {
     'template deletion default must allow removing generated objects.');
   assertIncludes(indexText, 'Значение по умолчанию: <strong>Удалить созданные правила и объекты</strong>',
     'admin settings must state that deleting generated objects is the default mode.');
-  assertIncludes(indexText, 'Применить планы удаления в CMDBuild',
-    'template apply help must explain explicit CMDBuild deletion plans.');
+  assertIncludes(indexText, 'автоматическая очистка <code>templateDeletionPlans</code>',
+    'template apply help must explain automatic CMDBuild cleanup plans.');
   assertIncludes(appText, 'DEFAULT_TEMPLATE_DELETE_MODE',
     'UI must keep an explicit default for template deletion mode.');
   assertIncludes(appText, 'const DEFAULT_TEMPLATE_DELETE_MODE = TEMPLATE_DELETE_MODES.deleteRulesAndObjects;',
     'default template deletion mode must remove generated objects.');
-  assertIncludes(appText, "const GENERAL_SETTINGS_STORAGE_KEY = 'cmdb2monitoring.serviceSuppression.generalSettings.v2';",
-    'general settings storage key must reset older browser defaults after changing template deletion default.');
-  assertIncludes(appText, 'удаление объектов CMDBuild',
-    'template apply view must make the object deletion block visible.');
-  assertIncludes(appText, 'Планов удаления пока нет.',
-    'template deletion block must explain when there are no pending object deletion plans.');
+  assertIncludes(appText, "const GENERAL_SETTINGS_STORAGE_KEY = 'cmdb2monitoring.serviceSuppression.generalSettings.v3';",
+    'general settings storage key must reset older browser defaults after changing Zabbix graph-check defaults.');
+  assertIncludes(appText, "scope: 'graph'",
+    'Zabbix publication preferences must default to graph overlay so check does not scan source cards.');
+  assertIncludes(appText, "options.buildMode === undefined ? 'graph-overlay' : options.buildMode",
+    'Layer Zabbix dry-run must default to graph overlay when no explicit build mode is passed.');
+  assertIncludes(appText, 'const executionMode = dryRun ? compactZabbixGraphCheckMode(mode) : mode;',
+    'Compact Zabbix check must force graph overlay independently of the selected publication mode.');
+  assertIncludes(appText, "buildMode: 'graph-overlay'",
+    'Compact Zabbix graph check must send graph-overlay build mode.');
+  assertIncludes(serverText, "buildMode: dryRun ? 'graph-overlay'",
+    'BFF must protect stale cached UI by forcing graph-overlay for Zabbix dry-run requests.');
+  assertIncludes(serverText, "topologyReadMode: dryRun ? 'rules'",
+    'BFF Zabbix dry-run must use rule topology reads and avoid CMDBuild source-card scans.');
+  assertIncludes(indexText, '/app.js?v=20260525-graph-check',
+    'Monitoring UI must cache-bust app.js after changing compact Zabbix check behavior.');
+  assertIncludes(appText, 'очистка устаревших managed-объектов',
+    'template apply view must make the object cleanup block visible.');
+  assertIncludes(appText, 'Планов очистки пока нет.',
+    'template cleanup block must explain when there are no pending object cleanup plans.');
+  assertIncludes(appText, 'ручная проверка очистки',
+    'template apply view must expose detached/manual/legacy cleanup as a separate administrator block.');
+  assertIncludes(appText, 'data-template-manual-review-action',
+    'manual-review cleanup must require an explicit administrator action.');
+  assertIncludes(appText, 'templateDeletionTargetNeedsManualReview',
+    'legacy/manual cleanup targets must be separated from automatic managed cleanup.');
+  assertIncludes(appText, 'templateDeletionTargetNeedsAutoCleanup',
+    'automatic cleanup must be limited to generated managed targets.');
   assertIncludes(appText, 'renderDetachedTemplateRulesCard',
     'template apply view must surface detached generated rules.');
   assertIncludes(appText, 'cleanupDetachedTemplateRules',
@@ -676,7 +776,13 @@ function assertStaticUiContracts() {
   assertIncludes(appText, 'removeRuleReferencesToRemovedRules',
     'removing template rules must also clean managed relation references to deleted rule IDs.');
   assertIncludes(appText, 'applyTemplateDeletionPlans',
-    'template apply view must be able to execute template deletion plans.');
+    'template apply view must be able to execute and retry template cleanup plans.');
+  assertIncludes(appText, "await applyTemplateDeletionPlans('service', { auto: true, confirm: false, renderFinal: false })",
+    'template apply pipeline must automatically clean service generated-managed objects without asking the operator.');
+  assertIncludes(appText, "await applyTemplateDeletionPlans('suppression', { auto: true, confirm: false, renderFinal: false })",
+    'template apply pipeline must automatically clean suppression generated-managed objects without asking the operator.');
+  assertIncludes(appText, "manualReview ? 'manual_review' : 'auto_pending'",
+    'detached cleanup plans must be routed to manual review instead of automatic deletion.');
   assertIncludes(appText, 'data-template-deletion-apply',
     'template deletion plan buttons must be wired.');
   assertIncludes(appText, 'data-template-detached-cleanup',
@@ -854,7 +960,17 @@ function assertReadinessConfigContracts() {
   assertIncludes(cmdbConfigBuilderText, 'IsGraphOverlayBuildMode',
     'current Zabbix apply must have a graph overlay mode that skips source-card traversal.');
   assertIncludes(cmdbConfigBuilderText, 'BuildSuppressionTopologyCommandPlansAsync',
-    'graph overlay must build suppression skeleton targets and relations from CMDBuild managed objects.');
+    'graph overlay must build suppression skeleton targets and relations.');
+  assertIncludes(cmdbConfigBuilderText, 'BuildRuleTopologyCommandPlans',
+    'graph overlay must be able to build desired topology directly from scoped runtime rules.');
+  assertIncludes(cmdbConfigBuilderText, 'UseRuleTopologyRead(request)',
+    'graph overlay must not require a full CMDBuild managed-object scan by default.');
+  assertIncludes(cmdbConfigBuilderText, 'AttachRuleTopologyServiceParentManagedKeys',
+    'rule-based service graph overlay must attach stored service-template parent links to generated service nodes.');
+  assertIncludes(cmdbConfigBuilderText, 'command.Target.ParentManagedKeys.Count > 0',
+    'Zabbix graph diagnostics must treat explicit parent_managed_keys as a parent edge.');
+  assertIncludes(serverText, 'topologyReadMode',
+    'monitoring UI BFF must forward graph topology read mode to cmdbconfigbuilder.');
   assertIncludes(cmdbConfigBuilderText, 'SuppressionTopologyDirection',
     'suppression graph overlay must preserve cause/dependent relation direction.');
   assertIncludes(cmdbConfigBuilderText, 'IsManagedServiceObjectClass',
@@ -915,6 +1031,14 @@ function assertReadinessConfigContracts() {
     'monitoring UI BFF must expose cancellation for detached Zabbix apply operations.');
   assertIncludes(appText, 'detached: true',
     'Zabbix service/suppression apply must use detached mode and poll progress.');
+  assertIncludes(appText, 'ZABBIX_PUBLISH_OPERATION_STORAGE_KEY',
+    'Zabbix publication UI must persist active operation metadata for reload-safe status display.');
+  assertIncludes(appText, 'startZabbixPublishOperationPolling',
+    'Zabbix publication UI must be able to resume polling active operation progress.');
+  assertIncludes(appText, 'normalizeZabbixPublishProgress',
+    'Zabbix publication UI must normalize backend progress before rendering online status.');
+  assertIncludes(appText, 'clearZabbixPublishOperationState',
+    'Zabbix publication UI must let the operator hide a completed online operation.');
   assertIncludes(appText, 'cancelZabbixApply',
     'Zabbix apply UI must let the operator cancel long running graph publication.');
   assertIncludes(appText, 'lastGraphCheckOk',
@@ -1318,6 +1442,94 @@ function assertReadinessConfigContracts() {
     'UI must display source cards waiting for zabbix_main_hostid.');
 }
 
+function assertMissingDimensionDetectionContracts() {
+  assert(builderConfig.KafkaTopics?.CmdbModelMissingDimensions?.includes('cmdb.model.missing-dimensions'),
+    'cmdbconfigbuilder must publish missing model dimensions to a dedicated Kafka topic.');
+  assert(materializerConfig.KafkaTopics?.CmdbModelMissingDimensions === builderConfig.KafkaTopics?.CmdbModelMissingDimensions,
+    'cmdbmodelmaterializer must consume the same missing-dimensions topic that cmdbconfigbuilder publishes.');
+  assert(materializerConfig.ConversionConfigStore?.BaseUrl,
+    'cmdbmodelmaterializer must read and write conversion config through the store API.');
+  assert(materializerConfig.Replay?.ReprocessUrl?.includes('/rules/reprocess-card'),
+    'cmdbmodelmaterializer must replay materialized dimensions through cmdbconfigbuilder reprocess API.');
+  assert(materializerConfig.GraphOverlay?.ApplyCurrentUrl?.includes('/rules/apply-current'),
+    'cmdbmodelmaterializer must be able to trigger cmdbconfigbuilder graph-overlay after replay.');
+  assert(materializerConfig.GraphOverlay?.Enabled === false,
+    'automatic graph overlay must be an explicit materializer setting and stay disabled by default.');
+  assert(Array.isArray(materializerConfig.GraphOverlay?.Targets)
+      && materializerConfig.GraphOverlay.Targets.includes('zabbix-direct'),
+    'materializer graph overlay must default to the direct Zabbix graph apply target when enabled.');
+  assert(uiConfig.backend?.modelMaterializerStatusUrl?.includes('/materializer/status'),
+    'monitoring UI backend config must expose materializer status URL.');
+  assert(uiConfig.backend?.modelMaterializerProcessUrl?.includes('/materializer/process'),
+    'monitoring UI backend config must expose materializer process URL for retries.');
+  assert(uiConfig.healthChecks?.some((item) => item.id === 'cmdbmodelmaterializer' && item.reloadUrl),
+    'monitoring UI health checks must include cmdbmodelmaterializer and its reload endpoint.');
+  assertIncludes(kafkaTopicsOptionsText, 'CmdbModelMissingDimensions',
+    'shared Kafka topic options must expose the missing-dimensions topic.');
+  assertIncludes(missingDimensionRequestText, 'CmdbModelMissingDimensionRequest',
+    'missing-dimension Kafka payload contract must live in shared code.');
+  assertIncludes(conversionRulesOptionsText, 'SuppressionTemplatesFilePath',
+    'cmdbconfigbuilder must be able to read suppression templates for missing-dimension detection.');
+  assertIncludes(conversionRulesDocumentText, 'DimensionKey',
+    'runtime generated-rule metadata must deserialize template_generation.dimension_key.');
+  assertIncludes(cmdbConfigBuilderText, 'PublishMissingDimensionRequestsAsync',
+    'cmdbconfigbuilder must publish missing-dimension requests during webhook processing.');
+  assertIncludes(cmdbConfigBuilderText, 'DetectMissingDimensionRequests',
+    'cmdbconfigbuilder must detect template matches with a calculated missing dimension.');
+  assertIncludes(cmdbConfigBuilderText, 'ExistingTemplateDimensions',
+    'missing-dimension detection must check existing generated rules before publishing.');
+  assertIncludes(cmdbConfigBuilderText, 'var idempotencyKey = $"{layer}/{templateId}/{dimension.DimensionKey}"',
+    'missing-dimension request idempotency key must be layer/templateId/dimensionKey.');
+  assertIncludes(cmdbConfigBuilderText, 'template matched source event and calculated a dimension without a generated rule',
+    'missing-dimension request must explain why it was emitted.');
+  assertIncludes(cmdbConfigBuilderText, 'LoadTemplateDocumentsForStreamingAsync',
+    'streaming webhook processing must load service and suppression template documents.');
+  assertIncludes(cmdbConfigBuilderText, 'ReferencedFieldsForClass(rules, templateDocuments, message.ClassCode)',
+    'source enrichment must include fields referenced only by templates.');
+  assertIncludes(cmdbConfigBuilderText, 'TemplateMatchesSourceClass',
+    'missing-dimension detection must match webhook class codes through existing generated-rule candidate classes.');
+  assertIncludes(cmdbConfigBuilderText, 'message.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase)',
+    'missing-dimension detection must not materialize dimensions from delete events.');
+  assertIncludes(cmdbConfigBuilderText, 'producer.PublishAsync(topic, request.IdempotencyKey, request, cancellationToken)',
+    'missing-dimension requests must be published without mutating conversion config.');
+  assertIncludes(materializerProgramText, 'KafkaJsonConsumerWorker<CmdbModelMissingDimensionRequest>',
+    'cmdbmodelmaterializer must consume missing-dimension requests from Kafka.');
+  assertIncludes(materializerProgramText, 'ConversionConfigMaterializer.Materialize',
+    'cmdbmodelmaterializer must materialize missing dimensions through a conversion-config edit.');
+  assertIncludes(materializerProgramText, 'missing_dimension_materialization',
+    'cmdbmodelmaterializer store writes must be auditable as missing-dimension materialization.');
+  assertIncludes(materializerProgramText, 'DeployAsync(payload, cancellationToken)',
+    'cmdbmodelmaterializer must save generated rules through the conversion-config-store deploy endpoint.');
+  assertIncludes(materializerProgramText, 'ReloadAppliersAsync',
+    'cmdbmodelmaterializer must reload appliers after successful saves.');
+  assertIncludes(materializerProgramText, 'ReplaySourceCardAsync',
+    'cmdbmodelmaterializer must replay the source card after a successful materialization.');
+  assertIncludes(materializerProgramText, 'RunGraphOverlayAsync',
+    'cmdbmodelmaterializer must have a scoped graph-overlay step after replay.');
+  assertIncludes(materializerProgramText, 'CmdbModelMissingDimensionRequest Request',
+    'cmdbmodelmaterializer status must keep the original missing-dimension request for operator retry.');
+  assertIncludes(materializerProgramText, 'buildMode = "graph-overlay"',
+    'materializer graph overlay must call apply-current in graph-overlay mode.');
+  assertIncludes(materializerProgramText, 'zabbixScopeKeys = scopeKeys',
+    'materializer graph overlay must pass scoped keys instead of triggering a full graph run.');
+  assert(materializerConfig.GraphOverlay?.TopologyReadMode === 'rules',
+    'materializer graph overlay must default to rule-based topology reads.');
+  assertIncludes(materializerProgramText, 'topologyReadMode = current.TopologyReadMode',
+    'materializer graph overlay must pass topology read mode to cmdbconfigbuilder.');
+  assertIncludes(cmdbConfigBuilderText, 'if (IsGraphOverlayBuildMode(request))',
+    'cmdbconfigbuilder graph-overlay mode must skip source-card traversal.');
+  assertIncludes(cmdbConfigBuilderText, 'return [];',
+    'cmdbconfigbuilder graph-overlay mode must keep source classes empty.');
+  assertIncludes(materializerProgramText, 'IsDetached',
+    'cmdbmodelmaterializer must not reattach detached generated rules automatically.');
+  assertIncludes(cmdbConfigBuilderText, 'MapPost("/rules/reprocess-card"',
+    'cmdbconfigbuilder must expose a reprocess API for source-card replay/backfill.');
+  assertIncludes(cmdbConfigBuilderText, 'ProcessEventAsync',
+    'cmdbconfigbuilder reprocess must reuse the streaming rule-engine event path.');
+  assertIncludes(cmdbuildClientText, 'GetClassCardCatalogItemAsync',
+    'cmdbconfigbuilder reprocess must be able to read one source card without a full class scan.');
+}
+
 function assertWebhookManagementContracts() {
   const eventsMatch = serverText.match(/const WEBHOOK_EVENTS = \[([\s\S]*?)\];/);
   assert(eventsMatch, 'server must declare managed webhook events.');
@@ -1362,6 +1574,7 @@ function assertWebhookManagementContracts() {
 function assertPopulationDimensionUiContracts() {
   assert(!api.templatePopulationControlVisible('legacy', 'source'), 'legacy population must hide source controls.');
   assert(api.templatePopulationControlVisible('source_field', 'source'), 'distinct source field must show source selector.');
+  assert(!api.templatePopulationControlVisible('source_field', 'max'), 'generated rule limit must be configured in general settings, not per template.');
   assert(api.templatePopulationControlVisible('source_lookup', 'key'), 'lookup population must show dimension key template.');
   assert(!api.templatePopulationControlVisible('source_lookup', 'regex'), 'lookup population must hide regex controls.');
   assert(api.templatePopulationControlVisible('regex_capture', 'regex'), 'regex capture must show regex input.');
@@ -1370,6 +1583,14 @@ function assertPopulationDimensionUiContracts() {
   assert(!api.templatePopulationControlVisible('range', 'source'), 'range population must not require a source field.');
   assert(api.templatePopulationControlVisible('cmdb_reference', 'source'), 'unresolved reference mode must show diagnostic source selector.');
   assert(!api.templatePopulationControlVisible('cmdb_reference', 'key'), 'unresolved reference mode must not show dynamic key templates.');
+  assertIncludes(indexText, 'id="serviceTemplateGeneratedRuleLimitInput"',
+    'general settings must expose service generated-rule limit.');
+  assertIncludes(indexText, 'id="suppressionTemplateGeneratedRuleLimitInput"',
+    'general settings must expose suppression generated-rule limit.');
+  assertIncludes(appText, 'Администрирование -> Основные -> ${layerHumanLabel(layerKey)}: лимит generated-правил шаблона',
+    'template materialization limit error must tell operators where to change the layer limit.');
+  assertIncludes(appText, 'templateGeneratedRuleLimit(layerKey)',
+    'template materialization must use layer-level generated-rule limits.');
 
   const options = [
     fieldOption('criticality', 'lookup', { lookupType: 'Criticality' }),

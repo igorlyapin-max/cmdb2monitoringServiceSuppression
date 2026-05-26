@@ -20,6 +20,8 @@ public sealed class KafkaTopicsOptions
 
     public string ZabbixSuppressionApplyPlans { get; init; } = "service-suppression.zabbix.suppression.apply-plans";
 
+    public string CmdbModelMissingDimensions { get; init; } = "service-suppression.cmdb.model.missing-dimensions";
+
     public string DebugLogs { get; init; } = "service-suppression.logs";
 
     public string DerivedObjectCommands { get; init; } = "";

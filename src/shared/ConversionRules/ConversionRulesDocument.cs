@@ -95,8 +95,32 @@ public sealed record ConversionRule
 
 public sealed record RuleTemplateGeneration
 {
+    [JsonPropertyName("status")]
+    public string Status { get; init; } = "";
+
     [JsonPropertyName("template_id")]
     public string TemplateId { get; init; } = "";
+
+    [JsonPropertyName("template_name")]
+    public string TemplateName { get; init; } = "";
+
+    [JsonPropertyName("candidate_class_code")]
+    public string CandidateClassCode { get; init; } = "";
+
+    [JsonPropertyName("dimension_key")]
+    public string DimensionKey { get; init; } = "";
+
+    [JsonPropertyName("dimension_value")]
+    public string DimensionValue { get; init; } = "";
+
+    [JsonPropertyName("dimension_name")]
+    public string DimensionName { get; init; } = "";
+
+    [JsonPropertyName("dimension_read_strategy")]
+    public string DimensionReadStrategy { get; init; } = "";
+
+    [JsonPropertyName("dimension_value_source_class")]
+    public string DimensionValueSourceClass { get; init; } = "";
 }
 
 public sealed record SourceSelector

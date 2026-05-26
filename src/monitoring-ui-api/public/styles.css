@@ -2163,6 +2163,28 @@ textarea {
   color: #8a5a00 !important;
 }
 
+.materializer-ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.materializer-ops-grid h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
+.materializer-job {
+  border-left: 3px solid var(--line);
+}
+
+@media (max-width: 1180px) {
+  .materializer-ops-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .rule-summary-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2692,6 +2714,40 @@ textarea {
   display: grid;
   gap: 6px;
   grid-column: 1 / -1;
+}
+
+.zabbix-publish-operation {
+  border: 1px solid #d79a2b;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  padding: 10px;
+}
+
+.zabbix-publish-operation.hidden {
+  display: none;
+}
+
+.zabbix-publish-operation.error {
+  border-color: #ef9a9a;
+}
+
+.zabbix-publish-operation-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.zabbix-publish-operation-heading span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.zabbix-publish-operation-steps {
+  display: grid;
+  gap: 6px;
 }
 
 .zabbix-publish-progress-row {

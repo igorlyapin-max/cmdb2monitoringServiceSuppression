@@ -63,6 +63,7 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbWebhookEvents), "CMDB raw event topic is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveAggregationCommands()), "Aggregation command topic is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbModelMissingDimensions), "CMDB model missing-dimensions topic is required.")
     .ValidateOnStart();
 
 builder.Services.AddSingleton<ConversionRulesValidator>();
@@ -77,7 +78,8 @@ builder.Services.AddSingleton<SourceEventEnricher>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
 builder.Services.AddSingleton<KafkaTopicExplorer>();
 builder.Services.AddSingleton<ApplyCurrentRulesProgressStore>();
-builder.Services.AddHostedService<RuleEngineWorker>();
+builder.Services.AddSingleton<RuleEngineWorker>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<RuleEngineWorker>());
 builder.Services.AddHttpClient<CmdbuildClient>();
 builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddHttpClient<ZabbixDirtyScopeClient>();
@@ -297,6 +299,123 @@ app.MapPost("/events/convert/dry-run", async (
     });
 });
 
+app.MapPost("/rules/reprocess-card", async (
+    ReprocessCardRequest request,
+    CmdbuildClient cmdbuild,
+    RuleEngineWorker worker,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.SourceClass))
+    {
+        return Results.BadRequest(new ReprocessCardResult
+        {
+            Success = false,
+            Error = "source_class is required"
+        });
+    }
+
+    try
+    {
+        var eventType = string.IsNullOrWhiteSpace(request.EventType)
+            ? "UPDATE"
+            : request.EventType.Trim().ToUpperInvariant();
+        var maxCards = Math.Clamp(request.MaxCards <= 0 ? 1000 : request.MaxCards, 1, 100000);
+        var cards = new List<CmdbuildClassCardCatalogItem>();
+        var cardsFound = 0;
+        if (!string.IsNullOrWhiteSpace(request.SourceCardId))
+        {
+            var card = await cmdbuild.GetClassCardCatalogItemAsync(
+                request.SourceClass,
+                request.SourceCardId,
+                "Source",
+                cancellationToken);
+            if (card is null)
+            {
+                return Results.NotFound(new ReprocessCardResult
+                {
+                    Success = false,
+                    SourceClass = request.SourceClass,
+                    RequestedCardId = request.SourceCardId,
+                    Error = $"CMDBuild card {request.SourceClass}/{request.SourceCardId} was not found."
+                });
+            }
+
+            cards.Add(card);
+            cardsFound = 1;
+        }
+        else if (request.BackfillDimension)
+        {
+            var catalog = await cmdbuild.ListClassCardsCatalogAsync(request.SourceClass, "Source", cancellationToken);
+            cardsFound = catalog.Cards.Count;
+            cards.AddRange(catalog.Cards.Take(maxCards));
+        }
+        else
+        {
+            return Results.BadRequest(new ReprocessCardResult
+            {
+                Success = false,
+                SourceClass = request.SourceClass,
+                Error = "source_card_id is required unless backfill_dimension=true"
+            });
+        }
+
+        var result = new ReprocessCardResult
+        {
+            Success = true,
+            SourceClass = request.SourceClass,
+            RequestedCardId = request.SourceCardId,
+            BackfillDimension = request.BackfillDimension,
+            DimensionKey = request.DimensionKey,
+            Field = request.Field,
+            FieldValue = request.FieldValue,
+            CardsFound = cardsFound,
+            Truncated = cardsFound > cards.Count
+        };
+
+        foreach (var card in cards)
+        {
+            var rawEvent = BuildReprocessRawEvent(request, card, eventType);
+            var processResult = await worker.ProcessEventAsync(rawEvent, "reprocess-card", cancellationToken);
+            if (!request.BackfillDimension || ShouldIncludeReprocessCardResult(request, rawEvent, processResult))
+            {
+                result.CardsProcessed++;
+                result.CommandsBuilt += processResult.CommandsBuilt;
+                result.CommandsPublished += processResult.CommandsPublished;
+                result.CommandsSkippedAsDuplicates += processResult.CommandsSkippedAsDuplicates;
+                foreach (var (topic, count) in processResult.TopicsPublished)
+                {
+                    result.CommandsPublishedByTopic[topic] = result.CommandsPublishedByTopic.TryGetValue(topic, out var current)
+                        ? current + count
+                        : count;
+                }
+
+                if (result.Samples.Count < 20)
+                {
+                    result.Samples.Add(new ReprocessCardSample
+                    {
+                        CardId = card.Id,
+                        EventId = processResult.EventId,
+                        CommandsBuilt = processResult.CommandsBuilt,
+                        CommandsPublished = processResult.CommandsPublished,
+                        CommandsSkippedAsDuplicates = processResult.CommandsSkippedAsDuplicates
+                    });
+                }
+            }
+
+            if (result.CardsProcessed >= maxCards)
+            {
+                break;
+            }
+        }
+
+        return Results.Ok(result);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.MapPost("/rules/apply-current/scope-preview", async (
     ApplyCurrentRulesRequest request,
     ConversionRulesFileLoader loader,
@@ -342,6 +461,7 @@ app.MapPost("/rules/apply-current/scope-preview", async (
     return Results.Ok(new ApplyCurrentRulesScopePreviewResult
     {
         BuildMode = NormalizeApplyCurrentBuildMode(request.BuildMode),
+        TopologyReadMode = NormalizeTopologyReadMode(request),
         Layer = ScopedLayerForCurrentApply(request, baseSelectedRules),
         RuleCount = selectedRules.Count,
         SourceClassCount = sourceClasses.Count,
@@ -447,6 +567,7 @@ app.MapPost("/rules/apply-current", async (
             OperationId = operationId,
             DryRun = request.DryRun,
             BuildMode = NormalizeApplyCurrentBuildMode(request.BuildMode),
+            TopologyReadMode = NormalizeTopologyReadMode(request),
             Topic = string.Join(", ", publishTopics),
             Topics = publishTopics,
             ZabbixDeliveryMode = publishTargets.ZabbixDirect ? "direct" : publishTargets.Zabbix ? "topic" : "",
@@ -464,7 +585,9 @@ app.MapPost("/rules/apply-current", async (
             progress.Stage(
                 operationId,
                 "graph_overlay",
-                "Режим наложения графа: исходные карточки CMDBuild не читаются.");
+                UseRuleTopologyRead(request)
+                    ? "Режим наложения графа: топология строится из текущих правил; исходные карточки и полный каталог managed-объектов CMDBuild не читаются."
+                    : "Режим наложения графа: исходные карточки CMDBuild не читаются; topology читается из полного managed-каталога CMDBuild.");
         }
 
         foreach (var sourceClass in sourceClasses)
@@ -579,6 +702,7 @@ app.MapPost("/rules/apply-current", async (
                 operationId,
                 progress,
                 result,
+                selectedDocument,
                 pendingPlans,
                 applyCancellationToken);
             result.Classes.Add(suppressionTopologyResult);
@@ -829,6 +953,23 @@ static ApplyCurrentRulesScopeSelection SelectScopedRulesForCurrentApply(
         .ToArray();
     if (seedIndexes.Count == 0)
     {
+        if (IsGraphOverlayBuildMode(request))
+        {
+            return new ApplyCurrentRulesScopeSelection(
+                Enabled: true,
+                Applied: true,
+                Rules: [],
+                RequestedKeys: requestedKeys,
+                MissingKeys: missingKeys,
+                Layer: ScopedLayerForCurrentApply(request, rules),
+                Depth: request.ZabbixScopeDepth <= 0 ? 0 : Math.Min(request.ZabbixScopeDepth, 50),
+                MatchedSeedCount: 0,
+                OriginalRuleCount: rules.Count,
+                SelectedRuleCount: 0,
+                OriginalSourceClassCount: originalSourceClasses,
+                SelectedSourceClassCount: 0);
+        }
+
         if (hasExtraScopeKeys)
         {
             return new ApplyCurrentRulesScopeSelection(
@@ -924,6 +1065,30 @@ static bool IsGraphOverlayBuildMode(ApplyCurrentRulesRequest request)
         NormalizeApplyCurrentBuildMode(request.BuildMode),
         "graph-overlay",
         StringComparison.OrdinalIgnoreCase);
+}
+
+static bool UseRuleTopologyRead(ApplyCurrentRulesRequest request)
+{
+    return IsGraphOverlayBuildMode(request)
+        && string.Equals(NormalizeTopologyReadMode(request), "rules", StringComparison.OrdinalIgnoreCase);
+}
+
+static string NormalizeTopologyReadMode(ApplyCurrentRulesRequest request)
+{
+    var normalized = (request.TopologyReadMode ?? "").Trim().Replace('_', '-').ToLowerInvariant();
+    if (normalized is "full" or "cmdbuild" or "cmdbuild-full" or "legacy-full")
+    {
+        return "full";
+    }
+
+    if (normalized is "rules" or "rule" or "scoped" or "scope" or "runtime-rules")
+    {
+        return "rules";
+    }
+
+    return IsGraphOverlayBuildMode(request)
+        ? "rules"
+        : "full";
 }
 
 static string NormalizeApplyCurrentBuildMode(string? value)
@@ -1187,6 +1352,7 @@ static async Task<ApplyCurrentRulesServiceObjectScopeHints> ResolveServiceObject
     var requestedKeys = ScopeKeysForCurrentApply(request);
     if (requestedKeys.Count == 0
         || !CurrentApplyIncludesServiceLayer(request)
+        || IsGraphOverlayBuildMode(request)
         || rules.Count == 0)
     {
         return ApplyCurrentRulesServiceObjectScopeHints.Empty;
@@ -1425,6 +1591,65 @@ static CmdbRawEvent BuildApplyCurrentRawEvent(
             card_id = card.Id
         })
     };
+}
+
+static CmdbRawEvent BuildReprocessRawEvent(
+    ReprocessCardRequest request,
+    CmdbuildClassCardCatalogItem card,
+    string eventType)
+{
+    var rawEvent = BuildApplyCurrentRawEvent(request.SourceClass, card, eventType);
+    var attributes = new Dictionary<string, string>(rawEvent.Attributes, StringComparer.OrdinalIgnoreCase)
+    {
+        ["reprocess_reason"] = string.IsNullOrWhiteSpace(request.Reason)
+            ? "missing-dimension-materialized"
+            : request.Reason.Trim()
+    };
+    if (!string.IsNullOrWhiteSpace(request.Field)
+        && !string.IsNullOrWhiteSpace(request.FieldValue)
+        && (!attributes.TryGetValue(request.Field, out var existing) || string.IsNullOrWhiteSpace(existing)))
+    {
+        attributes[request.Field] = request.FieldValue;
+    }
+
+    return rawEvent with
+    {
+        EventId = $"reprocess-{request.SourceClass}-{card.Id}-{Guid.NewGuid():N}",
+        Source = "rules-reprocess-card",
+        Attributes = attributes,
+        RawPayload = JsonSerializer.SerializeToElement(new
+        {
+            source = "rules-reprocess-card",
+            class_code = request.SourceClass,
+            card_id = card.Id,
+            reason = request.Reason,
+            layer = request.Layer,
+            template_id = request.TemplateId,
+            dimension_key = request.DimensionKey,
+            field = request.Field,
+            field_value = request.FieldValue,
+            backfill_dimension = request.BackfillDimension
+        })
+    };
+}
+
+static bool ShouldIncludeReprocessCardResult(
+    ReprocessCardRequest request,
+    CmdbRawEvent rawEvent,
+    RuleEngineEventProcessResult processResult)
+{
+    if (processResult.CommandsBuilt > 0 || processResult.CommandsPublished > 0)
+    {
+        return true;
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Field) || string.IsNullOrWhiteSpace(request.FieldValue))
+    {
+        return true;
+    }
+
+    return rawEvent.Attributes.TryGetValue(request.Field, out var value)
+        && string.Equals(value, request.FieldValue, StringComparison.OrdinalIgnoreCase);
 }
 
 static bool ShouldPublishServiceTopology(ApplyCurrentRulesRequest request, PublishTargets targets)
@@ -2038,6 +2263,7 @@ static async Task<ApplyCurrentRulesClassResult> ApplySuppressionTopologyAsync(
     string operationId,
     ApplyCurrentRulesProgressStore progress,
     ApplyCurrentRulesResult result,
+    ConversionRulesDocument rules,
     ICollection<PendingApplyCurrentPlan> pendingPlans,
     CancellationToken cancellationToken)
 {
@@ -2052,6 +2278,7 @@ static async Task<ApplyCurrentRulesClassResult> ApplySuppressionTopologyAsync(
         var plans = await BuildSuppressionTopologyCommandPlansAsync(
             cmdbuild,
             request,
+            rules,
             cancellationToken);
         buildTopologyWatch.Stop();
         result.Performance.SuppressionTopologyBuildMs += buildTopologyWatch.ElapsedMilliseconds;
@@ -2092,6 +2319,16 @@ static async Task<IReadOnlyList<AggregationCommandPlan>> BuildServiceTopologyCom
     IHostEnvironment environment,
     CancellationToken cancellationToken)
 {
+    if (UseRuleTopologyRead(request))
+    {
+        var ruleTopologyPlans = BuildRuleTopologyCommandPlans(rules, "service");
+        var ruleTopologyTemplateRelations = await LoadServiceObjectTemplateRelationsAsync(
+            conversionRulesOptions,
+            environment,
+            cancellationToken);
+        return AttachRuleTopologyServiceParentManagedKeys(ruleTopologyPlans, rules, ruleTopologyTemplateRelations);
+    }
+
     var catalog = await cmdbuild.ListManagedLayerClassInstancesAsync(
         request.CmdbuildPrefix,
         "Service",
@@ -2221,8 +2458,14 @@ static Dictionary<string, List<AggregationTargetRelation>> BuildServiceTopologyR
 static async Task<IReadOnlyList<AggregationCommandPlan>> BuildSuppressionTopologyCommandPlansAsync(
     CmdbuildClient cmdbuild,
     ApplyCurrentRulesRequest request,
+    ConversionRulesDocument rules,
     CancellationToken cancellationToken)
 {
+    if (UseRuleTopologyRead(request))
+    {
+        return BuildRuleTopologyCommandPlans(rules, "suppression");
+    }
+
     var catalog = await cmdbuild.ListManagedLayerClassInstancesAsync(
         request.CmdbuildPrefix,
         "Suppression",
@@ -2266,6 +2509,262 @@ static async Task<IReadOnlyList<AggregationCommandPlan>> BuildSuppressionTopolog
         .ThenBy(plan => plan.Command.Target.ClassCode, StringComparer.OrdinalIgnoreCase)
         .ThenBy(plan => plan.Command.Target.CardId, StringComparer.Ordinal)
         .ToArray();
+}
+
+static IReadOnlyList<AggregationCommandPlan> BuildRuleTopologyCommandPlans(
+    ConversionRulesDocument rules,
+    string layer)
+{
+    return rules.Rules
+        .Where(rule => rule.Enabled)
+        .Where(rule => rule.Layer.Equals(layer, StringComparison.OrdinalIgnoreCase))
+        .Where(rule => !string.IsNullOrWhiteSpace(rule.Target.ClassCode))
+        .Select(rule => BuildRuleTopologyCommandPlan(rule, layer))
+        .Where(plan => !string.IsNullOrWhiteSpace(ZabbixManagedServiceMapper.ManagedKey(plan.Command.Target)))
+        .OrderBy(plan => plan.Command.Target.CardDescription, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(plan => plan.Command.Target.ClassCode, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(plan => ZabbixManagedServiceMapper.ManagedKey(plan.Command.Target), StringComparer.Ordinal)
+        .ToArray();
+}
+
+static IReadOnlyList<AggregationCommandPlan> AttachRuleTopologyServiceParentManagedKeys(
+    IReadOnlyList<AggregationCommandPlan> plans,
+    ConversionRulesDocument rules,
+    IReadOnlyList<ServiceObjectTemplateRelationIntent> templateRelations)
+{
+    if (plans.Count == 0 || templateRelations.Count == 0)
+    {
+        return plans;
+    }
+
+    var templateIdByRuleId = rules.Rules
+        .Where(rule => !string.IsNullOrWhiteSpace(rule.RuleId))
+        .Select(rule => new
+        {
+            rule.RuleId,
+            TemplateId = FirstNonEmpty(rule.TemplateGeneration.TemplateId, rule.GeneratedFromTemplate)
+        })
+        .Where(item => !string.IsNullOrWhiteSpace(item.TemplateId))
+        .ToDictionary(item => item.RuleId, item => item.TemplateId, StringComparer.Ordinal);
+    if (templateIdByRuleId.Count == 0)
+    {
+        return plans;
+    }
+
+    return plans
+        .Select(plan => AttachRuleTopologyServiceParentManagedKeysToPlan(plan, templateIdByRuleId, templateRelations))
+        .ToArray();
+}
+
+static AggregationCommandPlan AttachRuleTopologyServiceParentManagedKeysToPlan(
+    AggregationCommandPlan plan,
+    IReadOnlyDictionary<string, string> templateIdByRuleId,
+    IReadOnlyList<ServiceObjectTemplateRelationIntent> templateRelations)
+{
+    if (!string.Equals(plan.Command.Layer, "service", StringComparison.OrdinalIgnoreCase)
+        || !templateIdByRuleId.TryGetValue(plan.Command.RuleId, out var templateId)
+        || string.IsNullOrWhiteSpace(templateId))
+    {
+        return plan;
+    }
+
+    var parentKeys = templateRelations
+        .Where(relation => relation.TargetType.Equals("service_template", StringComparison.OrdinalIgnoreCase)
+            && relation.TargetTemplateId.Equals(templateId, StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(relation.SourceClassCode)
+            && !string.IsNullOrWhiteSpace(relation.SourceCardId)
+            && (string.IsNullOrWhiteSpace(relation.TargetClassCode)
+                || relation.TargetClassCode.Equals(plan.Command.Target.ClassCode, StringComparison.Ordinal)))
+        .Select(relation => CmdbuildManagedKey(relation.SourceClassCode, relation.SourceCardId))
+        .Where(key => !string.IsNullOrWhiteSpace(key))
+        .Distinct(StringComparer.Ordinal)
+        .OrderBy(key => key, StringComparer.Ordinal)
+        .ToArray();
+    if (parentKeys.Length == 0)
+    {
+        return plan;
+    }
+
+    var target = plan.Command.Target with
+    {
+        ParentManagedKeys = plan.Command.Target.ParentManagedKeys
+            .Concat(parentKeys)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray()
+    };
+    var command = plan.Command with { Target = target };
+    return plan with
+    {
+        Command = command,
+        SemanticFingerprint = $"{plan.SemanticFingerprint}\nparents:{string.Join("|", target.ParentManagedKeys)}"
+    };
+}
+
+static AggregationCommandPlan BuildRuleTopologyCommandPlan(ConversionRule rule, string layer)
+{
+    var target = BuildRuleTopologyTarget(rule);
+    var command = new AggregationCommand
+    {
+        CommandId = $"rule-topology-{layer}-{Guid.NewGuid():N}",
+        CorrelationId = $"rule-topology-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}",
+        SourceEventId = $"rule-topology-{rule.RuleId}",
+        CommandType = AggregationCommandTypes.EnsureMembership,
+        Layer = layer,
+        RuleId = rule.RuleId,
+        RuleName = rule.Name,
+        EventType = "UPDATE",
+        Source = new AggregationSourceObject(),
+        Target = target
+    };
+    var managedKey = ZabbixManagedServiceMapper.ManagedKey(target);
+    var semanticKey = $"{layer}-rule-topology:{managedKey}";
+    var semanticFingerprint = string.Join(
+        "\n",
+        semanticKey,
+        rule.RuleId,
+        target.ClassCode,
+        target.CardId,
+        target.CardDescription,
+        string.Join("|", target.Attributes
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => $"{pair.Key}={Convert.ToString(pair.Value, CultureInfo.InvariantCulture)}")),
+        string.Join("|", target.Relations
+            .Select(relation => $"{relation.DomainCode}:{relation.TargetClassCode}:{relation.TargetLookup}")
+            .OrderBy(item => item, StringComparer.Ordinal)));
+
+    return new AggregationCommandPlan
+    {
+        Command = command,
+        SemanticKey = semanticKey,
+        SemanticFingerprint = semanticFingerprint
+    };
+}
+
+static string CmdbuildManagedKey(string classCode, string cardId)
+{
+    return string.IsNullOrWhiteSpace(classCode) || string.IsNullOrWhiteSpace(cardId)
+        ? ""
+        : $"cmdbuild:{classCode.Trim()}:{cardId.Trim()}";
+}
+
+static AggregationTargetObject BuildRuleTopologyTarget(ConversionRule rule)
+{
+    var attributes = RuleTopologyAttributes(rule.Target);
+    var idempotencyKey = string.IsNullOrWhiteSpace(rule.Target.IdempotencyKey)
+        ? RuleTargetManagedKey(rule.Target)
+        : rule.Target.IdempotencyKey.Trim();
+    var cardDescription = FirstNonEmpty(
+        rule.Target.CardDescription,
+        Convert.ToString(ValueForKey(attributes, "zabbix_service_name"), CultureInfo.InvariantCulture),
+        Convert.ToString(ValueForKey(attributes, "monitoring_name"), CultureInfo.InvariantCulture),
+        Convert.ToString(ValueForKey(attributes, "Description"), CultureInfo.InvariantCulture),
+        Convert.ToString(ValueForKey(attributes, "description"), CultureInfo.InvariantCulture),
+        Convert.ToString(ValueForKey(attributes, "name"), CultureInfo.InvariantCulture),
+        idempotencyKey);
+
+    return new AggregationTargetObject
+    {
+        ClassCode = rule.Target.ClassCode,
+        CardId = rule.Target.CardId,
+        CardDescription = cardDescription,
+        CreateInstance = string.IsNullOrWhiteSpace(rule.Target.CardId) && rule.Target.CreateInstance,
+        IdempotencyKey = idempotencyKey,
+        Attributes = attributes,
+        Relations = rule.Relations
+            .Select(relation => new AggregationTargetRelation
+            {
+                DomainCode = relation.DomainCode,
+                TargetClassCode = relation.TargetClassCode,
+                TargetLookup = relation.TargetLookup,
+                AttributeMappings = relation.AttributeMappings
+                    .GroupBy(pair => pair.Key, StringComparer.Ordinal)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => CoerceGraphOverlayValue(group.Last().Value),
+                        StringComparer.Ordinal)
+            })
+            .Where(relation =>
+                !string.IsNullOrWhiteSpace(relation.DomainCode)
+                && !string.IsNullOrWhiteSpace(relation.TargetClassCode)
+                && !string.IsNullOrWhiteSpace(relation.TargetLookup))
+            .ToArray()
+    };
+}
+
+static IReadOnlyDictionary<string, object?> RuleTopologyAttributes(TargetObject target)
+{
+    var attributes = target.AttributeMappings
+        .Concat(target.InitialUserValues)
+        .GroupBy(pair => pair.Key, StringComparer.Ordinal)
+        .ToDictionary(
+            group => group.Key,
+            group => CoerceGraphOverlayValue(group.Last().Value),
+            StringComparer.Ordinal);
+    var idempotencyKey = string.IsNullOrWhiteSpace(target.IdempotencyKey)
+        ? RuleTargetManagedKey(target)
+        : target.IdempotencyKey.Trim();
+    AddMissingAttribute(attributes, "Code", idempotencyKey);
+    AddMissingAttribute(attributes, "Description", target.CardDescription);
+    AddMissingAttribute(attributes, "name", FirstNonEmpty(target.CardDescription, idempotencyKey));
+    AddMissingAttribute(attributes, "managed_by_builder", true);
+    return attributes;
+}
+
+static object? ValueForKey(IReadOnlyDictionary<string, object?> values, string key)
+{
+    if (values.TryGetValue(key, out var exact))
+    {
+        return exact;
+    }
+
+    foreach (var pair in values)
+    {
+        if (pair.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
+        {
+            return pair.Value;
+        }
+    }
+
+    return null;
+}
+
+static void AddMissingAttribute(IDictionary<string, object?> values, string key, object? value)
+{
+    if (value is null
+        || values.ContainsKey(key)
+        || values.Keys.Any(existing => existing.Equals(key, StringComparison.OrdinalIgnoreCase)))
+    {
+        return;
+    }
+
+    if (value is string text && string.IsNullOrWhiteSpace(text))
+    {
+        return;
+    }
+
+    values[key] = value;
+}
+
+static object? CoerceGraphOverlayValue(string value)
+{
+    if (bool.TryParse(value, out var boolValue))
+    {
+        return boolValue;
+    }
+
+    if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var longValue))
+    {
+        return longValue;
+    }
+
+    if (decimal.TryParse(value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var decimalValue))
+    {
+        return decimalValue;
+    }
+
+    return value;
 }
 
 static Dictionary<string, List<AggregationTargetRelation>> BuildSuppressionTopologyRelations(
@@ -3082,6 +3581,10 @@ static string OperationDeduplicationKey(AggregationCommandPlan plan)
         command.Target.Relations
             .Select(relation => $"{relation.DomainCode}:{relation.TargetClassCode}:{relation.TargetLookup}")
             .OrderBy(value => value, StringComparer.Ordinal));
+    var parentKey = string.Join(
+        "|",
+        command.Target.ParentManagedKeys
+            .OrderBy(value => value, StringComparer.Ordinal));
     return string.Join(
         "\n",
         command.Layer,
@@ -3092,7 +3595,8 @@ static string OperationDeduplicationKey(AggregationCommandPlan plan)
         command.Source.KeyValue,
         command.Target.ClassCode,
         targetKey,
-        relationKey);
+        relationKey,
+        parentKey);
 }
 
 static bool ShouldSkipOperationDuplicate(
@@ -3159,6 +3663,124 @@ public sealed record ServiceObjectTemplateRelationIntent
     public string TargetClassCode { get; init; } = "";
 }
 
+public sealed record ConversionTemplateDocument
+{
+    [JsonPropertyName("layer")]
+    public string Layer { get; init; } = "";
+
+    [JsonPropertyName("templates")]
+    public IReadOnlyList<ConversionTemplateDefinition> Templates { get; init; } = [];
+}
+
+public sealed record ConversionTemplateDefinition
+{
+    [JsonPropertyName("template_id")]
+    public string TemplateId { get; init; } = "";
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
+
+    [JsonPropertyName("layer")]
+    public string Layer { get; init; } = "";
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; init; } = true;
+
+    [JsonPropertyName("source_class_regex")]
+    public string SourceClassRegex { get; init; } = "";
+
+    [JsonPropertyName("population_dimension")]
+    public ConversionTemplatePopulationDimension PopulationDimension { get; init; } = new();
+
+    [JsonPropertyName("filter")]
+    public ConversionTemplateFilter Filter { get; init; } = new();
+
+    [JsonPropertyName("variables")]
+    public IReadOnlyList<ConversionTemplateVariable> Variables { get; init; } = [];
+}
+
+public sealed record ConversionTemplatePopulationDimension
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; init; } = true;
+
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "";
+
+    [JsonPropertyName("source_field")]
+    public string SourceField { get; init; } = "";
+
+    [JsonPropertyName("values")]
+    public string Values { get; init; } = "";
+
+    [JsonPropertyName("regex")]
+    public string Regex { get; init; } = "";
+
+    [JsonPropertyName("capture_group")]
+    public string CaptureGroup { get; init; } = "";
+
+    [JsonPropertyName("key_template")]
+    public string KeyTemplate { get; init; } = "";
+
+    [JsonPropertyName("name_template")]
+    public string NameTemplate { get; init; } = "";
+
+    [JsonPropertyName("condition_field")]
+    public string ConditionField { get; init; } = "";
+
+    [JsonPropertyName("condition_pattern_template")]
+    public string ConditionPatternTemplate { get; init; } = "";
+}
+
+public sealed record ConversionTemplateFilter
+{
+    [JsonPropertyName("include")]
+    public IReadOnlyList<ConversionTemplateFilterMatcher> Include { get; init; } = [];
+
+    [JsonPropertyName("exclude")]
+    public IReadOnlyList<ConversionTemplateFilterMatcher> Exclude { get; init; } = [];
+}
+
+public sealed record ConversionTemplateFilterMatcher
+{
+    [JsonPropertyName("field")]
+    public string Field { get; init; } = "";
+
+    [JsonPropertyName("regex")]
+    public string Regex { get; init; } = "";
+}
+
+public sealed record ConversionTemplateVariable
+{
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
+
+    [JsonPropertyName("value")]
+    public string Value { get; init; } = "";
+}
+
+public sealed record TemplateDimensionId(string Layer, string TemplateId, string DimensionKey);
+
+public sealed record StaticDimensionRow(string Key, string Name, string ConditionPattern);
+
+public sealed record TemplateDimensionValue
+{
+    public string Field { get; init; } = "";
+
+    public string FieldValue { get; init; } = "";
+
+    public string DimensionKey { get; init; } = "";
+
+    public string DimensionValue { get; init; } = "";
+
+    public string DimensionName { get; init; } = "";
+
+    public string TargetKey { get; init; } = "";
+
+    public IReadOnlyDictionary<string, string> Variables { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+}
+
 public sealed record ApplyCurrentRulesRequest
 {
     public string OperationId { get; init; } = "";
@@ -3181,6 +3803,8 @@ public sealed record ApplyCurrentRulesRequest
 
     public string BuildMode { get; init; } = "membership";
 
+    public string TopologyReadMode { get; init; } = "auto";
+
     public IReadOnlyList<string> ZabbixScopeKeys { get; init; } = [];
 
     public int ZabbixScopeDepth { get; init; }
@@ -3192,6 +3816,109 @@ public sealed record ApplyCurrentRulesRequest
     public bool DryRun { get; init; }
 
     public string EventType { get; init; } = "UPDATE";
+}
+
+public sealed record ReprocessCardRequest
+{
+    [JsonPropertyName("source_class")]
+    public string SourceClass { get; init; } = "";
+
+    [JsonPropertyName("source_card_id")]
+    public string SourceCardId { get; init; } = "";
+
+    [JsonPropertyName("event_type")]
+    public string EventType { get; init; } = "UPDATE";
+
+    [JsonPropertyName("layer")]
+    public string Layer { get; init; } = "";
+
+    [JsonPropertyName("template_id")]
+    public string TemplateId { get; init; } = "";
+
+    [JsonPropertyName("dimension_key")]
+    public string DimensionKey { get; init; } = "";
+
+    [JsonPropertyName("field")]
+    public string Field { get; init; } = "";
+
+    [JsonPropertyName("field_value")]
+    public string FieldValue { get; init; } = "";
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = "";
+
+    [JsonPropertyName("backfill_dimension")]
+    public bool BackfillDimension { get; init; }
+
+    [JsonPropertyName("max_cards")]
+    public int MaxCards { get; init; } = 1000;
+}
+
+public sealed class ReprocessCardResult
+{
+    public bool Success { get; init; }
+
+    public string SourceClass { get; init; } = "";
+
+    public string RequestedCardId { get; init; } = "";
+
+    public bool BackfillDimension { get; init; }
+
+    public string DimensionKey { get; init; } = "";
+
+    public string Field { get; init; } = "";
+
+    public string FieldValue { get; init; } = "";
+
+    public int CardsFound { get; set; }
+
+    public int CardsProcessed { get; set; }
+
+    public int CommandsBuilt { get; set; }
+
+    public int CommandsPublished { get; set; }
+
+    public int CommandsSkippedAsDuplicates { get; set; }
+
+    public bool Truncated { get; set; }
+
+    public string Error { get; init; } = "";
+
+    public Dictionary<string, int> CommandsPublishedByTopic { get; } = new(StringComparer.Ordinal);
+
+    public List<ReprocessCardSample> Samples { get; } = [];
+}
+
+public sealed class ReprocessCardSample
+{
+    public string CardId { get; init; } = "";
+
+    public string EventId { get; init; } = "";
+
+    public int CommandsBuilt { get; init; }
+
+    public int CommandsPublished { get; init; }
+
+    public int CommandsSkippedAsDuplicates { get; init; }
+}
+
+public sealed class RuleEngineEventProcessResult
+{
+    public string EventId { get; init; } = "";
+
+    public string SourceClass { get; init; } = "";
+
+    public string SourceCardId { get; init; } = "";
+
+    public int CommandsBuilt { get; init; }
+
+    public int CommandsPublished { get; set; }
+
+    public int CommandsSkippedAsDuplicates { get; set; }
+
+    public int MissingDimensionRequestsPublished { get; init; }
+
+    public Dictionary<string, int> TopicsPublished { get; } = new(StringComparer.Ordinal);
 }
 
 public sealed record PendingApplyCurrentPlan(
@@ -3287,6 +4014,11 @@ public sealed record ApplyCurrentRulesScopeSelection(
 
         if (MatchedSeedCount == 0)
         {
+            if (Applied && SelectedRuleCount == 0)
+            {
+                return "Область задана, но статически не сопоставлена с rule id/name/managed key; команды графа не строятся, полный managed-каталог CMDBuild не читается.";
+            }
+
             return serviceObjectScopeHints.MatchedServiceObjectCount > 0
                 ? $"Область сопоставлена с сервисными объектами ({serviceObjectScopeHints.MatchedServiceObjectCount}), но связанные правила не найдены; исходные карточки правил не читаются."
                 : "Область задана, но статически не сопоставлена с rule id/name/managed key; без строгой проверки подготовка выполняется полным набором.";
@@ -3351,6 +4083,8 @@ public sealed class ApplyCurrentRulesScopePreviewResult
 {
     public string BuildMode { get; init; } = "membership";
 
+    public string TopologyReadMode { get; init; } = "full";
+
     public string Layer { get; init; } = "";
 
     public int RuleCount { get; init; }
@@ -3388,6 +4122,8 @@ public sealed class ApplyCurrentRulesResult
     public bool DryRun { get; init; }
 
     public string BuildMode { get; init; } = "membership";
+
+    public string TopologyReadMode { get; init; } = "full";
 
     public string Topic { get; init; } = "";
 
@@ -4036,6 +4772,12 @@ public sealed class ApplyCurrentRulesZabbixPlanSummary
         }
 
         RelationCount += command.Target.Relations.Count;
+        var managedKey = ZabbixManagedServiceMapper.ManagedKey(command.Target);
+        if (!string.IsNullOrWhiteSpace(managedKey) && command.Target.ParentManagedKeys.Count > 0)
+        {
+            incomingManagedKeys.Add(managedKey);
+        }
+
         foreach (var relation in command.Target.Relations)
         {
             AddIncomingManagedKey(relation);
@@ -4628,6 +5370,8 @@ public sealed class RuleEngineWorker(
     ILogger<RuleEngineWorker> logger)
     : KafkaJsonConsumerWorker<CmdbRawEvent>(kafkaOptions, logger)
 {
+    private static readonly JsonSerializerOptions TemplateJsonOptions = new(JsonSerializerDefaults.Web);
+
     protected override string Topic => topicOptions.Value.CmdbWebhookEvents;
 
     protected override string ConsumerGroupId => "";
@@ -4637,6 +5381,14 @@ public sealed class RuleEngineWorker(
         string key,
         CancellationToken cancellationToken)
     {
+        await ProcessEventAsync(message, "streaming webhook", cancellationToken);
+    }
+
+    public async Task<RuleEngineEventProcessResult> ProcessEventAsync(
+        CmdbRawEvent message,
+        string processReason,
+        CancellationToken cancellationToken)
+    {
         var rules = await loader.LoadAsync(cancellationToken);
         var validation = validator.Validate(rules);
         if (!validation.IsValid)
@@ -4644,11 +5396,21 @@ public sealed class RuleEngineWorker(
             throw new InvalidOperationException($"Conversion rules are invalid: {string.Join("; ", validation.Errors)}");
         }
 
-        var enrichedMessage = await EnrichSourceFieldsAsync(message, rules, cancellationToken);
+        var templateDocuments = await LoadTemplateDocumentsForStreamingAsync(cancellationToken);
+        var enrichedMessage = await EnrichSourceFieldsAsync(message, rules, templateDocuments, cancellationToken);
+        var missingDimensionRequests = await PublishMissingDimensionRequestsAsync(enrichedMessage, rules, templateDocuments, cancellationToken);
         var plans = await AttachServiceParentManagedKeysAsync(
             engine.BuildCommandPlans(enrichedMessage, rules),
             rules,
             cancellationToken);
+        var result = new RuleEngineEventProcessResult
+        {
+            EventId = enrichedMessage.EventId,
+            SourceClass = enrichedMessage.ClassCode,
+            SourceCardId = enrichedMessage.CardId,
+            CommandsBuilt = plans.Count,
+            MissingDimensionRequestsPublished = missingDimensionRequests
+        };
         logger.LogDebugBasic(
             debugOptions,
             "rule engine processed event={EventId}, class={ClassCode}, card={CardId}, commands={CommandCount}",
@@ -4661,6 +5423,7 @@ public sealed class RuleEngineWorker(
         {
             if (deduplicator.IsDuplicate(plan, out var duplicateAge))
             {
+                result.CommandsSkippedAsDuplicates++;
                 logger.LogDebugBasic(
                     debugOptions,
                     "rule engine suppressed duplicate semantic command: event={EventId}, command={CommandId}, rule={RuleId}, ageSeconds={AgeSeconds}",
@@ -4679,15 +5442,25 @@ public sealed class RuleEngineWorker(
                 plan,
                 PublishTargets.All,
                 cancellationToken);
+            result.CommandsPublished++;
+            foreach (var topic in publishedTopics)
+            {
+                var normalizedTopic = string.IsNullOrWhiteSpace(topic) ? "unknown" : topic.Trim();
+                result.TopicsPublished[normalizedTopic] = result.TopicsPublished.TryGetValue(normalizedTopic, out var current)
+                    ? current + 1
+                    : 1;
+            }
+
             await dirtyScopeClient.MarkPendingIfZabbixPublishedAsync(
                 plan.Command,
                 publishedTopics,
-                "streaming webhook zabbix topic publish",
+                $"{processReason} zabbix topic publish",
                 cancellationToken);
             deduplicator.MarkPublished(plan);
         }
 
         await MarkDirtyScopesForIntermediateWebhookAsync(message, rules, cancellationToken);
+        return result;
     }
 
     private async Task MarkDirtyScopesForIntermediateWebhookAsync(
@@ -4733,6 +5506,730 @@ public sealed class RuleEngineWorker(
                 reason,
                 cancellationToken);
         }
+    }
+
+    private async Task<IReadOnlyList<ConversionTemplateDocument>> LoadTemplateDocumentsForStreamingAsync(
+        CancellationToken cancellationToken)
+    {
+        var result = new List<ConversionTemplateDocument>();
+        foreach (var layer in new[] { "service", "suppression" })
+        {
+            var document = await LoadTemplateDocumentForStreamingAsync(layer, cancellationToken);
+            if (document is not null)
+            {
+                result.Add(document);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<ConversionTemplateDocument?> LoadTemplateDocumentForStreamingAsync(
+        string layer,
+        CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in TemplatePathCandidatesForStreaming(layer))
+        {
+            var fullPath = Path.GetFullPath(candidate);
+            if (!seen.Add(fullPath) || !File.Exists(fullPath))
+            {
+                continue;
+            }
+
+            try
+            {
+                await using var stream = File.OpenRead(fullPath);
+                var document = await JsonSerializer.DeserializeAsync<ConversionTemplateDocument>(
+                    stream,
+                    TemplateJsonOptions,
+                    cancellationToken);
+                if (document is null)
+                {
+                    return null;
+                }
+
+                return string.IsNullOrWhiteSpace(document.Layer)
+                    ? document with { Layer = layer }
+                    : document;
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Failed to load {Layer} conversion templates from {TemplatePath}. Missing-dimension detection for this layer is skipped.",
+                    layer,
+                    fullPath);
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<int> PublishMissingDimensionRequestsAsync(
+        CmdbRawEvent message,
+        ConversionRulesDocument rules,
+        IReadOnlyList<ConversionTemplateDocument> templateDocuments,
+        CancellationToken cancellationToken)
+    {
+        var topic = topicOptions.Value.CmdbModelMissingDimensions;
+        if (string.IsNullOrWhiteSpace(topic))
+        {
+            return 0;
+        }
+
+        var requests = DetectMissingDimensionRequests(message, rules, templateDocuments);
+        foreach (var request in requests)
+        {
+            await producer.PublishAsync(topic, request.IdempotencyKey, request, cancellationToken);
+            logger.LogInformation(
+                "Published missing model dimension request {IdempotencyKey} for {SourceClass}/{SourceCardId}.",
+                request.IdempotencyKey,
+                request.SourceClass,
+                request.SourceCardId);
+        }
+
+        return requests.Count;
+    }
+
+    private static IReadOnlyList<CmdbModelMissingDimensionRequest> DetectMissingDimensionRequests(
+        CmdbRawEvent message,
+        ConversionRulesDocument rules,
+        IReadOnlyList<ConversionTemplateDocument> templateDocuments)
+    {
+        if (message.EventType.Equals("DELETE", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(message.ClassCode)
+            || string.IsNullOrWhiteSpace(message.CardId)
+            || templateDocuments.Count == 0)
+        {
+            return [];
+        }
+
+        var existingDimensions = ExistingTemplateDimensions(rules);
+        var existingTemplateSourceClasses = ExistingTemplateSourceClasses(rules);
+        var requests = new Dictionary<string, CmdbModelMissingDimensionRequest>(StringComparer.Ordinal);
+        foreach (var document in templateDocuments)
+        {
+            foreach (var template in document.Templates)
+            {
+                var templateId = string.IsNullOrWhiteSpace(template.TemplateId) ? "" : template.TemplateId.Trim();
+                var layer = NormalizeTemplateLayer(template.Layer, document.Layer);
+                if (string.IsNullOrWhiteSpace(layer)
+                    || string.IsNullOrWhiteSpace(templateId)
+                    || !template.Enabled
+                    || !TemplateMatchesSourceClass(template, layer, templateId, message.ClassCode, existingTemplateSourceClasses)
+                    || !TemplateFilterMatches(message, template.Filter))
+                {
+                    continue;
+                }
+
+                foreach (var dimension in CalculateTemplateDimensions(message, template))
+                {
+                    if (string.IsNullOrWhiteSpace(dimension.DimensionKey))
+                    {
+                        continue;
+                    }
+
+                    var dimensionId = new TemplateDimensionId(layer, templateId, dimension.DimensionKey);
+                    if (existingDimensions.Contains(dimensionId))
+                    {
+                        continue;
+                    }
+
+                    var idempotencyKey = $"{layer}/{templateId}/{dimension.DimensionKey}";
+                    requests.TryAdd(idempotencyKey, new CmdbModelMissingDimensionRequest
+                    {
+                        IdempotencyKey = idempotencyKey,
+                        Layer = layer,
+                        TemplateId = templateId,
+                        TemplateName = template.Name,
+                        SourceClass = message.ClassCode,
+                        SourceCardId = message.CardId,
+                        SourceEventId = message.EventId,
+                        EventType = message.EventType,
+                        Field = dimension.Field,
+                        FieldValue = dimension.FieldValue,
+                        DimensionKey = dimension.DimensionKey,
+                        DimensionValue = dimension.DimensionValue,
+                        DimensionName = dimension.DimensionName,
+                        TargetKey = dimension.TargetKey,
+                        Variables = dimension.Variables,
+                        Reason = "template matched source event and calculated a dimension without a generated rule",
+                        DetectedAt = DateTimeOffset.UtcNow
+                    });
+                }
+            }
+        }
+
+        return requests.Values
+            .OrderBy(item => item.Layer, StringComparer.Ordinal)
+            .ThenBy(item => item.TemplateId, StringComparer.Ordinal)
+            .ThenBy(item => item.DimensionKey, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static HashSet<TemplateDimensionId> ExistingTemplateDimensions(ConversionRulesDocument rules)
+    {
+        var result = new HashSet<TemplateDimensionId>();
+        foreach (var rule in rules.Rules)
+        {
+            var layer = NormalizeTemplateLayer(rule.Layer, "");
+            var templateId = FirstNonEmpty(rule.TemplateGeneration.TemplateId, rule.GeneratedFromTemplate);
+            var dimensionKey = rule.TemplateGeneration.DimensionKey;
+            if (string.IsNullOrWhiteSpace(layer)
+                || string.IsNullOrWhiteSpace(templateId)
+                || string.IsNullOrWhiteSpace(dimensionKey))
+            {
+                continue;
+            }
+
+            result.Add(new TemplateDimensionId(layer, templateId, dimensionKey));
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, HashSet<string>> ExistingTemplateSourceClasses(ConversionRulesDocument rules)
+    {
+        var result = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var rule in rules.Rules)
+        {
+            var layer = NormalizeTemplateLayer(rule.Layer, "");
+            var templateId = FirstNonEmpty(rule.TemplateGeneration.TemplateId, rule.GeneratedFromTemplate);
+            if (string.IsNullOrWhiteSpace(layer) || string.IsNullOrWhiteSpace(templateId))
+            {
+                continue;
+            }
+
+            var key = TemplateSourceClassKey(layer, templateId);
+            if (!result.TryGetValue(key, out var classes))
+            {
+                classes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                result[key] = classes;
+            }
+
+            AddField(classes, rule.Source.ClassCode);
+            AddField(classes, rule.TemplateGeneration.CandidateClassCode);
+        }
+
+        return result;
+    }
+
+    private static bool TemplateMatchesSourceClass(
+        ConversionTemplateDefinition template,
+        string layer,
+        string templateId,
+        string classCode,
+        IReadOnlyDictionary<string, HashSet<string>> existingTemplateSourceClasses)
+    {
+        if (TemplateMatchesClassCode(template, classCode))
+        {
+            return true;
+        }
+
+        return existingTemplateSourceClasses.TryGetValue(TemplateSourceClassKey(layer, templateId), out var sourceClasses)
+            && sourceClasses.Contains(classCode);
+    }
+
+    private static IReadOnlyList<TemplateDimensionValue> CalculateTemplateDimensions(
+        CmdbRawEvent message,
+        ConversionTemplateDefinition template)
+    {
+        var dimension = template.PopulationDimension;
+        if (!dimension.Enabled)
+        {
+            return [];
+        }
+
+        var type = NormalizeDimensionType(dimension.Type);
+        return type switch
+        {
+            "regex_capture" => CalculateRegexCaptureDimension(message, template, dimension),
+            "static_list" => CalculateStaticListDimensions(message, template, dimension),
+            "range" => CalculateRangeDimensions(message, template, dimension),
+            "source_field" or "source_lookup" or "source_bool" or "cmdb_reference" or "" =>
+                CalculateSourceFieldDimension(message, template, dimension, type),
+            _ => []
+        };
+    }
+
+    private static IReadOnlyList<TemplateDimensionValue> CalculateSourceFieldDimension(
+        CmdbRawEvent message,
+        ConversionTemplateDefinition template,
+        ConversionTemplatePopulationDimension dimension,
+        string type)
+    {
+        var field = FirstNonEmpty(dimension.SourceField, dimension.ConditionField);
+        if (string.IsNullOrWhiteSpace(field))
+        {
+            return [];
+        }
+
+        var fieldValue = ReadTemplateField(message, field);
+        if (string.IsNullOrWhiteSpace(fieldValue))
+        {
+            return [];
+        }
+
+        var key = NormalizeDimensionKey(fieldValue, type);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return [];
+        }
+
+        var name = RenderDimensionName(template, message, dimension, key, fieldValue, fieldValue);
+        return
+        [
+            BuildTemplateDimensionValue(
+                template,
+                message,
+                dimension,
+                field,
+                fieldValue,
+                key,
+                fieldValue,
+                name)
+        ];
+    }
+
+    private static IReadOnlyList<TemplateDimensionValue> CalculateRegexCaptureDimension(
+        CmdbRawEvent message,
+        ConversionTemplateDefinition template,
+        ConversionTemplatePopulationDimension dimension)
+    {
+        var field = FirstNonEmpty(dimension.SourceField, dimension.ConditionField);
+        if (string.IsNullOrWhiteSpace(field))
+        {
+            return [];
+        }
+
+        var fieldValue = ReadTemplateField(message, field);
+        if (string.IsNullOrWhiteSpace(fieldValue))
+        {
+            return [];
+        }
+
+        if (string.IsNullOrWhiteSpace(dimension.Regex))
+        {
+            var fallbackName = RenderDimensionName(template, message, dimension, fieldValue, fieldValue, fieldValue);
+            return
+            [
+                BuildTemplateDimensionValue(
+                    template,
+                    message,
+                    dimension,
+                    field,
+                    fieldValue,
+                    fieldValue,
+                    fieldValue,
+                    fallbackName)
+            ];
+        }
+
+        if (!TryRegexMatch(fieldValue, dimension.Regex, out var match))
+        {
+            return [];
+        }
+
+        var captured = CaptureGroupValue(match, dimension.CaptureGroup);
+        if (string.IsNullOrWhiteSpace(captured))
+        {
+            return [];
+        }
+
+        var key = captured.Trim();
+        var name = RenderDimensionName(template, message, dimension, key, key, key);
+        return
+        [
+            BuildTemplateDimensionValue(
+                template,
+                message,
+                dimension,
+                field,
+                fieldValue,
+                key,
+                key,
+                name)
+        ];
+    }
+
+    private static IReadOnlyList<TemplateDimensionValue> CalculateStaticListDimensions(
+        CmdbRawEvent message,
+        ConversionTemplateDefinition template,
+        ConversionTemplatePopulationDimension dimension)
+    {
+        var field = FirstNonEmpty(dimension.ConditionField, dimension.SourceField);
+        var fieldValue = string.IsNullOrWhiteSpace(field) ? "" : ReadTemplateField(message, field);
+        var result = new List<TemplateDimensionValue>();
+        foreach (var row in ParseStaticDimensionRows(dimension.Values))
+        {
+            if (!StaticDimensionRowMatches(message, template, dimension, row, fieldValue))
+            {
+                continue;
+            }
+
+            var name = RenderDimensionName(template, message, dimension, row.Key, row.Key, row.Name);
+            result.Add(BuildTemplateDimensionValue(
+                template,
+                message,
+                dimension,
+                field,
+                fieldValue,
+                row.Key,
+                row.Key,
+                name));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<TemplateDimensionValue> CalculateRangeDimensions(
+        CmdbRawEvent message,
+        ConversionTemplateDefinition template,
+        ConversionTemplatePopulationDimension dimension)
+    {
+        var field = FirstNonEmpty(dimension.ConditionField, dimension.SourceField);
+        var fieldValue = string.IsNullOrWhiteSpace(field) ? "" : ReadTemplateField(message, field);
+        if (string.IsNullOrWhiteSpace(fieldValue))
+        {
+            return [];
+        }
+
+        var result = new List<TemplateDimensionValue>();
+        foreach (var row in ParseRangeDimensionRows(dimension.Values).Take(1000))
+        {
+            if (!StaticDimensionRowMatches(message, template, dimension, row, fieldValue))
+            {
+                continue;
+            }
+
+            var name = RenderDimensionName(template, message, dimension, row.Key, row.Key, row.Name);
+            result.Add(BuildTemplateDimensionValue(
+                template,
+                message,
+                dimension,
+                field,
+                fieldValue,
+                row.Key,
+                row.Key,
+                name));
+        }
+
+        return result;
+    }
+
+    private static TemplateDimensionValue BuildTemplateDimensionValue(
+        ConversionTemplateDefinition template,
+        CmdbRawEvent message,
+        ConversionTemplatePopulationDimension dimension,
+        string field,
+        string fieldValue,
+        string dimensionKey,
+        string dimensionValue,
+        string dimensionName)
+    {
+        var targetKeyTemplate = string.IsNullOrWhiteSpace(dimension.KeyTemplate)
+            ? "${template.id}:${dimension.key}"
+            : dimension.KeyTemplate;
+        return new TemplateDimensionValue
+        {
+            Field = field,
+            FieldValue = fieldValue,
+            DimensionKey = dimensionKey.Trim(),
+            DimensionValue = dimensionValue.Trim(),
+            DimensionName = dimensionName.Trim(),
+            TargetKey = RenderDimensionTemplate(
+                targetKeyTemplate,
+                template,
+                message,
+                dimensionKey,
+                dimensionValue,
+                dimensionName),
+            Variables = template.Variables
+                .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+                .ToDictionary(
+                    variable => variable.Name.Trim(),
+                    variable => RenderDimensionTemplate(
+                        variable.Value,
+                        template,
+                        message,
+                        dimensionKey,
+                        dimensionValue,
+                        dimensionName),
+                    StringComparer.Ordinal)
+        };
+    }
+
+    private static string RenderDimensionName(
+        ConversionTemplateDefinition template,
+        CmdbRawEvent message,
+        ConversionTemplatePopulationDimension dimension,
+        string dimensionKey,
+        string dimensionValue,
+        string baseName)
+    {
+        if (string.IsNullOrWhiteSpace(dimension.NameTemplate))
+        {
+            return baseName;
+        }
+
+        return RenderDimensionTemplate(
+            dimension.NameTemplate,
+            template,
+            message,
+            dimensionKey,
+            dimensionValue,
+            baseName);
+    }
+
+    private static bool StaticDimensionRowMatches(
+        CmdbRawEvent message,
+        ConversionTemplateDefinition template,
+        ConversionTemplatePopulationDimension dimension,
+        StaticDimensionRow row,
+        string fieldValue)
+    {
+        var pattern = !string.IsNullOrWhiteSpace(row.ConditionPattern)
+            ? row.ConditionPattern
+            : RenderDimensionTemplate(
+                dimension.ConditionPatternTemplate,
+                template,
+                message,
+                row.Key,
+                row.Key,
+                row.Name);
+        if (!string.IsNullOrWhiteSpace(pattern))
+        {
+            return TryRegexIsMatch(fieldValue, pattern);
+        }
+
+        return fieldValue.Equals(row.Key, StringComparison.OrdinalIgnoreCase)
+            || fieldValue.Equals(row.Name, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<StaticDimensionRow> ParseStaticDimensionRows(string values)
+    {
+        foreach (var line in values.Split(['\r', '\n'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = line.Split('|', 3, StringSplitOptions.TrimEntries);
+            var key = parts.Length > 0 ? parts[0] : "";
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            yield return new StaticDimensionRow(
+                key.Trim(),
+                parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]) ? parts[1].Trim() : key.Trim(),
+                parts.Length > 2 ? parts[2].Trim() : "");
+        }
+    }
+
+    private static IEnumerable<StaticDimensionRow> ParseRangeDimensionRows(string values)
+    {
+        foreach (var line in values.Split(['\r', '\n', ','], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var match = Regex.Match(line, "^(?<start>-?\\d+)\\s*-\\s*(?<end>-?\\d+)$", RegexOptions.CultureInvariant);
+            if (!match.Success
+                || !int.TryParse(match.Groups["start"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var start)
+                || !int.TryParse(match.Groups["end"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var end))
+            {
+                yield return new StaticDimensionRow(line.Trim(), line.Trim(), "");
+                continue;
+            }
+
+            var width = Math.Max(match.Groups["start"].Value.TrimStart('-').Length, match.Groups["end"].Value.TrimStart('-').Length);
+            var step = start <= end ? 1 : -1;
+            for (var value = start; start <= end ? value <= end : value >= end; value += step)
+            {
+                var key = value < 0
+                    ? "-" + Math.Abs(value).ToString($"D{width}", CultureInfo.InvariantCulture)
+                    : value.ToString($"D{width}", CultureInfo.InvariantCulture);
+                yield return new StaticDimensionRow(key, key, "");
+            }
+        }
+    }
+
+    private static string RenderDimensionTemplate(
+        string template,
+        ConversionTemplateDefinition definition,
+        CmdbRawEvent message,
+        string dimensionKey,
+        string dimensionValue,
+        string dimensionName)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return "";
+        }
+
+        return Regex.Replace(template, "\\$\\{([^}]+)\\}", match =>
+        {
+            var token = match.Groups[1].Value.Trim();
+            if (token.StartsWith("source.", StringComparison.OrdinalIgnoreCase))
+            {
+                return ReadTemplateField(message, token["source.".Length..]);
+            }
+
+            return token.ToLowerInvariant() switch
+            {
+                "template.id" => definition.TemplateId,
+                "template.name" => definition.Name,
+                "class.code" => message.ClassCode,
+                "class.description" => message.ClassCode,
+                "dimension.key" => dimensionKey,
+                "dimension.value" => dimensionValue,
+                "dimension.name" => dimensionName,
+                "dimension.regexkey" => Regex.Escape(dimensionKey),
+                "event.card_id" => message.CardId,
+                "event.class_code" => message.ClassCode,
+                "event.event_id" => message.EventId,
+                "event.event_type" => message.EventType,
+                _ => match.Value
+            };
+        });
+    }
+
+    private static string NormalizeDimensionType(string value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? "" : value.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "sourcefield" or "field" or "distinct" => "source_field",
+            "sourcelookup" or "lookup" => "source_lookup",
+            "sourcebool" or "bool" or "boolean" => "source_bool",
+            "regex" or "regexcapture" => "regex_capture",
+            "static" or "staticlist" => "static_list",
+            "cmdbreference" or "reference" => "cmdb_reference",
+            _ => normalized
+        };
+    }
+
+    private static string NormalizeDimensionKey(string value, string type)
+    {
+        var text = value.Trim();
+        if (type.Equals("source_bool", StringComparison.OrdinalIgnoreCase)
+            && bool.TryParse(text, out var boolValue))
+        {
+            return boolValue ? "true" : "false";
+        }
+
+        return text;
+    }
+
+    private static bool TemplateMatchesClassCode(ConversionTemplateDefinition template, string classCode)
+    {
+        return !string.IsNullOrWhiteSpace(classCode)
+            && !string.IsNullOrWhiteSpace(template.SourceClassRegex)
+            && TryRegexIsMatch(classCode, template.SourceClassRegex);
+    }
+
+    private static bool TemplateFilterMatches(CmdbRawEvent message, ConversionTemplateFilter filter)
+    {
+        var includes = filter.Include ?? [];
+        if (includes.Count > 0
+            && !includes.All(matcher => TemplateFilterMatcherMatches(message, matcher)))
+        {
+            return false;
+        }
+
+        var excludes = filter.Exclude ?? [];
+        return !excludes.Any(matcher => TemplateFilterMatcherMatches(message, matcher));
+    }
+
+    private static bool TemplateFilterMatcherMatches(CmdbRawEvent message, ConversionTemplateFilterMatcher matcher)
+    {
+        return !string.IsNullOrWhiteSpace(matcher.Field)
+            && !string.IsNullOrWhiteSpace(matcher.Regex)
+            && TryRegexIsMatch(ReadTemplateField(message, matcher.Field), matcher.Regex);
+    }
+
+    private static bool TryRegexIsMatch(string value, string pattern)
+    {
+        try
+        {
+            return Regex.IsMatch(value, pattern, RegexOptions.CultureInvariant);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryRegexMatch(string value, string pattern, out Match match)
+    {
+        try
+        {
+            match = Regex.Match(value, pattern, RegexOptions.CultureInvariant);
+            return match.Success;
+        }
+        catch (ArgumentException)
+        {
+            match = Match.Empty;
+            return false;
+        }
+    }
+
+    private static string CaptureGroupValue(Match match, string captureGroup)
+    {
+        if (string.IsNullOrWhiteSpace(captureGroup))
+        {
+            return match.Groups.Count > 1 ? match.Groups[1].Value : match.Value;
+        }
+
+        if (int.TryParse(captureGroup, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
+        {
+            return index >= 0 && index < match.Groups.Count ? match.Groups[index].Value : "";
+        }
+
+        return match.Groups[captureGroup].Value;
+    }
+
+    private static string ReadTemplateField(CmdbRawEvent rawEvent, string field)
+    {
+        if (field.Equals("className", StringComparison.OrdinalIgnoreCase)
+            || field.Equals("class_code", StringComparison.OrdinalIgnoreCase)
+            || field.Equals("classCode", StringComparison.OrdinalIgnoreCase))
+        {
+            return rawEvent.ClassCode;
+        }
+
+        if (field.Equals("eventType", StringComparison.OrdinalIgnoreCase)
+            || field.Equals("event_type", StringComparison.OrdinalIgnoreCase))
+        {
+            return rawEvent.EventType;
+        }
+
+        if (field.Equals("_id", StringComparison.OrdinalIgnoreCase)
+            || field.Equals("card_id", StringComparison.OrdinalIgnoreCase)
+            || field.Equals("cardId", StringComparison.OrdinalIgnoreCase))
+        {
+            return rawEvent.CardId;
+        }
+
+        return rawEvent.Attributes.TryGetValue(field, out var value) ? value : "";
+    }
+
+    private static string NormalizeTemplateLayer(string layer, string fallback)
+    {
+        var value = FirstNonEmpty(layer, fallback);
+        if (value.Equals("service", StringComparison.OrdinalIgnoreCase))
+        {
+            return "service";
+        }
+
+        if (value.Equals("suppression", StringComparison.OrdinalIgnoreCase))
+        {
+            return "suppression";
+        }
+
+        return "";
+    }
+
+    private static string TemplateSourceClassKey(string layer, string templateId)
+    {
+        return $"{layer}\u001f{templateId}";
     }
 
     private async Task<IReadOnlyList<AggregationCommandPlan>> AttachServiceParentManagedKeysAsync(
@@ -4790,10 +6287,24 @@ public sealed class RuleEngineWorker(
 
     private IEnumerable<string> ServiceTemplatePathCandidatesForStreaming()
     {
-        var options = conversionRulesOptions.Value;
-        if (!string.IsNullOrWhiteSpace(options.ServiceTemplatesFilePath))
+        foreach (var candidate in TemplatePathCandidatesForStreaming("service"))
         {
-            yield return options.ServiceTemplatesFilePath;
+            yield return candidate;
+        }
+    }
+
+    private IEnumerable<string> TemplatePathCandidatesForStreaming(string layer)
+    {
+        var options = conversionRulesOptions.Value;
+        var configuredPath = layer.Equals("suppression", StringComparison.OrdinalIgnoreCase)
+            ? options.SuppressionTemplatesFilePath
+            : options.ServiceTemplatesFilePath;
+        var fileName = layer.Equals("suppression", StringComparison.OrdinalIgnoreCase)
+            ? "suppression-templates.json"
+            : "service-templates.json";
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            yield return configuredPath;
         }
 
         var rulePath = options.FilePath ?? "";
@@ -4802,20 +6313,20 @@ public sealed class RuleEngineWorker(
             var ruleDirectory = Path.GetDirectoryName(rulePath);
             if (!string.IsNullOrWhiteSpace(ruleDirectory))
             {
-                yield return Path.Combine(ruleDirectory, "service-templates.json");
+                yield return Path.Combine(ruleDirectory, fileName);
             }
         }
 
         foreach (var basePath in CandidateBasePathsForStreaming())
         {
-            if (!string.IsNullOrWhiteSpace(options.ServiceTemplatesFilePath)
-                && !Path.IsPathRooted(options.ServiceTemplatesFilePath))
+            if (!string.IsNullOrWhiteSpace(configuredPath)
+                && !Path.IsPathRooted(configuredPath))
             {
-                yield return Path.Combine(basePath, options.ServiceTemplatesFilePath);
+                yield return Path.Combine(basePath, configuredPath);
             }
 
-            yield return Path.Combine(basePath, "state/conversion-config/service-templates.json");
-            yield return Path.Combine(basePath, "rules/service-templates.json");
+            yield return Path.Combine(basePath, "state/conversion-config", fileName);
+            yield return Path.Combine(basePath, "rules", fileName);
         }
     }
 
@@ -4942,6 +6453,7 @@ public sealed class RuleEngineWorker(
     private async Task<CmdbRawEvent> EnrichSourceFieldsAsync(
         CmdbRawEvent message,
         ConversionRulesDocument rules,
+        IReadOnlyList<ConversionTemplateDocument> templateDocuments,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(message.ClassCode)
@@ -4970,7 +6482,7 @@ public sealed class RuleEngineWorker(
                 : message with { Attributes = attributes };
         }
 
-        var referencedFields = ReferencedFieldsForClass(rules, message.ClassCode);
+        var referencedFields = ReferencedFieldsForClass(rules, templateDocuments, message.ClassCode);
         if (referencedFields.Count == 0)
         {
             return resolvedCount == 0
@@ -5039,6 +6551,7 @@ public sealed class RuleEngineWorker(
 
     private static HashSet<string> ReferencedFieldsForClass(
         ConversionRulesDocument rules,
+        IReadOnlyList<ConversionTemplateDocument> templateDocuments,
         string classCode)
     {
         var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -5081,7 +6594,45 @@ public sealed class RuleEngineWorker(
             }
         }
 
+        var existingTemplateSourceClasses = ExistingTemplateSourceClasses(rules);
+        foreach (var document in templateDocuments)
+        {
+            foreach (var template in document.Templates)
+            {
+                var layer = NormalizeTemplateLayer(template.Layer, document.Layer);
+                var templateId = string.IsNullOrWhiteSpace(template.TemplateId) ? "" : template.TemplateId.Trim();
+                if (string.IsNullOrWhiteSpace(layer)
+                    || string.IsNullOrWhiteSpace(templateId)
+                    || !TemplateMatchesSourceClass(template, layer, templateId, classCode, existingTemplateSourceClasses))
+                {
+                    continue;
+                }
+
+                AddTemplateReferencedFields(fields, template);
+            }
+        }
+
         return fields;
+    }
+
+    private static void AddTemplateReferencedFields(
+        ISet<string> fields,
+        ConversionTemplateDefinition template)
+    {
+        AddField(fields, template.PopulationDimension.SourceField);
+        AddField(fields, template.PopulationDimension.ConditionField);
+        AddSourceTemplateFields(fields, template.PopulationDimension.KeyTemplate);
+        AddSourceTemplateFields(fields, template.PopulationDimension.NameTemplate);
+        AddSourceTemplateFields(fields, template.PopulationDimension.ConditionPatternTemplate);
+        foreach (var matcher in template.Filter.Include.Concat(template.Filter.Exclude))
+        {
+            AddField(fields, matcher.Field);
+        }
+
+        foreach (var variable in template.Variables)
+        {
+            AddSourceTemplateFields(fields, variable.Value);
+        }
     }
 
     private static HashSet<string> ReferencedFieldsForRule(ConversionRule rule)

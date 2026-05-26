@@ -1,6 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,8 @@ const projectRoot = path.resolve(root, '..', '..');
 const publicRoot = path.join(root, 'public');
 const baseConfig = JSON.parse(await readFile(path.join(root, 'config', 'appsettings.json'), 'utf8'));
 const config = applyRuntimeServerOverrides(await resolveSecretReferences(baseConfig, 'monitoring-ui-api'));
+let conversionConfigStoreWriteChain = Promise.resolve();
+let conversionConfigPostgresPoolPromise = null;
 
 const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -39,19 +41,81 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/conversion-config/storage' && request.method === 'GET') {
-      return sendJson(response, 200, await readConversionConfigStorage());
+      return sendJson(response, 200, await readConversionConfigStoreCurrent());
     }
 
     if (url.pathname === '/api/conversion-config/storage' && request.method === 'PUT') {
       const body = await readJsonBody(request);
-      const result = await writeConversionConfigStorage(body);
+      const result = await saveConversionConfigStoreAuthoring(body, {
+        actor: 'legacy-api',
+        changeType: 'legacy_storage_write',
+        reason: 'compatibility /api/conversion-config/storage'
+      });
       return sendJson(response, result.statusCode, result.body);
     }
 
     if (url.pathname === '/api/conversion-config/deploy' && request.method === 'POST') {
       const body = await readJsonBody(request);
-      const result = await deployConversionConfigToRuntime(body);
+      const result = await deployConversionConfigStoreToRuntime(body, {
+        actor: 'legacy-api',
+        changeType: 'legacy_deploy',
+        reason: 'compatibility /api/conversion-config/deploy'
+      });
       return sendJson(response, result.statusCode, result.body);
+    }
+
+    if (url.pathname === '/api/conversion-config-store/current' && request.method === 'GET') {
+      return sendJson(response, 200, await readConversionConfigStoreCurrent());
+    }
+
+    if (url.pathname === '/api/conversion-config-store/save-authoring' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const result = await saveConversionConfigStoreAuthoring(body, {
+        actor: stringValue(body?.actor) || 'monitoring-ui-api',
+        changeType: stringValue(body?.changeType) || 'authoring_change',
+        reason: stringValue(body?.reason) || 'operator save-authoring'
+      });
+      return sendJson(response, result.statusCode, result.body);
+    }
+
+    if (url.pathname === '/api/conversion-config-store/deploy' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const result = await deployConversionConfigStoreToRuntime(body, {
+        actor: stringValue(body?.actor) || 'monitoring-ui-api',
+        changeType: stringValue(body?.changeType) || 'authoring_deploy',
+        reason: stringValue(body?.reason) || 'operator deploy'
+      });
+      return sendJson(response, result.statusCode, result.body);
+    }
+
+    if (url.pathname === '/api/conversion-config-store/audit' && request.method === 'GET') {
+      const limit = optionalNumber(url.searchParams.get('limit')) ?? 100;
+      return sendJson(response, 200, await readConversionConfigStoreAudit(limit));
+    }
+
+    if (url.pathname === '/api/materializer/status' && request.method === 'GET') {
+      if (!config.backend.modelMaterializerStatusUrl) {
+        return sendJson(response, 500, { error: 'backend.modelMaterializerStatusUrl is not configured' });
+      }
+
+      return proxyJson(response, config.backend.modelMaterializerStatusUrl);
+    }
+
+    if (url.pathname === '/api/materializer/retry' && request.method === 'POST') {
+      if (!config.backend.modelMaterializerProcessUrl) {
+        return sendJson(response, 500, { error: 'backend.modelMaterializerProcessUrl is not configured' });
+      }
+
+      const body = await readJsonBody(request);
+      const materializerRequest = objectValue(body?.request ?? body);
+      return proxyJson(response, config.backend.modelMaterializerProcessUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(materializerRequest)
+      });
     }
 
     if (url.pathname === '/api/health/services' && request.method === 'GET') {
@@ -686,14 +750,34 @@ function applyRuntimeServerOverrides(configValue) {
   const port = portRaw == null || portRaw === ''
     ? serverConfig.port
     : Number.parseInt(portRaw, 10);
+  const conversionConfig = {
+    ...(configValue.conversionConfig ?? {})
+  };
+  setIfPresent(conversionConfig, 'storeBackend', process.env.MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND);
+  const postgres = {
+    ...(conversionConfig.postgres ?? {})
+  };
+  setIfPresent(postgres, 'connectionString', process.env.MONITORING_UI_CONVERSION_CONFIG_POSTGRES_CONNECTION_STRING);
+  setIfPresent(postgres, 'schema', process.env.MONITORING_UI_CONVERSION_CONFIG_POSTGRES_SCHEMA);
+  setIfPresent(postgres, 'lockKey', process.env.MONITORING_UI_CONVERSION_CONFIG_POSTGRES_LOCK_KEY);
+  if (Object.keys(postgres).length > 0) {
+    conversionConfig.postgres = postgres;
+  }
   return {
     ...configValue,
     server: {
       ...serverConfig,
       host,
       port: Number.isInteger(port) && port > 0 ? port : serverConfig.port
-    }
+    },
+    conversionConfig
   };
+}
+
+function setIfPresent(target, key, value) {
+  if (value !== undefined && value !== null && value !== '') {
+    target[key] = value;
+  }
 }
 
 function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
@@ -701,6 +785,8 @@ function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
   const targets = Array.isArray(overrides.targets)
     ? overrides.targets
     : (directApplyUrl ? ['zabbix-direct'] : ['zabbix']);
+  const dryRun = overrides.dryRun === undefined ? Boolean(body?.dryRun) : Boolean(overrides.dryRun);
+  const publishMode = stringValue(body?.publishMode || body?.zabbixPublishMode) || 'changes';
   return {
     operationId: stringValue(overrides.operationId ?? body?.operationId) || randomUUID(),
     layers: [layer],
@@ -709,14 +795,15 @@ function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
     serviceModelRoot: stringValue(body?.serviceModelRoot),
     suppressionModelRoot: stringValue(body?.suppressionModelRoot),
     zabbixCommandApplyUrl: directApplyUrl,
-    zabbixPublishMode: stringValue(body?.publishMode || body?.zabbixPublishMode) || 'changes',
-    buildMode: normalizeZabbixBuildMode(body?.buildMode || body?.zabbixBuildMode),
+    zabbixPublishMode: dryRun ? 'changes' : publishMode,
+    buildMode: dryRun ? 'graph-overlay' : normalizeZabbixBuildMode(body?.buildMode || body?.zabbixBuildMode),
+    topologyReadMode: dryRun ? 'rules' : normalizeZabbixTopologyReadMode(body?.topologyReadMode || body?.zabbixTopologyReadMode),
     zabbixScopeKeys: Array.isArray(body?.scopeKeys) ? body.scopeKeys.map((item) => stringValue(item)).filter(Boolean) : [],
     zabbixScopeDepth: Number.isInteger(body?.scopeDepth) ? body.scopeDepth : 0,
     requireZabbixScopeMatch: body?.requireScopeMatch === undefined
       ? Boolean(body?.requireZabbixScopeMatch)
       : Boolean(body.requireScopeMatch),
-    dryRun: overrides.dryRun === undefined ? Boolean(body?.dryRun) : Boolean(overrides.dryRun),
+    dryRun,
     sourceClasses: Array.isArray(body?.sourceClasses) ? body.sourceClasses : [],
     maxCardsPerClass: Number.isInteger(body?.maxCardsPerClass) ? body.maxCardsPerClass : 0,
     eventType: stringValue(body?.eventType) || 'UPDATE'
@@ -731,6 +818,15 @@ function normalizeZabbixBuildMode(value) {
     || normalized === 'topology-only'
     ? 'graph-overlay'
     : 'membership';
+}
+
+function normalizeZabbixTopologyReadMode(value) {
+  const normalized = stringValue(value).replaceAll('_', '-').toLowerCase();
+  return ['rules', 'rule', 'scoped', 'scope', 'runtime-rules'].includes(normalized)
+    ? 'rules'
+    : ['full', 'cmdbuild', 'cmdbuild-full', 'legacy-full'].includes(normalized)
+      ? 'full'
+      : 'auto';
 }
 
 function sendJson(response, statusCode, body) {
@@ -801,13 +897,50 @@ function httpRequestBuffer(targetUrl, init = {}, timeoutMs = effectiveLongRunnin
 function publicConversionConfig() {
   const storage = conversionConfigStorage();
   const runtime = conversionConfigRuntimeRulesFile();
+  const store = conversionConfigStoreSettings();
   return {
+    storeBackend: store.backend,
     storageFolder: storage.configuredFolder,
     resolvedStorageFolder: storage.folder,
     files: storage.files,
     runtimeRulesFile: runtime.configuredFile,
     resolvedRuntimeRulesFile: runtime.file
   };
+}
+
+function conversionConfigStorePublicInfo() {
+  const storage = conversionConfigStorage();
+  const store = conversionConfigStoreSettings();
+  const postgres = store.postgres;
+  return {
+    api: 'conversion-config-store',
+    backend: store.backend,
+    lock: store.backend === 'postgresql' ? 'postgres_advisory_xact_lock' : 'process',
+    auditFile: store.backend === 'folder' ? path.join(storage.folder, storage.files.audit) : '',
+    migrationTarget: store.backend === 'folder' ? 'postgresql' : '',
+    postgres: store.backend === 'postgresql'
+      ? {
+          schema: postgres.schema,
+          connectionConfigured: Boolean(postgres.connectionString),
+          connectionEndpoint: redactedConnectionEndpoint(postgres.connectionString),
+          folderExportEnabled: postgres.exportFolder
+        }
+      : null
+  };
+}
+
+async function withConversionConfigStoreWriteLock(operation) {
+  const previous = conversionConfigStoreWriteChain;
+  let release = () => {};
+  conversionConfigStoreWriteChain = new Promise((resolve) => {
+    release = resolve;
+  });
+  try {
+    await previous.catch(() => {});
+    return await operation();
+  } finally {
+    release();
+  }
 }
 
 function publicCmdbuildConfig() {
@@ -896,9 +1029,59 @@ function conversionConfigStorage() {
       serviceTemplates: String(conversionConfig.serviceTemplatesFile ?? 'service-templates.json'),
       suppressionTemplates: String(conversionConfig.suppressionTemplatesFile ?? 'suppression-templates.json'),
       sharedTemplates: String(conversionConfig.sharedTemplatesFile ?? 'shared-templates.json'),
-      manifest: String(conversionConfig.manifestFile ?? 'manifest.json')
+      manifest: String(conversionConfig.manifestFile ?? 'manifest.json'),
+      audit: String(conversionConfig.auditFile ?? 'audit.jsonl')
     }
   };
+}
+
+function conversionConfigStoreSettings() {
+  const conversionConfig = config.conversionConfig ?? {};
+  const backend = normalizeConversionConfigStoreBackend(
+    conversionConfig.storeBackend
+      ?? conversionConfig.storageBackend
+      ?? conversionConfig.backend
+      ?? 'folder');
+  const postgres = conversionConfig.postgres ?? conversionConfig.Postgres ?? {};
+  const schema = normalizePostgresIdentifier(
+    postgres.schema
+      ?? postgres.Schema
+      ?? conversionConfig.postgresSchema
+      ?? 'monitoring_ui');
+  const lockKey = optionalNumber(
+    postgres.lockKey
+      ?? postgres.LockKey
+      ?? conversionConfig.postgresLockKey) ?? 2024031901;
+  return {
+    backend,
+    postgres: {
+      connectionString: stringValue(
+        postgres.connectionString
+          ?? postgres.ConnectionString
+          ?? conversionConfig.postgresConnectionString),
+      schema,
+      lockKey,
+      exportFolder: postgres.exportFolder === undefined
+        ? true
+        : postgres.exportFolder !== false
+    }
+  };
+}
+
+function normalizeConversionConfigStoreBackend(value) {
+  const normalized = stringValue(value || 'folder').toLowerCase();
+  if (['postgres', 'postgresql', 'pg'].includes(normalized)) {
+    return 'postgresql';
+  }
+  return 'folder';
+}
+
+function normalizePostgresIdentifier(value) {
+  const text = stringValue(value) || 'monitoring_ui';
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(text)) {
+    throw new Error(`conversionConfig.postgres.schema must be a PostgreSQL identifier, got '${text}'.`);
+  }
+  return text;
 }
 
 function conversionConfigRuntimeRulesFile() {
@@ -1332,6 +1515,30 @@ function redactedConnectionEndpoint(connectionString) {
     .join(';');
 }
 
+async function readConversionConfigStoreCurrent() {
+  const payload = conversionConfigStoreSettings().backend === 'postgresql'
+    ? await readConversionConfigPostgres()
+    : await readConversionConfigStorage();
+  return {
+    ...payload,
+    store: conversionConfigStorePublicInfo()
+  };
+}
+
+async function saveConversionConfigStoreAuthoring(body, context = {}) {
+  if (conversionConfigStoreSettings().backend === 'postgresql') {
+    return writeConversionConfigPostgres(body, context);
+  }
+  return withConversionConfigStoreWriteLock(() => writeConversionConfigStorageUnlocked(body, context));
+}
+
+async function deployConversionConfigStoreToRuntime(body, context = {}) {
+  if (conversionConfigStoreSettings().backend === 'postgresql') {
+    return deployConversionConfigToRuntimePostgres(body, context);
+  }
+  return withConversionConfigStoreWriteLock(() => deployConversionConfigToRuntimeUnlocked(body, context));
+}
+
 async function readConversionConfigStorage() {
   const storage = conversionConfigStorage();
   const manifestPath = path.join(storage.folder, storage.files.manifest);
@@ -1391,7 +1598,7 @@ async function readConversionConfigStorage() {
   };
 }
 
-async function deployConversionConfigToRuntime(body) {
+async function deployConversionConfigToRuntimeUnlocked(body, context = {}) {
   const runtime = conversionConfigRuntimeRulesFile();
   const runtimeBuild = buildRuntimeConversionRulesDocument(body);
   const document = runtimeBuild.document;
@@ -1408,7 +1615,7 @@ async function deployConversionConfigToRuntime(body) {
     };
   }
 
-  const storageResult = await writeConversionConfigStorage(body);
+  const storageResult = await writeConversionConfigStorageUnlocked(body, context);
   if (storageResult.statusCode !== 200) {
     return storageResult;
   }
@@ -1426,6 +1633,53 @@ async function deployConversionConfigToRuntime(body) {
       success: true,
       savedAt: storageResult.body.savedAt,
       storage: storageResult.body.storage,
+      store: storageResult.body.store,
+      version: storageResult.body.version,
+      etag: storageResult.body.etag,
+      runtimeRules: runtimePublicInfo(runtime, document, runtimeBuild),
+      validation: validation.payload ?? null,
+      rulesStatus: rulesStatus?.ok ? rulesStatus.payload : null,
+      rulesStatusError: rulesStatus && !rulesStatus.ok ? rulesStatus.error : ''
+    }
+  };
+}
+
+async function deployConversionConfigToRuntimePostgres(body, context = {}) {
+  const runtime = conversionConfigRuntimeRulesFile();
+  const runtimeBuild = buildRuntimeConversionRulesDocument(body);
+  const document = runtimeBuild.document;
+  const validation = await validateRuntimeConversionRules(document);
+  if (!validation.ok) {
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        error: validation.error,
+        validation: validation.payload ?? null,
+        runtimeRules: runtimePublicInfo(runtime, document, runtimeBuild)
+      }
+    };
+  }
+
+  const storageResult = await writeConversionConfigPostgres(body, context);
+  if (storageResult.statusCode !== 200) {
+    return storageResult;
+  }
+  await mkdir(path.dirname(runtime.file), { recursive: true });
+  await writeJsonFile(runtime.file, document);
+
+  const rulesStatusUrl = configuredRulesStatusUrl();
+  const rulesStatus = rulesStatusUrl
+    ? await fetchServiceJson(rulesStatusUrl, Number(config.appliers?.reloadTimeoutMs ?? 5000))
+    : null;
+
+  return {
+    statusCode: 200,
+    body: {
+      success: true,
+      savedAt: storageResult.body.savedAt,
+      storage: storageResult.body.storage,
+      store: storageResult.body.store,
       version: storageResult.body.version,
       etag: storageResult.body.etag,
       runtimeRules: runtimePublicInfo(runtime, document, runtimeBuild),
@@ -1755,7 +2009,7 @@ function runtimePublicInfo(runtime, document, runtimeBuild = null) {
   };
 }
 
-async function writeConversionConfigStorage(body) {
+async function writeConversionConfigStorageUnlocked(body, context = {}) {
   const storage = conversionConfigStorage();
   await mkdir(storage.folder, { recursive: true });
 
@@ -1800,30 +2054,488 @@ async function writeConversionConfigStorage(body) {
     etag,
     savedAt,
     prefix: nextPayload.prefix,
-    writer: 'monitoring-ui-api',
+    writer: stringValue(context.actor) || 'monitoring-ui-api',
     files: storage.files
   };
 
-  await Promise.all([
-    writeJsonFile(path.join(storage.folder, storage.files.serviceRules), nextPayload.ruleDocuments.service),
-    writeJsonFile(path.join(storage.folder, storage.files.suppressionRules), nextPayload.ruleDocuments.suppression),
-    writeJsonFile(path.join(storage.folder, storage.files.serviceTemplates), nextPayload.templateDocuments.service),
-    writeJsonFile(path.join(storage.folder, storage.files.suppressionTemplates), nextPayload.templateDocuments.suppression),
-    writeJsonFile(path.join(storage.folder, storage.files.sharedTemplates), nextPayload.templateDocuments.shared)
-  ]);
-  await writeJsonFile(path.join(storage.folder, storage.files.manifest), manifest);
+  await exportConversionConfigPayloadToFolder(storage, nextPayload, manifest);
+  await appendConversionConfigAudit({
+    actor: manifest.writer,
+    changeType: stringValue(context.changeType) || 'authoring_change',
+    reason: stringValue(context.reason),
+    previousVersion: current.version,
+    previousEtag: current.etag,
+    version: nextVersion,
+    etag,
+    savedAt,
+    storageFolder: storage.configuredFolder
+  });
 
   return {
     statusCode: 200,
     body: {
       success: true,
       storage: publicConversionConfig(),
+      store: conversionConfigStorePublicInfo(),
       version: nextVersion,
       etag,
       savedAt,
       prefix: manifest.prefix
     }
   };
+}
+
+async function exportConversionConfigPayloadToFolder(storage, payload, manifest) {
+  await mkdir(storage.folder, { recursive: true });
+  await Promise.all([
+    writeJsonFile(path.join(storage.folder, storage.files.serviceRules), payload.ruleDocuments.service),
+    writeJsonFile(path.join(storage.folder, storage.files.suppressionRules), payload.ruleDocuments.suppression),
+    writeJsonFile(path.join(storage.folder, storage.files.serviceTemplates), payload.templateDocuments.service),
+    writeJsonFile(path.join(storage.folder, storage.files.suppressionTemplates), payload.templateDocuments.suppression),
+    writeJsonFile(path.join(storage.folder, storage.files.sharedTemplates), payload.templateDocuments.shared)
+  ]);
+  await writeJsonFile(path.join(storage.folder, storage.files.manifest), manifest);
+}
+
+async function readConversionConfigPostgres() {
+  return withConversionConfigPostgresClient(async (client) => {
+    await ensureConversionConfigPostgresSchema(client);
+    const current = await readConversionConfigPostgresCurrent(client);
+    if (current) {
+      return current;
+    }
+
+    const folderPayload = await readConversionConfigStorage();
+    return {
+      ...folderPayload,
+      migration: {
+        importRequired: folderPayload.exists,
+        sourceBackend: 'folder',
+        message: folderPayload.exists
+          ? 'PostgreSQL conversion-config-store is empty; the next save imports the current folder state as the previous version.'
+          : ''
+      }
+    };
+  });
+}
+
+async function writeConversionConfigPostgres(body, context = {}) {
+  const storage = conversionConfigStorage();
+  const store = conversionConfigStoreSettings();
+  const savedAt = new Date().toISOString();
+  const ruleDocuments = body?.ruleDocuments ?? {};
+  const templateDocuments = body?.templateDocuments ?? {};
+  let exportPayload = null;
+  let exportManifest = null;
+  const result = await withConversionConfigPostgresClient(async (client) => {
+    await ensureConversionConfigPostgresSchema(client);
+    await client.query('BEGIN');
+    try {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [store.postgres.lockKey]);
+      const current = await readConversionConfigPostgresCurrent(client) ?? await readConversionConfigStorage();
+      const conflict = storageWriteConflict(body, current);
+      if (conflict) {
+        await client.query('ROLLBACK');
+        return {
+          statusCode: 409,
+          body: {
+            success: false,
+            error: 'conversion_config_conflict',
+            message: conflict,
+            currentVersion: current.version,
+            currentEtag: current.etag,
+            currentSavedAt: current.savedAt
+          }
+        };
+      }
+
+      const nextVersion = current.exists
+        ? Math.max(1, Number(current.version) || 0) + 1
+        : 1;
+      const nextPayload = {
+        prefix: String(body?.prefix ?? ''),
+        ruleDocuments: {
+          service: ruleDocuments.service ?? null,
+          suppression: ruleDocuments.suppression ?? null
+        },
+        templateDocuments: {
+          service: templateDocuments.service ?? null,
+          suppression: templateDocuments.suppression ?? null,
+          shared: templateDocuments.shared ?? null
+        }
+      };
+      const etag = computeStorageEtag(nextPayload);
+      const writer = stringValue(context.actor) || 'monitoring-ui-api';
+      const changeType = stringValue(context.changeType) || 'authoring_change';
+      const reason = stringValue(context.reason);
+      const manifest = {
+        schemaVersion: 1,
+        version: nextVersion,
+        etag,
+        savedAt,
+        prefix: nextPayload.prefix,
+        writer,
+        files: storage.files,
+        storeBackend: 'postgresql',
+        postgresSchema: store.postgres.schema,
+        exportedToFolder: store.postgres.exportFolder
+      };
+      const tables = conversionConfigPostgresTables();
+      await client.query(
+        `INSERT INTO ${tables.documents}
+          (version, etag, prefix, rule_documents, template_documents, manifest, saved_at, writer, change_type, reason)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10)`,
+        [
+          nextVersion,
+          etag,
+          nextPayload.prefix,
+          JSON.stringify(nextPayload.ruleDocuments),
+          JSON.stringify(nextPayload.templateDocuments),
+          JSON.stringify(manifest),
+          savedAt,
+          writer,
+          changeType,
+          reason
+        ]);
+      await insertConversionConfigPostgresAudit(client, {
+        actor: writer,
+        changeType,
+        reason,
+        previousVersion: current.version,
+        previousEtag: current.etag,
+        version: nextVersion,
+        etag,
+        savedAt,
+        storageFolder: storage.configuredFolder,
+        storeBackend: 'postgresql'
+      });
+      await client.query('COMMIT');
+      exportPayload = nextPayload;
+      exportManifest = manifest;
+      return {
+        statusCode: 200,
+        body: {
+          success: true,
+          storage: publicConversionConfig(),
+          store: conversionConfigStorePublicInfo(),
+          version: nextVersion,
+          etag,
+          savedAt,
+          prefix: manifest.prefix,
+          folderExported: false
+        }
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    }
+  });
+
+  if (result.statusCode !== 200 || !store.postgres.exportFolder) {
+    return result;
+  }
+
+  try {
+    await exportConversionConfigPayloadToFolder(storage, exportPayload, exportManifest);
+    return {
+      ...result,
+      body: {
+        ...result.body,
+        folderExported: true
+      }
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      body: {
+        success: false,
+        error: 'conversion_config_folder_export_failed',
+        message: error.message,
+        committed: true,
+        version: result.body.version,
+        etag: result.body.etag,
+        savedAt: result.body.savedAt,
+        store: conversionConfigStorePublicInfo()
+      }
+    };
+  }
+}
+
+async function readConversionConfigPostgresAudit(limit = 100) {
+  return withConversionConfigPostgresClient(async (client) => {
+    await ensureConversionConfigPostgresSchema(client);
+    const parsedLimit = Math.max(1, Math.min(1000, Number(limit) || 100));
+    const tables = conversionConfigPostgresTables();
+    const result = await client.query(
+      `SELECT event_id, saved_at, actor, change_type, reason, previous_version,
+              previous_etag, version, etag, storage_folder, payload
+         FROM ${tables.audit}
+        ORDER BY saved_at DESC
+        LIMIT $1`,
+      [parsedLimit]);
+    return {
+      success: true,
+      store: conversionConfigStorePublicInfo(),
+      entries: result.rows.map((row) => ({
+        schemaVersion: 1,
+        eventId: stringValue(row.event_id),
+        savedAt: isoTimestamp(row.saved_at),
+        actor: stringValue(row.actor),
+        changeType: stringValue(row.change_type),
+        reason: stringValue(row.reason),
+        previousVersion: row.previous_version == null ? 0 : Number(row.previous_version),
+        previousEtag: stringValue(row.previous_etag),
+        version: row.version == null ? 0 : Number(row.version),
+        etag: stringValue(row.etag),
+        storageFolder: stringValue(row.storage_folder),
+        ...(jsonValue(row.payload, {}) ?? {})
+      }))
+    };
+  });
+}
+
+async function readConversionConfigPostgresCurrent(client) {
+  const tables = conversionConfigPostgresTables();
+  const result = await client.query(
+    `SELECT version, etag, prefix, rule_documents, template_documents, manifest, saved_at
+       FROM ${tables.documents}
+      ORDER BY version DESC
+      LIMIT 1`);
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  const ruleDocuments = jsonValue(row.rule_documents, {});
+  const templateDocuments = jsonValue(row.template_documents, {});
+  const manifest = jsonValue(row.manifest, {});
+  return {
+    success: true,
+    exists: true,
+    storage: publicConversionConfig(),
+    version: Number(row.version) || storageVersion(manifest),
+    etag: stringValue(row.etag) || storageEtag(manifest, {
+      prefix: row.prefix ?? '',
+      ruleDocuments,
+      templateDocuments
+    }),
+    savedAt: isoTimestamp(row.saved_at) || stringValue(manifest?.savedAt),
+    prefix: stringValue(row.prefix ?? manifest?.prefix),
+    ruleDocuments: {
+      service: ruleDocuments?.service ?? null,
+      suppression: ruleDocuments?.suppression ?? null
+    },
+    templateDocuments: {
+      service: templateDocuments?.service ?? null,
+      suppression: templateDocuments?.suppression ?? null,
+      shared: templateDocuments?.shared ?? null
+    }
+  };
+}
+
+async function insertConversionConfigPostgresAudit(client, entry) {
+  const tables = conversionConfigPostgresTables();
+  const eventId = randomUUID();
+  await client.query(
+    `INSERT INTO ${tables.audit}
+      (event_id, saved_at, actor, change_type, reason, previous_version,
+       previous_etag, version, etag, storage_folder, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)`,
+    [
+      eventId,
+      entry.savedAt ?? new Date().toISOString(),
+      stringValue(entry.actor) || 'conversion-config-store',
+      stringValue(entry.changeType) || 'authoring_change',
+      stringValue(entry.reason),
+      optionalNumber(entry.previousVersion),
+      stringValue(entry.previousEtag),
+      optionalNumber(entry.version),
+      stringValue(entry.etag),
+      stringValue(entry.storageFolder),
+      JSON.stringify({
+        storeBackend: stringValue(entry.storeBackend) || 'postgresql'
+      })
+    ]);
+}
+
+async function withConversionConfigPostgresClient(operation) {
+  const pool = await conversionConfigPostgresPool();
+  const client = await pool.connect();
+  try {
+    return await operation(client);
+  } finally {
+    client.release();
+  }
+}
+
+async function conversionConfigPostgresPool() {
+  if (conversionConfigPostgresPoolPromise) {
+    return conversionConfigPostgresPoolPromise;
+  }
+
+  const store = conversionConfigStoreSettings();
+  if (!store.postgres.connectionString) {
+    throw new Error('conversionConfig.postgres.connectionString is required when conversionConfig.storeBackend=postgresql.');
+  }
+
+  conversionConfigPostgresPoolPromise = import('pg')
+    .catch((error) => {
+      throw new Error(`PostgreSQL conversion-config-store requires the 'pg' npm package. Run 'npm --prefix src/monitoring-ui-api install'. ${error.message}`);
+    })
+    .then((pgModule) => {
+      const Pool = pgModule.Pool ?? pgModule.default?.Pool;
+      if (!Pool) {
+        throw new Error("PostgreSQL conversion-config-store could not load 'pg.Pool'.");
+      }
+      return new Pool({
+        connectionString: store.postgres.connectionString,
+        application_name: 'monitoring-ui-api conversion-config-store'
+      });
+    });
+  return conversionConfigPostgresPoolPromise;
+}
+
+async function ensureConversionConfigPostgresSchema(client) {
+  const tables = conversionConfigPostgresTables();
+  await client.query(`CREATE SCHEMA IF NOT EXISTS ${tables.schema}`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.documents} (
+      version integer PRIMARY KEY,
+      etag text NOT NULL,
+      prefix text NOT NULL DEFAULT '',
+      rule_documents jsonb NOT NULL,
+      template_documents jsonb NOT NULL,
+      manifest jsonb NOT NULL,
+      saved_at timestamptz NOT NULL,
+      writer text NOT NULL,
+      change_type text NOT NULL DEFAULT '',
+      reason text NOT NULL DEFAULT ''
+    )`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.materializationJobs} (
+      job_id text PRIMARY KEY,
+      idempotency_key text NOT NULL UNIQUE,
+      status text NOT NULL,
+      request_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      result_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      attempts integer NOT NULL DEFAULT 0,
+      locked_by text NOT NULL DEFAULT '',
+      locked_at timestamptz NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.materializedDimensions} (
+      layer text NOT NULL,
+      template_id text NOT NULL,
+      dimension_key text NOT NULL,
+      dimension_value text NOT NULL DEFAULT '',
+      source_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      config_version integer NULL,
+      first_seen_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (layer, template_id, dimension_key)
+    )`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.locks} (
+      lock_name text PRIMARY KEY,
+      owner text NOT NULL,
+      lock_reason text NOT NULL DEFAULT '',
+      locked_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NULL
+    )`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.audit} (
+      event_id text PRIMARY KEY,
+      saved_at timestamptz NOT NULL,
+      actor text NOT NULL,
+      change_type text NOT NULL,
+      reason text NOT NULL DEFAULT '',
+      previous_version integer NULL,
+      previous_etag text NOT NULL DEFAULT '',
+      version integer NULL,
+      etag text NOT NULL DEFAULT '',
+      storage_folder text NOT NULL DEFAULT '',
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb
+    )`);
+  await client.query(`CREATE INDEX IF NOT EXISTS conversion_config_audit_saved_at_idx ON ${tables.audit} (saved_at DESC)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS conversion_config_materialization_jobs_status_idx ON ${tables.materializationJobs} (status, updated_at DESC)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS conversion_config_materialized_dimensions_version_idx ON ${tables.materializedDimensions} (config_version)`);
+}
+
+function conversionConfigPostgresTables() {
+  const schema = quotePostgresIdentifier(conversionConfigStoreSettings().postgres.schema);
+  return {
+    schema,
+    documents: `${schema}.conversion_config_documents`,
+    materializationJobs: `${schema}.conversion_config_materialization_jobs`,
+    materializedDimensions: `${schema}.conversion_config_materialized_dimensions`,
+    locks: `${schema}.conversion_config_locks`,
+    audit: `${schema}.conversion_config_audit`
+  };
+}
+
+function quotePostgresIdentifier(value) {
+  return `"${normalizePostgresIdentifier(value).replaceAll('"', '""')}"`;
+}
+
+async function appendConversionConfigAudit(entry) {
+  const storage = conversionConfigStorage();
+  const auditPath = path.join(storage.folder, storage.files.audit);
+  await mkdir(path.dirname(auditPath), { recursive: true });
+  const payload = {
+    schemaVersion: 1,
+    eventId: randomUUID(),
+    savedAt: new Date().toISOString(),
+    ...entry
+  };
+  await appendFile(auditPath, `${JSON.stringify(payload)}\n`, 'utf8');
+}
+
+async function readConversionConfigStoreAudit(limit = 100) {
+  if (conversionConfigStoreSettings().backend === 'postgresql') {
+    return readConversionConfigPostgresAudit(limit);
+  }
+
+  const storage = conversionConfigStorage();
+  const auditPath = path.join(storage.folder, storage.files.audit);
+  try {
+    const text = await readFile(auditPath, 'utf8');
+    const parsedLimit = Math.max(1, Math.min(1000, Number(limit) || 100));
+    const entries = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch (error) {
+          return {
+            schemaVersion: 1,
+            eventId: '',
+            savedAt: '',
+            actor: 'conversion-config-store',
+            changeType: 'audit_parse_error',
+            reason: error.message,
+            raw: line.slice(0, 500)
+          };
+        }
+      });
+    return {
+      success: true,
+      store: conversionConfigStorePublicInfo(),
+      entries: entries.slice(-parsedLimit).reverse()
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        success: true,
+        store: conversionConfigStorePublicInfo(),
+        entries: []
+      };
+    }
+    throw error;
+  }
 }
 
 function storageWriteConflict(body, current) {
@@ -1838,11 +2550,11 @@ function storageWriteConflict(body, current) {
   }
 
   if (expectedVersion != null && expectedVersion !== current.version) {
-    return `Stored conversion config is v${current.version}, but editor is based on v${expectedVersion}. Reload folder before saving.`;
+    return `Stored conversion config is v${current.version}, but editor is based on v${expectedVersion}. Reload conversion config before saving.`;
   }
 
   if (expectedEtag && current.etag && expectedEtag !== current.etag) {
-    return `Stored conversion config etag changed from ${expectedEtag} to ${current.etag}. Reload folder before saving.`;
+    return `Stored conversion config etag changed from ${expectedEtag} to ${current.etag}. Reload conversion config before saving.`;
   }
 
   return '';
@@ -1880,6 +2592,31 @@ function stableJson(value) {
   }
 
   return JSON.stringify(value);
+}
+
+function jsonValue(value, fallback = null) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return value;
+}
+
+function isoTimestamp(value) {
+  if (!value) {
+    return '';
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? stringValue(value) : date.toISOString();
 }
 
 function optionalNumber(value) {

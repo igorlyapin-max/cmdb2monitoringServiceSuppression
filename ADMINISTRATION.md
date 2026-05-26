@@ -11,6 +11,7 @@ pipeline:
 | --- | --- |
 | `cmdbwebhooks2kafka` | Accepts CMDBuild webhooks, normalizes payloads, and publishes `CmdbRawEvent` messages. |
 | `cmdbconfigbuilder` | Reads raw events, evaluates conversion rules, and publishes canonical `AggregationCommand` messages to CMDBuild and layer-specific Zabbix topics. |
+| `cmdbmodelmaterializer` | Consumes missing aggregation dimensions and appends generated rules through `conversion-config-store`. |
 | `zabbixconfig2api` | Reads separate service/suppression Zabbix topics and applies the Zabbix side with independent status and counters. |
 | `cmdbaggregation2cmdbuild` | Reads canonical aggregation commands and applies CMDBuild aggregation objects and relations. |
 | `monitoring-ui-api` | Provides schema management, rule editing, source synchronization, and operator UI. |
@@ -39,6 +40,7 @@ Example UI config:
 "healthChecks": [
   { "id": "cmdbwebhooks2kafka", "name": "CMDBuild webhooks -> Kafka", "url": "http://cmdbwebhooks2kafka:5180/health" },
   { "id": "cmdbconfigbuilder", "name": "Rule engine", "url": "http://cmdbconfigbuilder:5182/health" },
+  { "id": "cmdbmodelmaterializer", "name": "Model materializer", "url": "http://cmdbmodelmaterializer:5184/health" },
   { "id": "zabbixconfig2api", "name": "Zabbix applier", "url": "http://zabbixconfig2api:5183/health" },
   { "id": "cmdbaggregation2cmdbuild", "name": "CMDBuild applier", "url": "http://cmdbaggregation2cmdbuild:5181/health" }
 ]
@@ -46,28 +48,31 @@ Example UI config:
 
 ## Configuration Reload Token
 
-Reloadable web services use the same Bearer token when the Monitoring UI sends
-the configuration reload signal. The current reloadable appliers are
-`zabbixconfig2api` and `cmdbaggregation2cmdbuild`; both expose
-`ConfigurationReload:Route`, default `/configuration/reload`. The UI calls the
-configured `reloadUrl` with:
+Reloadable web services use the same Bearer token when the Monitoring UI or
+`cmdbmodelmaterializer` sends the configuration reload signal. The current
+reloadable services are `zabbixconfig2api`, `cmdbaggregation2cmdbuild`, and
+`cmdbmodelmaterializer`; all expose `ConfigurationReload:Route`, default
+`/configuration/reload`. The caller posts to the configured `reloadUrl` with:
 
 ```text
 Authorization: Bearer <shared reload token>
 ```
 
-Configure one identical value in all three places:
+Configure one identical value in all places that call or receive reload:
 
 | Component | Setting |
 | --- | --- |
 | `zabbixconfig2api` | `ConfigurationReload:BearerToken` or `ConfigurationReload:BearerTokenSecret` |
 | `cmdbaggregation2cmdbuild` | `ConfigurationReload:BearerToken` or `ConfigurationReload:BearerTokenSecret` |
+| `cmdbmodelmaterializer` | `ConfigurationReload:BearerToken` or `ConfigurationReload:BearerTokenSecret` |
+| `cmdbmodelmaterializer` reload targets | `Materializer:ReloadTargets[*]:BearerToken` or `BearerTokenSecret` |
 | `monitoring-ui-api` | `appliers.reloadBearerToken` or `appliers.reloadBearerTokenSecret` |
 
-If PAM/AAPM is used, the three `*Secret` settings must reference the same PAM
-account. If literal configuration is used in development, the three literal
-tokens must be byte-for-byte identical. A mismatch returns `401` from the
-applier and the UI must keep the old running configuration version displayed.
+If PAM/AAPM is used, the `*Secret` settings must reference the same PAM
+account. If literal configuration is used in development, the literal tokens
+must be byte-for-byte identical. A mismatch returns `401` from the service that
+receives reload; the caller must keep the old running configuration version
+displayed or record a materializer warning.
 
 ## CMDBuild Credentials In The UI
 
@@ -119,13 +124,70 @@ Zabbix application is split by layer:
 | --- | --- | --- | --- |
 | Service | `Модель -> Применить в Zabbix`, layer `Сервис` | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` |
 | Suppression | `Модель -> Применить в Zabbix`, layer `Каскадное подавление` | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` |
+| Отсутствующие измерения модели | streaming webhook processing | `KafkaTopics:CmdbModelMissingDimensions` | `service-suppression.cmdb.model.missing-dimensions` |
+
+## Automatic Model Materialization
+
+`cmdbconfigbuilder` does not write conversion configuration from the webhook
+consumer. When a CREATE/UPDATE source card matches a population template and
+calculates a new `dimension.key`, it publishes
+`CmdbModelMissingDimensionRequest` to `KafkaTopics:CmdbModelMissingDimensions`.
+
+`cmdbmodelmaterializer` consumes that topic and owns the config mutation:
+
+- deduplicates and locks by `layer/templateId/dimensionKey`;
+- reads current rules/templates through `ConversionConfigStore:BaseUrl` and
+  `ConversionConfigStore:CurrentPath`;
+- writes through `ConversionConfigStore:DeployPath`, so runtime
+  `conversion-rules.runtime.json` is exported by the store owner;
+- appends or updates generated managed rules and generated-rule relations only;
+- never deletes generated rules, CMDBuild cards, Zabbix services, detached
+  generated rules, manual rules, or legacy objects;
+- reloads configured appliers after a successful save;
+- calls `cmdbconfigbuilder /rules/reprocess-card` so the source card that
+  produced the dimension is processed by the rule engine after the generated
+  rule exists.
+- optionally calls `cmdbconfigbuilder /rules/apply-current` with
+  `buildMode=graph-overlay` and scoped rule/target/dimension keys when
+  `GraphOverlay:Enabled=true`.
+
+The materializer can build runtime relation records when `domain_code` is
+already visible in existing generated sibling rules or explicit relation
+metadata. If the domain cannot be inferred without live schema resolution, the
+service saves the generated rule and records a warning in `/materializer/status`
+instead of guessing. Reprocess failures are treated as materialization failures
+so the Kafka message can be retried; if a retry sees the rule already
+materialized, it still calls the reprocess API. The same API accepts
+`backfill_dimension=true` for scoped source-class backfill by field/dimension
+when the original source event is too old or several source cards already exist.
+Scoped Zabbix graph overlay is configured separately through
+`cmdbmodelmaterializer GraphOverlay:*`. The shipped default is
+`GraphOverlay:Enabled=false`, which keeps the visible operator action as the
+default; enabling it makes the materializer run the same scoped graph-overlay
+path after replay without reading source cards. Keep
+`GraphOverlay:TopologyReadMode=rules` for normal operation: the apply request
+builds desired Zabbix topology from the scoped runtime rules and their
+relations, so it does not read all managed service/suppression cards or all
+domain relations from CMDBuild. `TopologyReadMode=full` is a legacy diagnostic
+mode for small stands only.
+
+Operators monitor this flow in `Администрирование -> Материализация`. The
+screen reads `cmdbmodelmaterializer /materializer/status`, the
+conversion-config-store audit endpoint, and recent Kafka events from the
+missing-dimensions topic. Failed jobs expose `Повторить`, which resends the
+original missing-dimension request to `/materializer/process`. The retry path is
+still create/update only: cleanup of detached/manual/legacy objects remains in
+the administrator cleanup blocks.
 
 The UI evaluates and publishes each layer in three modes:
 
 - `Наложить граф` is the routine topology mode. `cmdbconfigbuilder` reads
-  existing managed target cards and CMDBuild relations for the service and
-  suppression layers, builds skeleton graph commands, and does not read source
-  cards. Use it for first startup of large installations and for topology-only
+  the selected rules and their relations, builds topology commands, and does
+  not read source cards such as ARM. This is the default mode for `Проверить`.
+  The compact `Проверить` action always uses this graph-overlay dry-run path;
+  the selected `Изменения состава` or `Полный обход источников` mode is used
+  only by `Опубликовать`.
+  Use it for first startup of large installations and for topology-only
   changes.
 - `Изменения состава` rebuilds source membership from rules and source cards,
   then `zabbixconfig2api` compares the graph with the persisted applied graph
@@ -220,6 +282,17 @@ and relations under expandable details so large plans remain readable.
 The same screen exposes `Отменить операцию`; it calls
 `/rules/apply-current/cancel/{operationId}` and the backend stops at the next
 safe cancellation point.
+
+The compact `Модель -> Применить в Zabbix` console shows the same long-running
+publication as an online operation, not as a silent button wait. Immediately
+after `Проверить` or `Опубликовать` the UI renders the workflow status, current
+step, elapsed time, backend `operationId`, refresh, cancel, and clear controls.
+The panel is stored under
+`cmdb2monitoring.serviceSuppression.zabbixPublishOperation.v1` in browser
+storage, so reloading the page resumes progress polling for already accepted
+backend operations. A reload does not continue compact chained substeps that had
+not yet started; after the visible backend operation finishes, run the remaining
+step again from the console if needed.
 
 Service graph publication is ordered top-down. `cmdbconfigbuilder` enriches
 commands with `parent_managed_keys` derived from the full desired graph;
@@ -915,6 +988,18 @@ That action does not execute the rules against existing CMDBuild cards and does
 not create service/suppression target cards. Target cards appear after a
 matching source-class webhook is processed by the rule engine.
 
+During normal webhook processing, `cmdbconfigbuilder` also reads the configured
+service and suppression template documents. For CREATE/UPDATE source-card events
+it evaluates the template source regex, template filters, and the population
+dimension against the enriched source attributes. If the source event produces a
+dimension but no generated rule exists for `layer/templateId/dimensionKey`, the
+service publishes a request to `KafkaTopics:CmdbModelMissingDimensions`
+(`service-suppression.cmdb.model.missing-dimensions` by default). The event
+contains source class/card, source event id, field, field value, dimension key,
+dimension value/name, target key, variables, and reason. This path intentionally
+does not edit conversion config; the materializer stage must consume the request
+and write generated rules through `conversion-config-store`.
+
 Template deletion is also a two-step operational action. The default mode is
 configured in `Администрирование -> Основные` as `Режим удаления шаблона по
 умолчанию`; the default is `Удалить созданные правила и объекты`. This removes
@@ -927,24 +1012,55 @@ cleanup control either removes the detached rules while keeping CMDBuild cards
 or removes the rules and creates `templateDeletionPlans`. This cleanup control
 lists only rules that were generated by a template and detached by the
 keep-objects deletion mode; ordinary manual static rules and active generated
-rules are not offered there. Plans with pending
-status are not executed by folder save or applier reload. The visible
-`удаление объектов CMDBuild` block in the template materialization menu enables
-`Применить планы удаления в CMDBuild` only when pending plans exist; that
-action deletes the matched managed cards through `cmdbaggregation2cmdbuild` and
-records per-plan deleted/skipped/error counts.
+rules are not offered there. During `Подготовить и сохранить правила`, pending
+plans for generated-managed objects are applied automatically after
+materialization and before the conversion folder is saved. The visible
+`очистка устаревших managed-объектов` block is a recovery surface: it retries
+failed or still-pending plans through `cmdbaggregation2cmdbuild` and records
+per-plan deleted/skipped/error counts. Detached, manual, and legacy targets
+without reliable ownership are routed to `ручная проверка очистки`; administrators can
+select those rows, delete the selected CMDBuild cards, or mark them as
+intentionally preserved.
 
 The folder is intentionally server-side configuration, not a free browser input.
 This keeps write scope controlled and allows the same folder to be mounted from
 a volume now or moved under Git control later.
 
-`monitoring-ui-api` is the only writer for this folder. A save request carries
-the `baseVersion`/`baseEtag` loaded by the UI; if the manifest changed, the API
-returns `409 conversion_config_conflict` and the operator must reload the
-folder before saving. Files are written through temporary files and atomic
-rename; `manifest.json` is written last and contains `version`, `etag`,
-`savedAt`, `writer`, and the file map. Applier services and runtime converters
-only read published configuration and must not edit these files directly.
+All writes go through the `conversion-config-store` API exposed by
+`monitoring-ui-api`: `/api/conversion-config-store/current`,
+`/api/conversion-config-store/save-authoring`,
+`/api/conversion-config-store/deploy`, and
+`/api/conversion-config-store/audit`. The default backend is still the same
+folder, but the folder is no longer the ownership boundary for callers. A save
+request carries the `baseVersion`/`baseEtag` loaded by the UI; if the manifest
+changed, the API returns `409 conversion_config_conflict` and the operator must
+reload the conversion config before saving. Folder writes are serialized
+through the process store lock, files are written through temporary files and
+atomic rename, and `manifest.json` is written last with `version`, `etag`,
+`savedAt`, `writer`, and the file map. The folder backend also appends write
+audit records to `audit.jsonl`.
+
+For installations that need runtime-generated dimensions, set
+`conversionConfig.storeBackend` to `postgresql` and configure
+`conversionConfig.postgres.connectionString`, `schema`, `lockKey`, and
+`exportFolder` in `src/monitoring-ui-api/config/appsettings.json` or matching
+environment variables:
+
+- `MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND=postgresql`
+- `MONITORING_UI_CONVERSION_CONFIG_POSTGRES_CONNECTION_STRING=...`
+- `MONITORING_UI_CONVERSION_CONFIG_POSTGRES_SCHEMA=monitoring_ui`
+- `MONITORING_UI_CONVERSION_CONFIG_POSTGRES_LOCK_KEY=2024031901`
+
+The PostgreSQL backend uses the same API responses as the folder backend. It
+stores versioned rule/template documents, materialization jobs, materialized
+dimensions, lock records, and audit records in one schema, and serializes saves
+with `pg_advisory_xact_lock`. When `exportFolder` is enabled, each successful
+database save also exports the current JSON files back to
+`state/conversion-config` so existing appliers and Git export workflows can keep
+using the old file shape during migration. The reviewable DDL is in
+`src/monitoring-ui-api/sql/conversion-config-store-postgresql.sql`. Applier
+services and runtime converters only read published configuration and must not
+edit the folder or PostgreSQL tables directly.
 
 ## Rule and Model Editor Operations
 
@@ -1021,6 +1137,9 @@ Administrative constraints for that workflow:
   `locationFloorBuildingCity`, template application prefers catalog-driven
   preparation from the final referenced class. It falls back to full source
   scan only when the path cannot be represented as a non-self reference catalog.
+- Generated-rule limits are configured in `Администрирование -> Основные`
+  separately for service and suppression templates. They apply during
+  `Проверить шаблоны` and protect operators from accidental cardinality spikes.
 - The population `Key template` and `Dimension name template` are advanced
   fields with safe defaults. Keep `${template.id}:${dimension.key}` when all
   matched source classes should share one target object per dimension value.

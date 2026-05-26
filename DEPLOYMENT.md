@@ -23,6 +23,8 @@ Required infrastructure:
 - Zabbix JSON-RPC API reachable from `cmdbconfigbuilder` and
   `zabbixconfig2api`.
 - Kafka bootstrap servers reachable from all .NET pipeline services.
+- `monitoring-ui-api` reachable from `cmdbmodelmaterializer` for
+  `conversion-config-store` reads and deploy writes.
 - Optional PAM/AAPM endpoint for `secret://...` or `aapm://...` values.
 - Optional ELK/log collector. Preferred production pattern is ELK collecting
   from Kafka log topics when `KafkaLogging` is enabled.
@@ -42,6 +44,7 @@ that prefix; foreign customer topics are ignored.
 | `KafkaTopics:AggregationCommands` | `service-suppression.monitoring.aggregation.commands` | `cmdbconfigbuilder` | `cmdbaggregation2cmdbuild` |
 | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` | `cmdbconfigbuilder` | `zabbixconfig2api` service contour |
 | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` | `cmdbconfigbuilder` | `zabbixconfig2api` suppression contour |
+| `KafkaTopics:CmdbModelMissingDimensions` | `service-suppression.cmdb.model.missing-dimensions` | `cmdbconfigbuilder` | `cmdbmodelmaterializer` |
 | `KafkaTopics:DebugLogs` / `KafkaLogging:Topic` | `service-suppression.logs` | any service with `KafkaLogging:Enabled=true` | ELK/log collector |
 
 Minimal ACLs:
@@ -49,7 +52,8 @@ Minimal ACLs:
 | Service | Write | Read |
 | --- | --- | --- |
 | `cmdbwebhooks2kafka` | raw event topic, optional log topic | none |
-| `cmdbconfigbuilder` | aggregation command topic, Zabbix service/suppression apply topics, optional log topic | raw event topic |
+| `cmdbconfigbuilder` | aggregation command topic, Zabbix service/suppression apply topics, missing-dimensions topic, optional log topic | raw event topic |
+| `cmdbmodelmaterializer` | optional log topic | missing-dimensions topic |
 | `zabbixconfig2api` | optional log topic | Zabbix service/suppression apply topics |
 | `cmdbaggregation2cmdbuild` | optional log topic | aggregation command topic |
 
@@ -79,6 +83,7 @@ Common sections:
   "AggregationCommands": "service-suppression.monitoring.aggregation.commands",
   "ZabbixServiceApplyPlans": "service-suppression.zabbix.service.apply-plans",
   "ZabbixSuppressionApplyPlans": "service-suppression.zabbix.suppression.apply-plans",
+  "CmdbModelMissingDimensions": "service-suppression.cmdb.model.missing-dimensions",
   "DebugLogs": "service-suppression.logs"
 },
 "Debug": {
@@ -99,6 +104,7 @@ KafkaTopics__CmdbWebhookEvents=service-suppression.cmdb.events.raw
 KafkaTopics__AggregationCommands=service-suppression.monitoring.aggregation.commands
 KafkaTopics__ZabbixServiceApplyPlans=service-suppression.zabbix.service.apply-plans
 KafkaTopics__ZabbixSuppressionApplyPlans=service-suppression.zabbix.suppression.apply-plans
+KafkaTopics__CmdbModelMissingDimensions=service-suppression.cmdb.model.missing-dimensions
 Readiness__ZabbixHostIdAttribute=zabbix_main_hostid
 Debug__Enabled=false
 Debug__Level=Basic
@@ -187,6 +193,7 @@ Configure UI health and event browsing endpoints explicitly:
 "healthChecks": [
   { "id": "cmdbwebhooks2kafka", "name": "CMDBuild webhooks -> Kafka", "url": "http://cmdbwebhooks2kafka:5180/health" },
   { "id": "cmdbconfigbuilder", "name": "Rule engine", "url": "http://cmdbconfigbuilder:5182/health" },
+  { "id": "cmdbmodelmaterializer", "name": "Model materializer", "url": "http://cmdbmodelmaterializer:5184/health" },
   { "id": "zabbixconfig2api", "name": "Zabbix applier", "url": "http://zabbixconfig2api:5183/health" },
   { "id": "cmdbaggregation2cmdbuild", "name": "CMDBuild applier", "url": "http://cmdbaggregation2cmdbuild:5181/health" }
 ],
@@ -220,19 +227,21 @@ reconciliation relies on the stored managed keys and fingerprints.
 
 ### Configuration reload
 
-`zabbixconfig2api` and `cmdbaggregation2cmdbuild` reload external configuration
-from disk through their configured `ConfigurationReload:Route`, default
-`/configuration/reload`. The Monitoring UI calls each configured `reloadUrl`
-with one shared Bearer token:
+`zabbixconfig2api`, `cmdbaggregation2cmdbuild`, and `cmdbmodelmaterializer`
+reload external configuration from disk through their configured
+`ConfigurationReload:Route`, default `/configuration/reload`. The Monitoring UI
+and `cmdbmodelmaterializer` call configured `reloadUrl` values with one shared
+Bearer token:
 
 ```text
 Authorization: Bearer <shared reload token>
 ```
 
-Use the same token source for the two appliers and the UI BFF:
+Use the same token source for the appliers, `cmdbmodelmaterializer`, and the UI
+BFF:
 
 ```json
-// zabbixconfig2api and cmdbaggregation2cmdbuild
+// zabbixconfig2api, cmdbaggregation2cmdbuild, and cmdbmodelmaterializer
 "ConfigurationReload": {
   "Route": "/configuration/reload",
   "BearerToken": "",
@@ -243,11 +252,23 @@ Use the same token source for the two appliers and the UI BFF:
 "appliers": {
   "reloadBearerToken": "",
   "reloadBearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-reload-token"
+},
+
+// cmdbmodelmaterializer
+"Materializer": {
+  "ReloadTargets": [
+    {
+      "Name": "zabbixconfig2api",
+      "Url": "http://zabbixconfig2api:5183/configuration/reload",
+      "BearerToken": "",
+      "BearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-reload-token"
+    }
+  ]
 }
 ```
 
 For local development a literal value is acceptable, but it still has to be the
-same in all three configs. In production prefer the shared PAM/AAPM reference
+same in every reload config. In production prefer the shared PAM/AAPM reference
 and do not store the token in git.
 
 ### cmdbconfigbuilder
@@ -276,6 +297,85 @@ CMDBuild feedback webhooks. It does not drop raw webhooks. Increase
 `MaxEntries` for large CMDBuild catalogs with many active source cards; reduce
 `WindowSeconds` only if operators need repeated identical updates to force a
 new command during a short troubleshooting window.
+
+### cmdbmodelmaterializer
+
+```json
+"ConversionConfigStore": {
+  "BaseUrl": "http://monitoring-ui-api:8091",
+  "CurrentPath": "/api/conversion-config-store/current",
+  "DeployPath": "/api/conversion-config-store/deploy",
+  "TimeoutMs": 10000
+},
+"Materializer": {
+  "Enabled": true,
+  "DuplicateTtlSeconds": 3600,
+  "MaxWriteAttempts": 3,
+  "ReloadAppliersOnSave": true
+},
+"Replay": {
+  "Enabled": true,
+  "ReprocessUrl": "http://cmdbconfigbuilder:5182/rules/reprocess-card",
+  "BackfillDimensionOnSave": false,
+  "MaxBackfillCards": 1000,
+  "TimeoutMs": 30000
+},
+"GraphOverlay": {
+  "Enabled": false,
+  "ApplyCurrentUrl": "http://cmdbconfigbuilder:5182/rules/apply-current",
+  "Targets": [ "zabbix-direct" ],
+  "CmdbuildPrefix": "C2M_",
+  "ServiceModelRoot": "",
+  "SuppressionModelRoot": "",
+  "ZabbixCommandApplyUrl": "http://zabbixconfig2api:5183/commands/apply-graph",
+  "PublishMode": "changes",
+  "TopologyReadMode": "rules",
+  "ScopeDepth": 0,
+  "RequireScopeMatch": false,
+  "DryRun": false,
+  "TimeoutMs": 60000
+}
+```
+
+`cmdbmodelmaterializer` consumes `KafkaTopics:CmdbModelMissingDimensions`.
+It serializes work by `layer/templateId/dimensionKey`, reads current rules and
+templates from `conversion-config-store`, writes append/update-only generated
+rules through the deploy endpoint, and reloads configured appliers after a
+successful save. It never deletes generated rules, CMDBuild cards, Zabbix
+services, detached generated rules, manual rules, or legacy objects. Runtime
+relations are added when their `domain_code` can be inferred from existing
+generated sibling rules or explicit relation metadata; otherwise the service
+saves the rule and records a warning in `/materializer/status`.
+
+When `Replay:Enabled=true`, the materializer calls
+`cmdbconfigbuilder /rules/reprocess-card` after a successful deploy. The
+builder reads the source card from CMDBuild, reuses the normal
+enrich/build/publish rule-engine path, and publishes ordinary aggregation and
+Zabbix commands. Keep `BackfillDimensionOnSave=false` for the default source
+card replay. Set it to `true` only for controlled scoped backfill: the builder
+will scan the request's source class up to `MaxBackfillCards` and process cards
+matching the materialized dimension instead of relying on the original event.
+
+`GraphOverlay:Enabled=false` is the default rollout mode: the UI continues to
+show a visible scoped graph overlay action after materialization/replay. When
+set to `true`, the materializer calls `ApplyCurrentUrl` with
+`buildMode=graph-overlay`, the request layer, and scope keys from the generated
+rule id, target key, and dimension value. This automatic step may publish
+through Kafka with `Targets=["zabbix"]` or call `ZabbixCommandApplyUrl`
+directly with `Targets=["zabbix-direct"]`; it does not traverse source cards.
+The default `TopologyReadMode=rules` also builds the Zabbix desired graph from
+the scoped runtime rules and their relations instead of reading the full
+CMDBuild managed-object catalog. Keep `TopologyReadMode=full` only as a
+legacy diagnostic mode, because it reads managed cards and domain relations.
+
+For `Администрирование -> Материализация`, configure
+`monitoring-ui-api backend.modelMaterializerStatusUrl` as
+`http://cmdbmodelmaterializer:5184/materializer/status` and
+`backend.modelMaterializerProcessUrl` as
+`http://cmdbmodelmaterializer:5184/materializer/process`. The UI uses these
+routes through the BFF to show recent jobs and retry failed missing-dimension
+requests, and also reads the conversion-config-store audit endpoint and recent
+Kafka events from the missing-dimensions topic.
 
 ### zabbixconfig2api
 
@@ -510,12 +610,15 @@ docker run \
 3. Optional PAM/AAPM.
 4. `cmdbaggregation2cmdbuild`.
 5. `zabbixconfig2api`.
-6. `cmdbconfigbuilder`.
-7. `cmdbwebhooks2kafka`.
-8. `monitoring-ui-api`.
+6. `monitoring-ui-api`.
+7. `cmdbmodelmaterializer`.
+8. `cmdbconfigbuilder`.
+9. `cmdbwebhooks2kafka`.
 
 The appliers can start before producers because Kafka consumers wait for
-messages.
+messages. `monitoring-ui-api` should be reachable before
+`cmdbmodelmaterializer` starts consuming missing-dimension requests, because it
+owns `conversion-config-store`.
 
 ## Validation Checklist
 
@@ -526,6 +629,7 @@ After deployment:
 ```bash
 curl -f http://cmdbwebhooks2kafka:5180/health
 curl -f http://cmdbconfigbuilder:5182/health
+curl -f http://cmdbmodelmaterializer:5184/health
 curl -f http://zabbixconfig2api:5183/health
 curl -f http://cmdbaggregation2cmdbuild:5181/health
 curl -f http://monitoring-ui-api:8091/api/health/services
@@ -536,6 +640,7 @@ Kafka auto-apply is intentionally disabled for manual checks:
 
 ```bash
 curl -f http://cmdbaggregation2cmdbuild:5181/apply/status
+curl -f http://cmdbmodelmaterializer:5184/materializer/status
 ```
 
 2. Check CMDBuild and Zabbix integration routes where configured:

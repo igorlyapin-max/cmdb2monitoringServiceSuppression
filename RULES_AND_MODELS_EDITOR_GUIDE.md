@@ -16,11 +16,14 @@ Monitoring UI готовит схемы, правила, шаблоны и уп�
 - `monitoring-ui-api` является точкой редактирования правил, шаблонов и схемы.
 - `cmdbconfigbuilder` исполняет обычные правила конвертации, включая правила,
   созданные из шаблонов.
+- `cmdbmodelmaterializer` автоматически добавляет недостающие generated-правила
+  при появлении нового значения агрегационного измерения.
 - `zabbixconfig2api` применяет Zabbix-сторону.
 - `cmdbaggregation2cmdbuild` применяет CMDBuild-сторону, включая managed
   объекты и связи.
-- Шаблоны не исполняются напрямую микросервисами. UI материализует их в обычные
-  правила с `generated_from_template`.
+- Шаблоны не исполняются напрямую микросервисами. UI выполняет массовую
+  материализацию, а `cmdbmodelmaterializer` добавляет отдельные missing
+  dimensions в обычные правила с `generated_from_template`.
 
 ## Перед началом работы
 
@@ -31,8 +34,9 @@ Monitoring UI готовит схемы, правила, шаблоны и уп�
 2. Kafka topics созданы заранее. Сервисы не создают topics при старте.
 3. Все сервисы отвечают на `/health`, а Monitoring UI показывает их в
    верхней панели.
-4. В `zabbixconfig2api`, `cmdbaggregation2cmdbuild` и `monitoring-ui-api`
-   настроен один и тот же Bearer token для перезагрузки конфигурации.
+4. В `zabbixconfig2api`, `cmdbaggregation2cmdbuild`,
+   `cmdbmodelmaterializer` и `monitoring-ui-api` настроен один и тот же Bearer
+   token для перезагрузки конфигурации.
 5. Папка `conversionConfig.storageFolder` подключена как постоянное серверное
    хранилище. Ее пишет только `monitoring-ui-api`.
 6. В CMDBuild есть или будет создан атрибут готовности source-карточек к
@@ -396,7 +400,7 @@ distinct/regex. Если рекурсии не хватило и обход ос
 | `Шаблон имени ${dimension.name}` | все materialized-типы, кроме legacy | обычно оставить по умолчанию | Формирует итоговое `${dimension.name}`. Внутри этого поля `${dimension.name}` означает базовое display name до шаблона. Частые варианты: `${dimension.value}`, `${dimension.name}`, `Город ${dimension.value}`, `${class.description}: ${dimension.name}`. |
 | `Поле отбора source-карточек` | `Regex capture`, `Range/list generator`, `Static list` | да, если поле показано | Поле карточки, по которому generated-правило будет выбирать source-карточки. Для `Regex capture` обычно совпадает с `Атрибут/path source`; для range/static это обязательное поле. |
 | `Regex отбора source-карточек` | `Regex capture`, `Range/list generator`, `Static list` | по ситуации | Regex условия generated-правила. Если пусто, UI строит точное совпадение со значением измерения. Для hostname-группировки: `(?i)^w${dimension.regexKey}[0-9]{2}-.*$`. |
-| `Лимит правил` | все materialized-типы, кроме legacy | редко | Защита от случайного взрыва cardinality. Увеличивайте только если ожидаемое число generated-правил осознанно больше лимита. |
+| `Лимит generated-правил шаблона` | `Администрирование -> Основные`, отдельно для сервиса и подавления | редко | Защита от случайного взрыва cardinality при проверке шаблонов. Увеличивайте только если ожидаемое число generated-правил осознанно больше лимита. |
 
 Поле `population_source_key` не предназначено для ручного редактирования. Это
 служебный ключ managed target, который UI формирует из `Шаблон ключа`.
@@ -510,6 +514,40 @@ webhook source-класса и `cmdbaggregation2cmdbuild` применит ра�
 source-классов/backfill; проверка и материализация шаблонов сами карточки не
 переобрабатывают.
 
+Для текущей эксплуатации больших моделей есть отдельный автоматический путь:
+если после сохранения шаблонов появляется новое значение измерения, например
+новый город, `cmdbconfigbuilder` на CREATE/UPDATE source-карточки публикует
+событие `layer/templateId/dimensionKey` в topic missing dimensions.
+`cmdbmodelmaterializer` читает это событие, перечитывает конфигурацию через
+`conversion-config-store`, добавляет только недостающее generated-правило и
+связи, которые можно вывести из уже существующих сгенерированных правил, затем
+сохраняет конфигурацию через deploy API, перезагружает appliers и вызывает
+`cmdbconfigbuilder /rules/reprocess-card` для исходной source-карточки. Команды
+по-прежнему строит только `cmdbconfigbuilder`: он перечитывает карточку из
+CMDBuild, обогащает поля и проходит тот же rule-engine путь, что обычный
+webhook. Этот путь не удаляет правила, карточки, Zabbix services,
+manual/detached/legacy объекты и не делает полный обход всех source-классов.
+Для случаев, когда исходное событие устарело или карточек с новым измерением
+уже несколько, тот же API поддерживает scoped backfill по source-классу и
+dimension. Если runtime `domain_code` связи нельзя вывести без живой схемы
+CMDBuild, правило сохраняется, а warning остается в статусе materializer.
+Если на стенде включить `cmdbmodelmaterializer GraphOverlay:Enabled=true`, то
+после replay materializer запускает тот же backend action
+`cmdbconfigbuilder /rules/apply-current` в режиме `graph-overlay` и передает
+только scoped ключи generated rule/target/dimension. По умолчанию эта настройка
+выключена: оператор видит pending scope и запускает наложение графа из UI
+самостоятельно. Автоматический overlay, когда включен, не делает полный обход
+source-карточек. Для обычной эксплуатации оставляйте
+`GraphOverlay:TopologyReadMode=rules`: тогда desired graph строится из
+суженного набора текущих правил и relations, без полного чтения managed-карточек
+и domain relations из CMDBuild. `TopologyReadMode=full` нужен только для
+legacy-диагностики на маленьких стендах.
+Операционный статус находится в `Администрирование -> Материализация`: там
+видны recent jobs, failed jobs с кнопкой retry, последние missing-dimensions
+events, audit сохранения conversion config и pending graph overlay. Retry
+повторяет исходный missing-dimension request; это не механизм cleanup для
+detached/manual/legacy объектов.
+
 При сохранении шаблона UI увеличивает версию только при значимом изменении и
 пишет immutable snapshot в `templateVersions`. При применении шаблонов UI не
 пересоздает весь набор generated-правил. Он делает reconcile:
@@ -525,12 +563,16 @@ source-классов/backfill; проверка и материализация
 
 Ручные правила и detached generated rules сохраняются. Каждое применение
 фиксируется в `templateApplications`: template id/version, content hash,
-candidate source classes, generated managed keys и счетчики reconcile.
+счетчики candidate source classes, capped-примеры generated managed keys и
+счетчики reconcile. Полные списки generated-правил не выводятся в DOM отчета:
+страница показывает summary, пагинированную детализацию и ограниченные примеры,
+чтобы большие модели не подвешивали браузер.
 
 Удаление шаблона имеет два режима:
 
 - отвязать generated-правила и сохранить созданные объекты;
-- удалить generated-правила и добавить target-объекты в план ручной обработки.
+- удалить generated-правила и добавить target-объекты в автоматический план
+  очистки.
 
 Режим по умолчанию задается в `Администрирование -> Основные` полем `Режим
 удаления шаблона по умолчанию`. Дефолт: `Удалить созданные правила и объекты`.
@@ -551,15 +593,21 @@ generated-правила, но и detached-правила с историчес�
 Такие правила управляются через блок `отвязанные правила шаблонов`, чтобы не
 смешивать ручные статические правила с артефактами удаленных шаблонов.
 
-`templateDeletionPlans` не удаляют CMDBuild-карточки автоматически при
-сохранении конфигурации. В том же меню постоянно виден блок `удаление объектов
-CMDBuild`; когда есть pending-планы, в нем активна кнопка `Применить планы
-удаления в CMDBuild`. UI ищет карточки по `card_id`,
+`templateDeletionPlans` являются журналом очистки, а не рекомендацией оператору.
+При `Подготовить и сохранить правила` UI после materialization автоматически
+применяет pending-планы для generated-managed объектов, чистит state
+`zabbixconfig2api`, а затем сохраняет конфигурацию. В том же меню постоянно
+виден блок `очистка устаревших managed-объектов`: его кнопка `Повторить очистку
+CMDBuild` нужна только для повтора failed/pending целей после сетевых ошибок
+или ручного восстановления. Отвязанные, ручные и legacy-цели без надежного признака владения
+попадают в блок `ручная проверка очистки`: администратор выбирает строки и
+явно решает удалить CMDBuild-карточки или пометить их сохраненными. UI ищет
+карточки по `card_id`,
 `population_source_key`, `population_rule_id`, `Code` и описанию, вызывает
 удаление карточки через `cmdbaggregation2cmdbuild`, а затем помечает план как
-`done` или `failed`. Домены схемы настроены на удаление связей при удалении
-карточки; если конкретная CMDBuild-инсталляция запрещает каскадное удаление,
-ошибка останется в результате плана и требует ручной проверки.
+`done`, `failed` или `manual_review`. Домены схемы настроены на удаление связей
+при удалении карточки; если конкретная CMDBuild-инсталляция запрещает каскадное
+удаление, ошибка останется в результате плана и требует ручной проверки.
 
 Связи между шаблонами и связи template -> static CMDBuild class/card должны
 формироваться по той же модели: stable `managed_key` не включает версию
@@ -713,8 +761,18 @@ managed webhooks для `CREATE`, `UPDATE` и `DELETE` один раз на кл
 операциями: первая выполняется через `Сохранить в папку` и затем перечитывается
 applier'ами, вторая обновляет `etl/webhook` inventory на стороне CMDBuild.
 
-`monitoring-ui-api` пишет файлы атомарно и обновляет `manifest.json` последним.
-Runtime services только читают опубликованную конфигурацию.
+Запись выполняется через `conversion-config-store` API в `monitoring-ui-api`.
+По умолчанию backend файловый, но UI и будущие control-plane сервисы должны
+обращаться к API, а не писать в папку напрямую. Store сериализует записи,
+проверяет `baseVersion`/`baseEtag`, пишет файлы атомарно, обновляет
+`manifest.json` последним и ведет audit в `audit.jsonl`.
+
+Для автоматической материализации новых aggregation dimensions предусмотрен
+backend `postgresql`: он использует тот же API, хранит versioned documents,
+materialization jobs, materialized dimensions, locks и audit records
+транзакционно, а при `exportFolder=true` продолжает выгружать текущие JSON-файлы
+для действующих applier'ов. Runtime services только читают опубликованную
+конфигурацию.
 
 ## Как модель попадает в Zabbix
 
@@ -722,10 +780,10 @@ Runtime services только читают опубликованную конф
 обоих слоев. Если в UI настроен `backend.zabbixCommandApplyUrl`, публикация
 применяет команды через `zabbixconfig2api /commands/apply-graph`; иначе команды
 пишутся в отдельный Zabbix topic. Основной режим - `Наложить граф`: backend
-читает только уже созданные managed target-объекты сервисного слоя и подавления,
-их CMDBuild-связи, строит skeleton desired graph и не обходит исходные
-карточки. Этот режим нужен для первого запуска больших инсталляций и для
-быстрого применения изменений топологии.
+строит desired graph из выбранных правил и их relations, не читает исходные
+карточки вроде АРМ и не обходит полный каталог managed-объектов CMDBuild.
+Этот режим нужен для первого запуска больших инсталляций и для быстрого
+применения изменений топологии.
 
 Режим `Изменения состава` обходит исходные карточки, применяет правила и
 обновляет membership/source bindings. Используйте его после изменений состава,
@@ -887,6 +945,18 @@ membership может появиться после обычного UPDATE ка
 Переход от пустого `zabbix_main_hostid` к заполненному входит в semantic
 fingerprint, поэтому dedup не должен скрывать штатный второй UPDATE после
 создания host в Zabbix.
+
+Если generated rule для новой dimension еще не существует, обычное правило
+сработать не может. Поэтому streaming path дополнительно читает template
+documents: service и suppression шаблоны проверяются по `source_class_regex`,
+filter-блокам и population dimension. Когда CREATE/UPDATE source-карточка дает
+новый `dimension.key`, а в runtime rules нет generated rule для
+`layer/templateId/dimensionKey`, `cmdbconfigbuilder` публикует событие в
+`KafkaTopics:CmdbModelMissingDimensions`
+(`service-suppression.cmdb.model.missing-dimensions` по умолчанию). Это только
+сигнал: conversion config в webhook path не меняется, запись generated rules
+остается обязанностью отдельного materializer-сервиса через
+`conversion-config-store`.
 
 Эта логика строит service impact model. Она не закрывает и не скрывает зависимые
 problem events сама по себе, и отдельный разовый контур подавления активных

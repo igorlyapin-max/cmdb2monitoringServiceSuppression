@@ -8,6 +8,7 @@ Initial services:
 - `cmdbwebhooks2kafka`: receives CMDBuild webhooks and publishes change events.
 - `cmdbaggregation2cmdbuild`: prepares CMDBuild schema and derived aggregation objects.
 - `cmdbconfigbuilder`: builds desired Zabbix configuration from mapping rules and CMDB events.
+- `cmdbmodelmaterializer`: consumes missing model dimensions and appends generated rules through the conversion config store.
 - `zabbixconfig2api`: applies approved configuration changes to Zabbix.
 - `monitoring-ui-api`: Node.js UI/BFF for schema setup, conversion rules, and manual apply.
 
@@ -76,6 +77,38 @@ The .NET services now use a single pipeline contract:
   `KafkaTopics:AggregationCommands` for CMDBuild reconciliation and to
   `KafkaTopics:ZabbixServiceApplyPlans` /
   `KafkaTopics:ZabbixSuppressionApplyPlans` for Zabbix.
+  It also loads `ConversionRules:ServiceTemplatesFilePath` and
+  `ConversionRules:SuppressionTemplatesFilePath` during streaming processing.
+  When a CREATE/UPDATE source card matches a template and a `dimension.key` is
+  calculated but no generated rule exists for `layer/templateId/dimensionKey`,
+  it publishes a create/update request to
+  `KafkaTopics:CmdbModelMissingDimensions` (`*.cmdb.model.missing-dimensions`).
+  This is only a signal for materialization; the webhook path does not write
+  conversion config.
+- `cmdbmodelmaterializer` consumes `KafkaTopics:CmdbModelMissingDimensions`,
+  deduplicates by `layer/templateId/dimensionKey`, reads current rules and
+  templates from `conversion-config-store`, appends or updates only the missing
+  generated rules, and saves through `/api/conversion-config-store/deploy`.
+  It never deletes generated rules, CMDBuild cards, Zabbix services, or
+  detached/manual/legacy objects. After a successful save it reloads the
+  configured appliers and calls `cmdbconfigbuilder /rules/reprocess-card` so
+  the source card that produced the missing dimension is processed by the same
+  rule engine path as a normal webhook. Runtime relation `domain_code` is
+  inferred from existing generated sibling rules or explicit relation metadata;
+  if it cannot be inferred, the rule is still saved and the materializer
+  records a warning.
+  Optional `GraphOverlay:*` settings let the materializer then call
+  `cmdbconfigbuilder /rules/apply-current` in `graph-overlay` mode with scoped
+  rule/target/dimension keys. The default is `GraphOverlay:Enabled=false`, so
+  automatic Zabbix writes are not enabled until an operator turns them on; when
+  enabled this path does not read source cards. `TopologyReadMode=rules` is the
+  default graph topology read mode and uses scoped runtime rules instead of the
+  full CMDBuild managed-object catalog.
+  The UI screen `Администрирование -> Материализация` shows recent
+  materializer jobs, failed jobs with retry, recent missing-dimensions events,
+  conversion-config-store audit entries, and pending manual graph overlay when
+  automatic overlay is disabled. Retry resends the original missing-dimension
+  request; it does not delete generated/manual/detached/legacy objects.
 - `zabbixconfig2api` reads the service and suppression Zabbix topics
   separately. Each contour has independent dry-run/status/reconcile counters
   and errors.
@@ -585,6 +618,15 @@ Suppression schema is intentionally uniform:
   from the final referenced class. For example, `locationFloorBuildingCity`
   can read `Building.City` values from `Building` cards before any full
   traversal of `ARM` cards.
+- During streaming webhook processing, `cmdbconfigbuilder` can calculate the
+  same source-field/lookup/bool/reference/regex/static/range dimension from the
+  current source card. If the corresponding generated rule is missing, it emits
+  a missing-dimension event keyed by `layer/templateId/dimensionKey`.
+  `cmdbmodelmaterializer` owns writing the generated rule through
+  `conversion-config-store` and then replays the source card through
+  `cmdbconfigbuilder /rules/reprocess-card`. The same API supports scoped
+  source-class backfill by dimension when the original event is too old or
+  several cards already exist for the new dimension.
 - Population dimension field ownership:
   - `Type`: operator-selected source of dimension values.
   - `Source attribute/path`: operator-selected final leaf source field for
@@ -609,8 +651,10 @@ Suppression schema is intentionally uniform:
     regex-capture, range/list, and static-list dimensions to build the
     generated rule condition. If the regex is empty, the UI creates an exact
     match against the dimension value.
-  - `Rule limit`: an operator safety limit for cardinality explosions; increase
-    it only when the expected number of generated rules is intentional.
+  - `Generated rule limit`: a layer-level operator safety limit in
+    `Администрирование -> Основные`, with separate values for service and
+    suppression templates. Increase it only when the expected number of
+    generated rules is intentional.
 - The unresolved reference/domain type is diagnostic only; templates that stop
   on an object link instead of a final leaf attribute must not be saved until
   recursion depth or the selected path is corrected.
@@ -658,9 +702,11 @@ Suppression schema is intentionally uniform:
 - Template saves produce distinguishable immutable version snapshots in
   `templateVersions`. Template application writes `templateApplications` to the
   rule document with the applied template version, content hash, matched
-  source classes, generated managed keys, and reconcile counts. The template
-  version is trace metadata; reconcile decisions use stable managed keys and
-  fingerprints, not the version number alone.
+  source class count, capped examples of generated managed keys, and reconcile
+  counts. The template version is trace metadata; reconcile decisions use
+  stable managed keys and fingerprints, not the version number alone. The UI
+  renders compact summaries by default and keeps full generated-rule detail out
+  of the DOM for large installations.
 - Generated rules and target objects carry template origin and ownership
   metadata: `generated_from_template`, `template_generation`,
   `template_generation.managed_key`, `template_generation.artifact_fingerprint`,
@@ -668,18 +714,21 @@ Suppression schema is intentionally uniform:
   rule from a template while preserving the target object.
 - Deleting a template has two UI modes: detach generated rules and keep target
   objects, or remove generated rules and add their target objects to
-  `templateDeletionPlans` for manual deletion handling together with generated
+  `templateDeletionPlans` for automatic cleanup together with generated
   relations. Changing a template regex, target, variables, or filters is an
   in-place version change followed by reconcile: only missing, changed, or
   obsolete managed artifacts are touched.
 - The default delete mode is configured in `Администрирование -> Основные`.
   The default is `Удалить созданные правила и объекты`: generated rules are
   removed from the configuration and target cards are added to pending
-  `templateDeletionPlans`. The template apply screen always shows the
-  `удаление объектов CMDBuild` block; its `Применить планы удаления в CMDBuild`
-  button becomes active when pending plans exist. Saving the conversion folder
-  never deletes cards by itself. Use `Отвязать правила и сохранить объекты`
-  only when the target cards must remain and ownership should become static.
+  `templateDeletionPlans`. The template apply pipeline automatically applies
+  those plans for generated-managed CMDBuild objects after materialization; the
+  visible auto-cleanup block is a recovery surface for failed or still-pending
+  managed targets. Detached/manual/legacy targets without reliable ownership
+  are shown in a separate manual-review cleanup block and are deleted only after
+  an explicit administrator selection. Use `Отвязать правила и сохранить
+  объекты` only when the target cards must remain and ownership should become
+  static.
   The detached-rule cleanup block offers removal only for rules detached by
   that keep-objects mode; it must not offer ordinary manual static rules or
   active generated template rules.
@@ -850,9 +899,9 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
   Hovering over CMDBuild/Zabbix traffic lights shows the cache timestamp and
   cache lifetime since it was written.
 - `Модель -> Применить в Zabbix` publishes the selected layer or both layers.
-  The default `Наложить граф` mode reads existing managed target cards and
-  CMDBuild relations, builds a skeleton graph, and does not read source cards.
-  Use it for large first startups and topology-only changes. `Изменения
+  The default `Наложить граф` mode builds the desired graph from selected rules
+  and their relations, and does not read source cards or the full CMDBuild
+  managed-object catalog. Use it for large first startups and topology-only changes. `Изменения
   состава` rebuilds source membership from rules/source cards and, with direct
   apply configured, shows the diff against the last applied graph snapshot.
   `Полный обход источников` intentionally replays everything after reading
@@ -865,7 +914,14 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
   `backend.zabbixCommandApplyUrl` configured in `monitoring-ui-api`,
   publication applies the checked graph directly via
   `zabbixconfig2api /commands/apply-graph`; otherwise it publishes only to that
-  layer's Zabbix topic. Each screen has its own graph check, publication action, Zabbix status,
+  layer's Zabbix topic. After `Проверить` or `Опубликовать` the compact
+  console immediately opens an online operation panel with the current step,
+  elapsed time, backend `operationId`, manual refresh, cancellation, and the
+  per-step state for service graph, SLA, suppression graph, and trigger
+  dependencies. Active operation metadata is stored in the browser so a reload
+  can resume polling the backend progress endpoint; chained substeps that were
+  not started before the reload must be launched again by the operator.
+  Each screen has its own graph check, publication action, Zabbix status,
   counters, errors, reconcile summary, and live progress for long operations:
   completed source classes, current class card progress, built/published
   commands, duplicate skips, remaining work, and the planned Zabbix objects and
@@ -1012,16 +1068,24 @@ Zabbix source status is handled by dashboard traffic lights, `Webhooks` is in
 - The `Сохраненная конфигурация` block inside
   `Управление правилами -> Подготовить и сохранить правила` saves and loads
   service/suppression rule documents, rule templates, managed relations, and
-  pending service-object-to-template links through `monitoring-ui-api`, which is
-  the only writer for the configured server folder. The current format writes
-  separate JSON files for service rules, suppression rules, service templates,
-  suppression templates, shared templates, and a manifest; relations created by
-  `Подготовить и сохранить правила` are stored as
+  pending service-object-to-template links through the `conversion-config-store`
+  API in `monitoring-ui-api`. The default backend is still the configured
+  server folder, but callers use `/api/conversion-config-store/current`,
+  `/api/conversion-config-store/deploy`, and the store audit endpoint instead
+  of treating the folder as a writable shared surface. The optional
+  PostgreSQL backend is enabled with `conversionConfig.storeBackend=postgresql`;
+  it stores versioned documents, future materialization jobs, materialized
+  dimensions, locks, and audit rows transactionally, while `exportFolder=true`
+  keeps writing the current JSON files for existing appliers and Git export.
+  The current file format writes separate JSON files for service rules,
+  suppression rules, service templates, suppression templates, shared templates,
+  and a manifest; relations created by `Подготовить и сохранить правила` are stored as
   `managed_relations` inside the rule/template documents, while pending
   service links to aggregate templates are stored in `service-templates.json` as
-  `serviceObjectTemplateRelations`. This folder can later be placed under Git
-  control. Saves use manifest `version`/`etag` conflict
-  checks and atomic temp-file rename writes, with the manifest written last.
+  `serviceObjectTemplateRelations`. This folder can be kept under Git control
+  as an export/audit baseline. Saves use manifest `version`/`etag` conflict
+  checks, store-level write serialization, audit records, and atomic temp-file
+  rename writes, with the manifest written last.
   For operators, `Сохранить в папку` is the publication step for conversion
   configuration: applier services reread that shared folder on reload, and the
   same workflow will later use a Git-backed folder. CMDBuild webhook

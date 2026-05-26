@@ -2250,6 +2250,50 @@ public sealed class CmdbuildClient(
         };
     }
 
+    public async Task<CmdbuildClassCardCatalogItem?> GetClassCardCatalogItemAsync(
+        string classCode,
+        string cardId,
+        string? layer,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(classCode))
+        {
+            throw new InvalidOperationException("CMDBuild class code is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(cardId))
+        {
+            throw new InvalidOperationException("CMDBuild card id is required.");
+        }
+
+        var endpoint = CurrentOptions().BaseUrl.TrimEnd('/');
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(CurrentOptions().RequestTimeoutMs));
+
+        var allClasses = await ListAllClassesAsync(endpoint, timeout.Token);
+        var classItem = allClasses.FirstOrDefault(item =>
+            string.Equals(item.Code, classCode, StringComparison.Ordinal));
+        if (classItem is null)
+        {
+            throw new InvalidOperationException($"CMDBuild class {classCode} was not found.");
+        }
+
+        var values = await ReadClassCardValuesAsync(endpoint, classItem.Code, cardId, timeout.Token);
+        if (values is null)
+        {
+            return null;
+        }
+
+        var attributes = await ListClassAttributeCatalogAsync(endpoint, classItem.Code, timeout.Token);
+        var lookupValuesByType = await ListLookupValueCatalogByTypeAsync(endpoint, attributes, timeout.Token);
+        await using var stream = new MemoryStream();
+        await JsonSerializer.SerializeAsync(stream, values, JsonOptions, timeout.Token);
+        stream.Position = 0;
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
+        var normalizedLayer = string.IsNullOrWhiteSpace(layer) ? "Source" : layer.Trim();
+        return ReadCardCatalogItem(normalizedLayer, classItem, attributes, lookupValuesByType, document.RootElement);
+    }
+
     public async Task<string> ResolveCardPathValueAsync(
         string classCode,
         string cardId,

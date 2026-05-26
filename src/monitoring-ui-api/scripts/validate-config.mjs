@@ -10,6 +10,7 @@ const applierConfigs = await Promise.all([
   readJsonConfig('cmdbaggregation2cmdbuild', path.resolve(root, '..', 'cmdbaggregation2cmdbuild', 'appsettings.json'))
 ]);
 const cmdbconfigbuilderConfig = await readJsonConfig('cmdbconfigbuilder', path.resolve(root, '..', 'cmdbconfigbuilder', 'appsettings.json'));
+const cmdbmodelmaterializerConfig = await readJsonConfig('cmdbmodelmaterializer', path.resolve(root, '..', 'cmdbmodelmaterializer', 'appsettings.json'));
 
 const roles = new Set(config.auth?.roles ?? []);
 
@@ -41,6 +42,7 @@ if (!config.managedMicroservices?.zabbixconfig2api?.configFile) {
 
 const zabbixconfig2api = applierConfigs.find((item) => item.name === 'zabbixconfig2api')?.config ?? {};
 const cmdbconfigbuilder = cmdbconfigbuilderConfig.config ?? {};
+const cmdbmodelmaterializer = cmdbmodelmaterializerConfig.config ?? {};
 if (!zabbixconfig2api.Redis) {
   errors.push('zabbixconfig2api Redis section is required');
 }
@@ -62,6 +64,111 @@ if (cmdbconfigbuilder.Redis?.Enabled === true && !stringValue(cmdbconfigbuilder.
 if (cmdbconfigbuilder.ZabbixDirtyScopes?.Enabled === true && !stringValue(cmdbconfigbuilder.ZabbixDirtyScopes?.Endpoint)) {
   errors.push('cmdbconfigbuilder ZabbixDirtyScopes:Endpoint is required when ZabbixDirtyScopes:Enabled=true');
 }
+if (!stringValue(cmdbconfigbuilder.ConversionRules?.ServiceTemplatesFilePath)) {
+  errors.push('cmdbconfigbuilder ConversionRules:ServiceTemplatesFilePath is required');
+}
+if (!stringValue(cmdbconfigbuilder.ConversionRules?.SuppressionTemplatesFilePath)) {
+  errors.push('cmdbconfigbuilder ConversionRules:SuppressionTemplatesFilePath is required');
+}
+if (!stringValue(cmdbconfigbuilder.KafkaTopics?.CmdbModelMissingDimensions)) {
+  errors.push('cmdbconfigbuilder KafkaTopics:CmdbModelMissingDimensions is required');
+}
+if (!stringValue(cmdbmodelmaterializer.KafkaTopics?.CmdbModelMissingDimensions)) {
+  errors.push('cmdbmodelmaterializer KafkaTopics:CmdbModelMissingDimensions is required');
+}
+if (stringValue(cmdbmodelmaterializer.KafkaTopics?.CmdbModelMissingDimensions)
+  && stringValue(cmdbconfigbuilder.KafkaTopics?.CmdbModelMissingDimensions)
+  && stringValue(cmdbmodelmaterializer.KafkaTopics?.CmdbModelMissingDimensions) !== stringValue(cmdbconfigbuilder.KafkaTopics?.CmdbModelMissingDimensions)) {
+  errors.push('cmdbmodelmaterializer KafkaTopics:CmdbModelMissingDimensions must match cmdbconfigbuilder');
+}
+if (!stringValue(cmdbmodelmaterializer.ConversionConfigStore?.BaseUrl)) {
+  errors.push('cmdbmodelmaterializer ConversionConfigStore:BaseUrl is required');
+} else {
+  try {
+    new URL(cmdbmodelmaterializer.ConversionConfigStore.BaseUrl);
+  } catch {
+    errors.push('cmdbmodelmaterializer ConversionConfigStore:BaseUrl must be an absolute URL');
+  }
+}
+if (!stringValue(cmdbmodelmaterializer.ConversionConfigStore?.CurrentPath)?.startsWith('/')) {
+  errors.push('cmdbmodelmaterializer ConversionConfigStore:CurrentPath must start with /');
+}
+if (!stringValue(cmdbmodelmaterializer.ConversionConfigStore?.DeployPath)?.startsWith('/')) {
+  errors.push('cmdbmodelmaterializer ConversionConfigStore:DeployPath must start with /');
+}
+if (!cmdbmodelmaterializer.Materializer) {
+  errors.push('cmdbmodelmaterializer Materializer section is required');
+}
+if (cmdbmodelmaterializer.Materializer?.Enabled !== false
+  && !Array.isArray(cmdbmodelmaterializer.Materializer?.ReloadTargets)) {
+  errors.push('cmdbmodelmaterializer Materializer:ReloadTargets must be configured');
+}
+if (cmdbmodelmaterializer.Replay?.Enabled !== false) {
+  try {
+    new URL(cmdbmodelmaterializer.Replay?.ReprocessUrl ?? '');
+  } catch {
+    errors.push('cmdbmodelmaterializer Replay:ReprocessUrl must be an absolute URL when replay is enabled');
+  }
+  if (!Number.isInteger(cmdbmodelmaterializer.Replay?.MaxBackfillCards) || cmdbmodelmaterializer.Replay.MaxBackfillCards <= 0) {
+    errors.push('cmdbmodelmaterializer Replay:MaxBackfillCards must be a positive integer');
+  }
+}
+if (cmdbmodelmaterializer.GraphOverlay) {
+  if (cmdbmodelmaterializer.GraphOverlay.Enabled === true) {
+    try {
+      new URL(cmdbmodelmaterializer.GraphOverlay.ApplyCurrentUrl ?? '');
+    } catch {
+      errors.push('cmdbmodelmaterializer GraphOverlay:ApplyCurrentUrl must be an absolute URL when graph overlay is enabled');
+    }
+  }
+  const targets = Array.isArray(cmdbmodelmaterializer.GraphOverlay.Targets)
+    ? cmdbmodelmaterializer.GraphOverlay.Targets.map((item) => stringValue(item).replaceAll('_', '-').toLowerCase()).filter(Boolean)
+    : [];
+  if (cmdbmodelmaterializer.GraphOverlay.Targets !== undefined && !Array.isArray(cmdbmodelmaterializer.GraphOverlay.Targets)) {
+    errors.push('cmdbmodelmaterializer GraphOverlay:Targets must be an array when configured');
+  }
+  for (const target of targets) {
+    if (!['zabbix', 'zabbix-direct'].includes(target)) {
+      errors.push('cmdbmodelmaterializer GraphOverlay:Targets may contain only zabbix or zabbix-direct');
+    }
+  }
+  const usesDirectTarget = targets.length === 0
+    ? Boolean(stringValue(cmdbmodelmaterializer.GraphOverlay.ZabbixCommandApplyUrl))
+    : targets.includes('zabbix-direct');
+  if (cmdbmodelmaterializer.GraphOverlay.Enabled === true && usesDirectTarget) {
+    try {
+      new URL(cmdbmodelmaterializer.GraphOverlay.ZabbixCommandApplyUrl ?? '');
+    } catch {
+      errors.push('cmdbmodelmaterializer GraphOverlay:ZabbixCommandApplyUrl must be an absolute URL when zabbix-direct is used');
+    }
+  }
+  if (!['changes', 'full'].includes(stringValue(cmdbmodelmaterializer.GraphOverlay.PublishMode || 'changes').toLowerCase())) {
+    errors.push('cmdbmodelmaterializer GraphOverlay:PublishMode must be changes or full');
+  }
+  const topologyReadMode = stringValue(cmdbmodelmaterializer.GraphOverlay.TopologyReadMode || 'rules').replaceAll('_', '-').toLowerCase();
+  if (!['auto', 'rules', 'rule', 'scoped', 'scope', 'runtime-rules', 'full', 'cmdbuild', 'cmdbuild-full', 'legacy-full'].includes(topologyReadMode)) {
+    errors.push('cmdbmodelmaterializer GraphOverlay:TopologyReadMode must be auto, rules, or full');
+  }
+  if (!Number.isInteger(cmdbmodelmaterializer.GraphOverlay.ScopeDepth) || cmdbmodelmaterializer.GraphOverlay.ScopeDepth < 0) {
+    errors.push('cmdbmodelmaterializer GraphOverlay:ScopeDepth must be zero or greater');
+  }
+  if (!Number.isInteger(cmdbmodelmaterializer.GraphOverlay.TimeoutMs) || cmdbmodelmaterializer.GraphOverlay.TimeoutMs <= 0) {
+    errors.push('cmdbmodelmaterializer GraphOverlay:TimeoutMs must be a positive integer');
+  }
+}
+for (const target of cmdbmodelmaterializer.Materializer?.ReloadTargets ?? []) {
+  if (target?.Enabled === false) {
+    continue;
+  }
+  if (!stringValue(target?.Name)) {
+    errors.push('cmdbmodelmaterializer Materializer:ReloadTargets entries must have Name');
+  }
+  try {
+    new URL(target?.Url ?? '');
+  } catch {
+    errors.push(`cmdbmodelmaterializer reload target ${target?.Name ?? 'unknown'} Url must be an absolute URL`);
+  }
+}
 if (!zabbixconfig2api.DurableStore) {
   errors.push('zabbixconfig2api DurableStore section is required');
 }
@@ -81,6 +188,8 @@ if (!['manual', 'scheduled', 'manual_and_scheduled'].includes(stringValue(zabbix
 for (const key of [
   'rulesValidateUrl',
   'rulesApplyCurrentUrl',
+  'modelMaterializerStatusUrl',
+  'modelMaterializerProcessUrl',
   'cmdbConfigBuilderRedisCheckUrl',
   'zabbixApplyStatusUrl',
   'zabbixRuntimeStorageStatusUrl',
@@ -107,11 +216,26 @@ if (!config.conversionConfig?.storageFolder) {
   errors.push('conversionConfig.storageFolder is required');
 }
 
+const conversionConfigStoreBackend = stringValue(config.conversionConfig?.storeBackend || 'folder').toLowerCase();
+if (!['folder', 'postgresql', 'postgres', 'pg'].includes(conversionConfigStoreBackend)) {
+  errors.push('conversionConfig.storeBackend must be folder or postgresql');
+}
+
+if (['postgresql', 'postgres', 'pg'].includes(conversionConfigStoreBackend)) {
+  const postgres = config.conversionConfig?.postgres ?? {};
+  if (!stringValue(postgres.connectionString) && !stringValue(postgres.connectionStringSecret)) {
+    errors.push('conversionConfig.postgres.connectionString is required when conversionConfig.storeBackend=postgresql');
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(stringValue(postgres.schema || 'monitoring_ui'))) {
+    errors.push('conversionConfig.postgres.schema must be a PostgreSQL identifier');
+  }
+}
+
 if (!config.conversionConfig?.runtimeRulesFile) {
   errors.push('conversionConfig.runtimeRulesFile is required');
 }
 
-for (const key of ['serviceRulesFile', 'suppressionRulesFile', 'serviceTemplatesFile', 'suppressionTemplatesFile', 'sharedTemplatesFile', 'manifestFile']) {
+for (const key of ['serviceRulesFile', 'suppressionRulesFile', 'serviceTemplatesFile', 'suppressionTemplatesFile', 'sharedTemplatesFile', 'manifestFile', 'auditFile']) {
   if (!config.conversionConfig?.[key]) {
     errors.push(`conversionConfig.${key} is required`);
   }
@@ -295,6 +419,12 @@ async function resolveConversionStorageFolder(storageFolder) {
 }
 
 function validateApplierReloadTokenSources() {
+  const materializerReloadTargets = (cmdbmodelmaterializer.Materializer?.ReloadTargets ?? [])
+    .filter((item) => item?.Enabled !== false)
+    .map((item) => ({
+      name: `cmdbmodelmaterializer reload target ${item?.Name ?? 'unknown'}`,
+      source: reloadTokenSource(item, 'BearerToken', 'BearerTokenSecret')
+    }));
   const sources = [
     {
       name: 'monitoring-ui-api',
@@ -303,7 +433,12 @@ function validateApplierReloadTokenSources() {
     ...applierConfigs.map((item) => ({
       name: item.name,
       source: reloadTokenSource(item.config.ConfigurationReload, 'BearerToken', 'BearerTokenSecret')
-    }))
+    })),
+    {
+      name: 'cmdbmodelmaterializer',
+      source: reloadTokenSource(cmdbmodelmaterializer.ConfigurationReload, 'BearerToken', 'BearerTokenSecret')
+    },
+    ...materializerReloadTargets
   ];
 
   for (const item of sources) {
@@ -320,7 +455,7 @@ function validateApplierReloadTokenSources() {
 
   for (const item of configured.slice(1)) {
     if (item.source.mode !== reference.mode || item.source.value !== reference.value) {
-      errors.push(`Applier reload Bearer Token source must be identical in monitoring-ui-api, zabbixconfig2api, and cmdbaggregation2cmdbuild; ${item.name} does not match`);
+      errors.push(`Applier reload Bearer Token source must be identical in monitoring-ui-api, appliers, and cmdbmodelmaterializer; ${item.name} does not match`);
     }
   }
 }

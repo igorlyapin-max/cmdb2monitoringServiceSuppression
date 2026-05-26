@@ -29,6 +29,7 @@
               <button class="nav-item" data-view="microserviceSettings">Микросервисы</button>
               <button class="nav-item" data-view="webhooksSync">Webhooks</button>
               <button class="nav-item" data-view="storageAuditSettings">Хранилища и аудит</button>
+              <button class="nav-item" data-view="materializerOps">Материализация</button>
               <button class="nav-item" data-view="slaSettings">SLA</button>
             </div>
           </div>
@@ -176,7 +177,7 @@
             <div class="zabbix-publish-console" data-zabbix-publish-console data-default-layer="service">
               <div>
                 <strong>Публикация в Zabbix</strong>
-                <span>Выберите слой, режим и выполните проверку или публикацию. Проверка без записи выполняется кнопкой <strong>Проверить</strong>.</span>
+                <span>Выберите слой, режим и выполните проверку или публикацию. После запуска здесь показывается online-статус с operationId, временем, шагами и отменой.</span>
               </div>
               <label class="select-field">
                 <span>Слой</span>
@@ -212,6 +213,20 @@
                 <span>После графа подавления выполнить зависимости триггеров</span>
               </label>
               <p class="status-line" data-zabbix-publish-status></p>
+              <div class="zabbix-publish-operation hidden" data-zabbix-publish-operation aria-live="polite">
+                <div class="zabbix-publish-operation-heading">
+                  <strong data-zabbix-publish-operation-status>Операция не запущена</strong>
+                  <span data-zabbix-publish-operation-elapsed>время: -</span>
+                </div>
+                <span data-zabbix-publish-operation-message>Статус появится после запуска проверки или публикации.</span>
+                <span class="muted-text" data-zabbix-publish-operation-id>operationId: -</span>
+                <div class="zabbix-publish-operation-steps" data-zabbix-publish-operation-steps></div>
+                <div class="rule-summary-actions">
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-refresh>Обновить статус</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-cancel>Отменить операцию</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-clear>Скрыть завершенную</button>
+                </div>
+              </div>
               <div class="zabbix-publish-progress" data-zabbix-publish-progress></div>
             </div>
             <div id="modelZabbixApplySummary" class="sync-grid" aria-label="Итог публикации Zabbix"></div>
@@ -733,10 +748,6 @@
                     <span>Регулярное выражение отбора карточек-источников</span>
                     <input id="serviceTemplatePopulationConditionPattern" data-template-population-condition-pattern placeholder="(?i)^w${dimension.regexKey}[0-9]{2}-.*$" autocomplete="off">
                   </label>
-                  <label class="text-field" data-template-population-control="max">
-                    <span>Лимит правил</span>
-                    <input id="serviceTemplatePopulationMaxRules" data-template-population-max-rules type="number" min="1" step="1" placeholder="1000">
-                  </label>
                 </div>
               </div>
               <div class="selection-filter-editor template-editor-wide">
@@ -904,10 +915,6 @@
                   <label class="text-field" data-template-population-control="condition-pattern">
                     <span>Регулярное выражение отбора карточек-источников</span>
                     <input id="suppressionTemplatePopulationConditionPattern" data-template-population-condition-pattern placeholder="(?i)^w${dimension.regexKey}[0-9]{2}-.*$" autocomplete="off">
-                  </label>
-                  <label class="text-field" data-template-population-control="max">
-                    <span>Лимит правил</span>
-                    <input id="suppressionTemplatePopulationMaxRules" data-template-population-max-rules type="number" min="1" step="1" placeholder="1000">
                   </label>
                 </div>
               </div>
@@ -1105,7 +1112,7 @@
             <div class="zabbix-publish-console" data-zabbix-publish-console data-default-layer="service">
               <div>
                 <strong>Публикация в Zabbix</strong>
-                <span>Один сценарий: выберите слой, режим и выполните проверку или публикацию. Подробные кнопки ниже оставлены как технические детали.</span>
+                <span>Один сценарий: выберите слой, режим и выполните проверку или публикацию. После запуска здесь показывается online-статус с operationId, временем, шагами и отменой.</span>
               </div>
               <label class="select-field">
                 <span>Слой</span>
@@ -1141,6 +1148,20 @@
                 <span>После графа подавления выполнить зависимости триггеров</span>
               </label>
               <p class="status-line" data-zabbix-publish-status></p>
+              <div class="zabbix-publish-operation hidden" data-zabbix-publish-operation aria-live="polite">
+                <div class="zabbix-publish-operation-heading">
+                  <strong data-zabbix-publish-operation-status>Операция не запущена</strong>
+                  <span data-zabbix-publish-operation-elapsed>время: -</span>
+                </div>
+                <span data-zabbix-publish-operation-message>Статус появится после запуска проверки или публикации.</span>
+                <span class="muted-text" data-zabbix-publish-operation-id>operationId: -</span>
+                <div class="zabbix-publish-operation-steps" data-zabbix-publish-operation-steps></div>
+                <div class="rule-summary-actions">
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-refresh>Обновить статус</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-cancel>Отменить операцию</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-clear>Скрыть завершенную</button>
+                </div>
+              </div>
               <div class="zabbix-publish-progress" data-zabbix-publish-progress></div>
             </div>
             <div class="sync-grid" data-zabbix-apply-summary></div>
@@ -1224,7 +1245,7 @@
             <div class="zabbix-publish-console" data-zabbix-publish-console data-default-layer="suppression">
               <div>
                 <strong>Публикация в Zabbix</strong>
-                <span>Один сценарий: выберите слой, режим и выполните проверку или публикацию. Подробные кнопки ниже оставлены как технические детали.</span>
+                <span>Один сценарий: выберите слой, режим и выполните проверку или публикацию. После запуска здесь показывается online-статус с operationId, временем, шагами и отменой.</span>
               </div>
               <label class="select-field">
                 <span>Слой</span>
@@ -1260,6 +1281,20 @@
                 <span>После сервисного графа выполнить SLA</span>
               </label>
               <p class="status-line" data-zabbix-publish-status></p>
+              <div class="zabbix-publish-operation hidden" data-zabbix-publish-operation aria-live="polite">
+                <div class="zabbix-publish-operation-heading">
+                  <strong data-zabbix-publish-operation-status>Операция не запущена</strong>
+                  <span data-zabbix-publish-operation-elapsed>время: -</span>
+                </div>
+                <span data-zabbix-publish-operation-message>Статус появится после запуска проверки или публикации.</span>
+                <span class="muted-text" data-zabbix-publish-operation-id>operationId: -</span>
+                <div class="zabbix-publish-operation-steps" data-zabbix-publish-operation-steps></div>
+                <div class="rule-summary-actions">
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-refresh>Обновить статус</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-cancel>Отменить операцию</button>
+                  <button class="secondary-button compact-button" type="button" data-zabbix-publish-operation-clear>Скрыть завершенную</button>
+                </div>
+              </div>
               <div class="zabbix-publish-progress" data-zabbix-publish-progress></div>
             </div>
             <div class="sync-grid" data-zabbix-apply-summary></div>
@@ -1355,7 +1390,7 @@
             <details class="details-section compact-details">
               <summary>Показать пояснение подготовки правил</summary>
               <p>Pipeline материализует шаблоны и управляемые связи в обычные правила автонаполнения, сохраняет правила/шаблоны/связи в папку конфигурации и обновляет manifest. Эта операция не создает карточки в CMDBuild и не переобрабатывает существующие карточки-источники: после перечитывания конфигурации нужны новые webhooks или отдельная повторная обработка/backfill.</p>
-              <p>Здесь же выполняется сопровождение удаленных шаблонов: зачистка отвязанных правил и ручное применение <code>templateDeletionPlans</code> кнопкой <strong>Применить планы удаления в CMDBuild</strong>. Сохранение конфигурации в папку само по себе карточки не удаляет.</p>
+              <p>Здесь же выполняется сопровождение удаленных шаблонов: зачистка отвязанных правил и автоматическая очистка <code>templateDeletionPlans</code> для устаревших generated-managed объектов CMDBuild. Отвязанные, ручные и legacy-цели без надежного признака владения показываются отдельным блоком ручной проверки и удаляются только выбором администратора.</p>
             </details>
           </div>
           <section class="panel">
@@ -1387,7 +1422,7 @@
             </div>
             <p id="templateApplyStatus" class="status-line"></p>
             <details class="details-section compact-details">
-              <summary>Показать план подготовки правил</summary>
+              <summary>Показать план и диагностику подготовки правил</summary>
               <div class="details-toolbar">
                 <label class="select-field">
                   <span>Фильтр</span>
@@ -1397,7 +1432,7 @@
                     <option value="warnings">Предупреждения</option>
                   </select>
                 </label>
-                <button class="secondary-button compact-button" type="button" data-copy-container-text="#templateApplyPlanList">Копировать план</button>
+                <button class="secondary-button compact-button" type="button" data-copy-container-text="#templateApplyPlanList">Копировать отчет</button>
               </div>
               <div id="templateApplyPlanList" class="preview-list"></div>
             </details>
@@ -1826,7 +1861,7 @@
                 <li><code>name</code>, начальное <code>description</code> и атрибуты создаваемого целевого объекта могут использовать <code>${template.id}</code>, <code>${class.code}</code>, <code>${class.description}</code>, <code>${dimension.key}</code>, <code>${dimension.value}</code>, <code>${dimension.name}</code> и <code>${vars.name}</code>. <code>${source.*}</code> для создаваемой цели запрещен, потому что конкретная карточка еще не обрабатывается.</li>
                 <li>Для reference, lookup и domain-атрибутов используйте имена из списка атрибутов класса-источника: <code>${source.ownerEmail}</code> для reference <code>Owner -> Email</code>, <code>${source.status}</code> для lookup <code>Status</code>, <code>${source.domainNetworkSegmentCode}</code> для domain <code>NetworkSegment -> Code</code>, <code>${source.domainServiceOwnerEmail}</code> для domain <code>Service -> Owner -> Email</code>.</li>
                 <li>Для переменных шаблона и целевых полей доступны функции <code>extract</code>, <code>replace</code>, <code>lower</code>, <code>upper</code>, <code>trim</code>, <code>default</code>.</li>
-                <li>Повторное применение шаблонов делает сверку: создает недостающие сгенерированные правила, обновляет измененные, не трогает совпавшие по fingerprint и переносит устаревшие правила в план удаления.</li>
+                <li>Повторное применение шаблонов делает сверку: создает недостающие сгенерированные правила, обновляет измененные, не трогает совпавшие по fingerprint и переносит устаревшие правила в автоматический план очистки.</li>
               </ul>
             </section>
 
@@ -1876,7 +1911,7 @@
                 <li><strong>Шаблон имени ${dimension.name}</strong> задает отображаемое имя: <code>${dimension.value}</code>, <code>${dimension.name}</code>, <code>Город ${dimension.value}</code>. Это не поле карточки источника и не может использовать <code>${source.*}</code>.</li>
                 <li><strong>Поле отбора карточек-источников</strong> появляется для regex/range/static. Для regex-вырезки обычно выбирают то же поле, что и в <strong>Атрибут/путь источника</strong>; для range/static это обязательное поле, по которому сгенерированные правила будут фильтровать карточки.</li>
                 <li><strong>Regex отбора карточек-источников</strong> можно оставить пустым, тогда UI строит точное совпадение со значением измерения. Для шаблонов по hostname можно писать <code>(?i)^w${dimension.regexKey}[0-9]{2}-.*$</code>.</li>
-                <li><strong>Лимит правил</strong> меняйте только осознанно: это защита от случайного создания слишком большого числа сгенерированных правил.</li>
+                <li><strong>Лимит generated-правил</strong> находится в <strong>Администрирование -> Основные</strong> отдельно для сервиса и подавления. Меняйте его осознанно: это защита от случайного создания слишком большого числа сгенерированных правил.</li>
                 <li><code>population_source_key</code> является служебным ключом управляемой цели и в обычном сценарии пользователем не редактируется. Тип <strong>Неразрешенные reference/domain-ссылки</strong> диагностический: с ним шаблон сохранить нельзя, нужно выбрать leaf-поле или увеличить глубину рекурсии.</li>
               </ul>
             </section>
@@ -1951,8 +1986,17 @@
               </label>
               <details class="details-section compact-details">
                 <summary>Показать пояснение режима удаления шаблонов</summary>
-                <p class="settings-help">Этот режим подставляется в редакторы шаблонов сервиса и подавления при выборе/создании шаблона. Значение по умолчанию: <strong>Удалить созданные правила и объекты</strong>. Удаление шаблона в этом режиме сразу убирает generated-правила из конфигурации и создает <code>templateDeletionPlans</code>; фактическое удаление CMDBuild-карточек выполняется отдельной кнопкой <strong>Применить планы удаления в CMDBuild</strong> в меню «Подготовить и сохранить правила».</p>
+                <p class="settings-help">Этот режим подставляется в редакторы шаблонов сервиса и подавления при выборе/создании шаблона. Значение по умолчанию: <strong>Удалить созданные правила и объекты</strong>. Удаление шаблона в этом режиме сразу убирает generated-правила из конфигурации и создает <code>templateDeletionPlans</code>; pipeline подготовки правил автоматически очищает соответствующие generated-managed карточки CMDBuild. Отвязанные, ручные и legacy-цели уходят в ручную проверку очистки.</p>
               </details>
+              <label class="text-field settings-field">
+                <span class="normal-case-label">Сервис: лимит generated-правил шаблона</span>
+                <input id="serviceTemplateGeneratedRuleLimitInput" type="number" min="1" max="10000" step="1" placeholder="1000">
+              </label>
+              <label class="text-field settings-field">
+                <span class="normal-case-label">Подавление: лимит generated-правил шаблона</span>
+                <input id="suppressionTemplateGeneratedRuleLimitInput" type="number" min="1" max="10000" step="1" placeholder="1000">
+              </label>
+              <p class="settings-help">Лимит применяется при проверке шаблонов и защищает от случайного создания слишком большого числа generated-правил. Увеличивайте его только когда ожидаемая кардинальность проверена.</p>
               <label class="text-field settings-field">
                 <span class="normal-case-label">Атрибут готовности Zabbix-хоста</span>
                 <input id="zabbixHostIdAttributeInput" value="zabbix_main_hostid" readonly>
@@ -2217,6 +2261,34 @@
           </section>
         </section>
 
+        <section id="materializerOpsView" class="view hidden">
+          <div class="section-heading">
+            <h2>Материализация модели</h2>
+            <p>Операционный экран для missing dimensions: последние jobs materializer, ошибки replay/overlay, audit сохранения правил и pending graph overlay.</p>
+          </div>
+          <section class="panel materializer-ops-panel">
+            <div class="sync-actions">
+              <button id="refreshMaterializerOpsButton" class="primary-button" type="button">Обновить</button>
+            </div>
+            <div id="materializerOpsSummary" class="sync-grid"></div>
+            <p id="materializerOpsStatus" class="status-line"></p>
+            <div class="materializer-ops-grid">
+              <section>
+                <h3>Последние jobs</h3>
+                <div id="materializerOpsJobList" class="details-list"></div>
+              </section>
+              <section>
+                <h3>Missing dimensions</h3>
+                <div id="materializerOpsMissingList" class="details-list"></div>
+              </section>
+              <section>
+                <h3>Audit conversion-config-store</h3>
+                <div id="materializerOpsAuditList" class="details-list"></div>
+              </section>
+            </div>
+          </section>
+        </section>
+
         <section id="slaSettingsView" class="view hidden">
           <div class="section-heading">
             <h2>SLA</h2>
@@ -2461,6 +2533,6 @@
         </section>
       </main>
     </div>
-    <script src="/app.js" type="module"></script>
+    <script src="/app.js?v=20260525-graph-check" type="module"></script>
   </body>
 </html>

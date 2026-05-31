@@ -1,0 +1,173 @@
+name: cmdb2monitoring-service-suppression
+
+x-dotnet-env: &dotnet-env
+  Kafka__BootstrapServers: ${KAFKA_BOOTSTRAP_SERVERS:-host.docker.internal:9092}
+  Kafka__SecurityProtocol: ${KAFKA_SECURITY_PROTOCOL:-Plaintext}
+  Kafka__SaslMechanism: ${KAFKA_SASL_MECHANISM:-Plain}
+  Kafka__Username: ${KAFKA_USERNAME:-}
+  Kafka__Password: ${KAFKA_PASSWORD:-}
+  Redis__Enabled: ${REDIS_ENABLED:-false}
+  Redis__ConnectionString: ${REDIS_CONNECTION_STRING:-}
+  ConfigurationReload__Enabled: ${CONFIGURATION_RELOAD_ENABLED:-false}
+  ConfigurationReload__BearerToken: ${CONFIGURATION_RELOAD_BEARER_TOKEN:-}
+  ConfigurationReload__BearerTokenSecret: ${CONFIGURATION_RELOAD_BEARER_TOKEN_SECRET:-}
+  SecurityHeaders__HstsEnabled: ${HSTS_ENABLED:-false}
+
+x-extra-hosts: &extra-hosts
+  - host.docker.internal:host-gateway
+
+services:
+  cmdbwebhooks2kafka:
+    build:
+      context: .
+      dockerfile: src/cmdbwebhooks2kafka/Dockerfile
+    environment:
+      <<: *dotnet-env
+      ASPNETCORE_URLS: http://+:5180
+    ports:
+      - "5180:5180"
+    extra_hosts: *extra-hosts
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5180/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cmdbaggregation2cmdbuild:
+    build:
+      context: .
+      dockerfile: src/cmdbaggregation2cmdbuild/Dockerfile
+    environment:
+      <<: *dotnet-env
+      ASPNETCORE_URLS: http://+:5181
+      Cmdbuild__BaseUrl: ${CMDBUILD_BASE_URL:-}
+      Cmdbuild__Username: ${CMDBUILD_USERNAME:-}
+      Cmdbuild__Password: ${CMDBUILD_PASSWORD:-}
+      Cmdbuild__ApiToken: ${CMDBUILD_API_TOKEN:-}
+    ports:
+      - "5181:5181"
+    extra_hosts: *extra-hosts
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5181/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cmdbconfigbuilder:
+    build:
+      context: .
+      dockerfile: src/cmdbconfigbuilder/Dockerfile
+    environment:
+      <<: *dotnet-env
+      ASPNETCORE_URLS: http://+:5182
+      Cmdbuild__BaseUrl: ${CMDBUILD_BASE_URL:-}
+      Cmdbuild__Username: ${CMDBUILD_USERNAME:-}
+      Cmdbuild__Password: ${CMDBUILD_PASSWORD:-}
+      Cmdbuild__ApiToken: ${CMDBUILD_API_TOKEN:-}
+      Zabbix__ApiEndpoint: ${ZABBIX_API_ENDPOINT:-}
+      Zabbix__User: ${ZABBIX_USER:-}
+      Zabbix__Password: ${ZABBIX_PASSWORD:-}
+      Zabbix__ApiToken: ${ZABBIX_API_TOKEN:-}
+      ZabbixDirtyScopes__Endpoint: http://zabbixconfig2api:5183/runtime-storage/dirty-scopes
+    ports:
+      - "5182:5182"
+    extra_hosts: *extra-hosts
+    depends_on:
+      zabbixconfig2api:
+        condition: service_started
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5182/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  zabbixconfig2api:
+    build:
+      context: .
+      dockerfile: src/zabbixconfig2api/Dockerfile
+    environment:
+      <<: *dotnet-env
+      ASPNETCORE_URLS: http://+:5183
+      Zabbix__ApiEndpoint: ${ZABBIX_API_ENDPOINT:-}
+      Zabbix__User: ${ZABBIX_USER:-}
+      Zabbix__Password: ${ZABBIX_PASSWORD:-}
+      Zabbix__ApiToken: ${ZABBIX_API_TOKEN:-}
+      Cmdbuild__BaseUrl: ${CMDBUILD_BASE_URL:-}
+      Cmdbuild__Username: ${CMDBUILD_USERNAME:-}
+      Cmdbuild__Password: ${CMDBUILD_PASSWORD:-}
+      Cmdbuild__ApiToken: ${CMDBUILD_API_TOKEN:-}
+    ports:
+      - "5183:5183"
+    extra_hosts: *extra-hosts
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5183/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cmdbmodelmaterializer:
+    build:
+      context: .
+      dockerfile: src/cmdbmodelmaterializer/Dockerfile
+    environment:
+      <<: *dotnet-env
+      ASPNETCORE_URLS: http://+:5184
+      ConversionConfigStore__BaseUrl: http://monitoring-ui-api:8091
+      Materializer__ReloadAppliersOnSave: ${MATERIALIZER_RELOAD_APPLIERS_ON_SAVE:-false}
+      Materializer__ReloadTargets__0__Enabled: ${MATERIALIZER_RELOAD_TARGETS_ENABLED:-false}
+      Materializer__ReloadTargets__0__Url: http://zabbixconfig2api:5183/configuration/reload
+      Materializer__ReloadTargets__0__BearerToken: ${CONFIGURATION_RELOAD_BEARER_TOKEN:-}
+      Materializer__ReloadTargets__1__Enabled: ${MATERIALIZER_RELOAD_TARGETS_ENABLED:-false}
+      Materializer__ReloadTargets__1__Url: http://cmdbaggregation2cmdbuild:5181/configuration/reload
+      Materializer__ReloadTargets__1__BearerToken: ${CONFIGURATION_RELOAD_BEARER_TOKEN:-}
+    ports:
+      - "5184:5184"
+    extra_hosts: *extra-hosts
+    depends_on:
+      monitoring-ui-api:
+        condition: service_started
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5184/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  monitoring-ui-api:
+    build:
+      context: .
+      dockerfile: src/monitoring-ui-api/Dockerfile
+    environment:
+      NODE_ENV: Production
+      MONITORING_UI_HOST: 0.0.0.0
+      MONITORING_UI_PORT: 8091
+      MONITORING_UI_WEBHOOKS_BASE_URL: http://cmdbwebhooks2kafka:5180
+      MONITORING_UI_CMDBAGGREGATION_BASE_URL: http://cmdbaggregation2cmdbuild:5181
+      MONITORING_UI_CMDBCONFIGBUILDER_BASE_URL: http://cmdbconfigbuilder:5182
+      MONITORING_UI_ZABBIXCONFIG_BASE_URL: http://zabbixconfig2api:5183
+      MONITORING_UI_MATERIALIZER_BASE_URL: http://cmdbmodelmaterializer:5184
+      MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND: ${MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND:-folder}
+      MONITORING_UI_CONVERSION_CONFIG_POSTGRES_CONNECTION_STRING: ${MONITORING_UI_CONVERSION_CONFIG_POSTGRES_CONNECTION_STRING:-}
+    ports:
+      - "8091:8091"
+    extra_hosts: *extra-hosts
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    ports:
+      - "6379:6379"

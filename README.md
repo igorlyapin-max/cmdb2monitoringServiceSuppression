@@ -852,7 +852,9 @@ from `monitoring-ui-api` `healthChecks`. Reloadable appliers expose
 versions and calls the route with one shared Bearer Token. Configure that token
 either as the same literal value in `zabbixconfig2api`,
 `cmdbaggregation2cmdbuild`, and `monitoring-ui-api`, or as the same PAM secret
-reference through `BearerTokenSecret` / `reloadBearerTokenSecret`. After a
+reference through `BearerTokenSecret` / `reloadBearerTokenSecret`. Tracked
+defaults keep reload disabled and token values empty; enable reload explicitly
+only in the target runtime configuration. After a
 successful reload the UI refreshes the applier health data so the displayed
 running configuration version is updated. The `cmdbconfigbuilder` health card
 also shows the conversion rule version loaded by the microservice and compares
@@ -862,6 +864,17 @@ and opens the last five events of the selected topic by default. Kafka topics
 are identified by `KafkaTopics:ManagedIdentifier`,
 `KafkaTopics:ManagedPrefix`, and the explicit topic settings; foreign customer
 topics are not shown.
+
+Kafka consumers use bounded processing retries. After
+`Kafka:MaxProcessingAttempts` is exhausted, the original payload and error
+metadata are published to `KafkaTopics:DeadLetterTopic`
+(`service-suppression.dlq` by default) and the source offset is committed.
+Use the dead-letter topic together with the propagated `X-Correlation-Id` when
+investigating poison messages.
+
+Every .NET service exposes Prometheus-style metrics on `/metrics`, adds
+security headers, propagates `X-Correlation-Id` over HTTP/Kafka, and applies
+configured HTTP retry/circuit breaker behavior for CMDBuild/Zabbix calls.
 
 For interactive schema/catalog work, `monitoring-ui-api` forwards its configured
 CMDBuild BaseUrl/auth to `cmdbaggregation2cmdbuild`. The schema page also has

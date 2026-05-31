@@ -18,6 +18,19 @@ Assert(topics.EffectiveZabbixApplyPlans("suppression").Contains(".zabbix.suppres
     "suppression Zabbix apply topic must be layer-specific");
 Assert(topics.EffectiveZabbixApplyPlans("service") != topics.EffectiveZabbixApplyPlans("suppression"),
     "service and suppression Zabbix apply topics must be different");
+Assert(!string.IsNullOrWhiteSpace(topics.DeadLetterTopic), "dead-letter topic must be configured by default");
+
+var kafkaOptions = new KafkaOptions();
+Assert(kafkaOptions.DeadLetterEnabled, "Kafka dead-letter publishing must be enabled by default");
+Assert(kafkaOptions.HasValidProcessingPolicy(), "Kafka processing retry defaults must be valid");
+
+var resilience = new ResilienceOptions();
+Assert(resilience.Enabled, "HTTP resilience must be enabled by default");
+Assert(resilience.HasValidRetryPolicy(), "HTTP retry defaults must be valid");
+Assert(resilience.HasValidCircuitBreaker(), "HTTP circuit breaker defaults must be valid");
+
+var metricsOptions = new MetricsOptions();
+Assert(metricsOptions.HasValidRoute(), "metrics route default must be valid");
 
 var schema = factory.Build(new CmdbuildSchemaOptions
 {

@@ -4,6 +4,7 @@
     <Project Path="src/cmdbwebhooks2kafka/cmdbwebhooks2kafka.csproj" />
     <Project Path="src/cmdbaggregation2cmdbuild/cmdbaggregation2cmdbuild.csproj" />
     <Project Path="src/cmdbconfigbuilder/cmdbconfigbuilder.csproj" />
+    <Project Path="src/cmdbmodelmaterializer/cmdbmodelmaterializer.csproj" />
     <Project Path="src/zabbixconfig2api/zabbixconfig2api.csproj" />
   </Folder>
   <Folder Name="/tests/">

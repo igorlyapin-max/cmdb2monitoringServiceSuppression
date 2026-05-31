@@ -1,0 +1,17 @@
+.git
+.gitignore
+.cache
+bin
+obj
+**/bin
+**/obj
+node_modules
+**/node_modules
+state/**/*.db
+state/**/*.db-*
+state/**/*.jsonl
+state/zabbixconfig2api
+*.png
+*.docx
+*.vsdx
+*.sum

@@ -426,18 +426,20 @@ function validateApplierReloadTokenSources() {
       source: reloadTokenSource(item, 'BearerToken', 'BearerTokenSecret')
     }));
   const sources = [
-    {
+    ...(config.appliers?.reloadEnabled === false ? [] : [{
       name: 'monitoring-ui-api',
       source: reloadTokenSource(config.appliers, 'reloadBearerToken', 'reloadBearerTokenSecret')
-    },
-    ...applierConfigs.map((item) => ({
+    }]),
+    ...applierConfigs
+      .filter((item) => item.config.ConfigurationReload?.Enabled !== false)
+      .map((item) => ({
       name: item.name,
       source: reloadTokenSource(item.config.ConfigurationReload, 'BearerToken', 'BearerTokenSecret')
     })),
-    {
+    ...(cmdbmodelmaterializer.ConfigurationReload?.Enabled === false ? [] : [{
       name: 'cmdbmodelmaterializer',
       source: reloadTokenSource(cmdbmodelmaterializer.ConfigurationReload, 'BearerToken', 'BearerTokenSecret')
-    },
+    }]),
     ...materializerReloadTargets
   ];
 

@@ -45,6 +45,7 @@ that prefix; foreign customer topics are ignored.
 | `KafkaTopics:ZabbixServiceApplyPlans` | `service-suppression.zabbix.service.apply-plans` | `cmdbconfigbuilder` | `zabbixconfig2api` service contour |
 | `KafkaTopics:ZabbixSuppressionApplyPlans` | `service-suppression.zabbix.suppression.apply-plans` | `cmdbconfigbuilder` | `zabbixconfig2api` suppression contour |
 | `KafkaTopics:CmdbModelMissingDimensions` | `service-suppression.cmdb.model.missing-dimensions` | `cmdbconfigbuilder` | `cmdbmodelmaterializer` |
+| `KafkaTopics:DeadLetterTopic` | `service-suppression.dlq` | Kafka consumers after bounded retry failure | operators / replay tooling |
 | `KafkaTopics:DebugLogs` / `KafkaLogging:Topic` | `service-suppression.logs` | any service with `KafkaLogging:Enabled=true` | ELK/log collector |
 
 Minimal ACLs:
@@ -52,10 +53,10 @@ Minimal ACLs:
 | Service | Write | Read |
 | --- | --- | --- |
 | `cmdbwebhooks2kafka` | raw event topic, optional log topic | none |
-| `cmdbconfigbuilder` | aggregation command topic, Zabbix service/suppression apply topics, missing-dimensions topic, optional log topic | raw event topic |
-| `cmdbmodelmaterializer` | optional log topic | missing-dimensions topic |
-| `zabbixconfig2api` | optional log topic | Zabbix service/suppression apply topics |
-| `cmdbaggregation2cmdbuild` | optional log topic | aggregation command topic |
+| `cmdbconfigbuilder` | aggregation command topic, Zabbix service/suppression apply topics, missing-dimensions topic, DLQ topic, optional log topic | raw event topic |
+| `cmdbmodelmaterializer` | DLQ topic, optional log topic | missing-dimensions topic |
+| `zabbixconfig2api` | DLQ topic, optional log topic | Zabbix service/suppression apply topics |
+| `cmdbaggregation2cmdbuild` | DLQ topic, optional log topic | aggregation command topic |
 
 ## External Configuration
 
@@ -74,7 +75,10 @@ Common sections:
   "SaslMechanism": "Plain",
   "Username": "",
   "Password": "",
-  "AutoOffsetReset": "Earliest"
+  "AutoOffsetReset": "Earliest",
+  "DeadLetterEnabled": true,
+  "MaxProcessingAttempts": 3,
+  "ProcessingRetryDelayMs": 2000
 },
 "KafkaTopics": {
   "ManagedIdentifier": "cmdb2monitoring-service-suppression",
@@ -84,6 +88,7 @@ Common sections:
   "ZabbixServiceApplyPlans": "service-suppression.zabbix.service.apply-plans",
   "ZabbixSuppressionApplyPlans": "service-suppression.zabbix.suppression.apply-plans",
   "CmdbModelMissingDimensions": "service-suppression.cmdb.model.missing-dimensions",
+  "DeadLetterTopic": "service-suppression.dlq",
   "DebugLogs": "service-suppression.logs"
 },
 "Debug": {
@@ -109,6 +114,18 @@ Readiness__ZabbixHostIdAttribute=zabbix_main_hostid
 Debug__Enabled=false
 Debug__Level=Basic
 ```
+
+Common hardening sections are available in every .NET service:
+
+```json
+"RateLimiting": { "Enabled": true, "PermitLimit": 600, "WindowSeconds": 60 },
+"SecurityHeaders": { "Enabled": true, "HstsEnabled": false },
+"Metrics": { "Enabled": true, "Route": "/metrics" },
+"Correlation": { "Enabled": true, "HeaderName": "X-Correlation-Id" },
+"Resilience": { "Enabled": true, "MaxAttempts": 3, "CircuitBreakerFailures": 5 }
+```
+
+Enable `SecurityHeaders:HstsEnabled=true` only behind HTTPS termination.
 
 `zabbix_main_hostid` is the CMDBuild card attribute that marks a source object as
 ready for the Zabbix side of the pipeline. `CREATE` and `UPDATE` events without
@@ -243,6 +260,7 @@ BFF:
 ```json
 // zabbixconfig2api, cmdbaggregation2cmdbuild, and cmdbmodelmaterializer
 "ConfigurationReload": {
+  "Enabled": true,
   "Route": "/configuration/reload",
   "BearerToken": "",
   "BearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-reload-token"
@@ -250,26 +268,48 @@ BFF:
 
 // monitoring-ui-api
 "appliers": {
+  "reloadEnabled": true,
   "reloadBearerToken": "",
   "reloadBearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-reload-token"
 },
 
 // cmdbmodelmaterializer
 "Materializer": {
+  "ReloadAppliersOnSave": true,
   "ReloadTargets": [
     {
       "Name": "zabbixconfig2api",
       "Url": "http://zabbixconfig2api:5183/configuration/reload",
       "BearerToken": "",
-      "BearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-reload-token"
+      "BearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-reload-token",
+      "Enabled": true
     }
   ]
 }
 ```
 
-For local development a literal value is acceptable, but it still has to be the
-same in every reload config. In production prefer the shared PAM/AAPM reference
-and do not store the token in git.
+Tracked defaults keep reload disabled and token values empty. For local
+development a literal value is acceptable, but it still has to be the same in
+every reload config. In production prefer the shared PAM/AAPM reference and do
+not store the token in git.
+
+## Docker Compose Baseline
+
+Use `.env.example` as the template for local or stand deployment:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+The Compose file builds all service images, maps ports `5180`-`5184` and `8091`,
+and mounts `./state` into containers so conversion-config files and SQLite state
+survive restarts. Kafka, CMDBuild, and Zabbix are external by default and are
+addressed through `.env`.
+
+`zabbixconfig2api` must run as one active writer for a shared state directory.
+Do not scale it above one replica until durable/apply state is moved to a shared
+transactional backend or leader election is introduced.
 
 ### cmdbconfigbuilder
 

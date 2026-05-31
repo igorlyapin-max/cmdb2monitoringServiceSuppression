@@ -27,6 +27,7 @@ builder.Services.AddSingleton<CmdbRawEventFactory>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
 
 var app = builder.Build();
+app.UseServiceDefaults();
 app.MapServiceHealth();
 
 var webhookOptions = app.Services.GetRequiredService<IOptions<CmdbWebhookOptions>>().Value;

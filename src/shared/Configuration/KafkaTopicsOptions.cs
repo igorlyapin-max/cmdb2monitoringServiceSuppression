@@ -22,6 +22,8 @@ public sealed class KafkaTopicsOptions
 
     public string CmdbModelMissingDimensions { get; init; } = "service-suppression.cmdb.model.missing-dimensions";
 
+    public string DeadLetterTopic { get; init; } = "service-suppression.dlq";
+
     public string DebugLogs { get; init; } = "service-suppression.logs";
 
     public string DerivedObjectCommands { get; init; } = "";

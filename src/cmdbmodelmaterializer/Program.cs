@@ -19,6 +19,7 @@ builder.AddServiceDefaults();
 builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbModelMissingDimensions), "CMDB model missing-dimensions topic is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.DeadLetterTopic), "KafkaTopics:DeadLetterTopic is required.")
     .ValidateOnStart();
 builder.Services.AddOptions<ConversionConfigStoreClientOptions>()
     .Bind(builder.Configuration.GetSection(ConversionConfigStoreClientOptions.SectionName))
@@ -57,6 +58,7 @@ builder.Services.AddHttpClient<ConversionConfigStoreClient>((provider, client) =
     client.Timeout = TimeSpan.FromMilliseconds(options.TimeoutMs);
 });
 builder.Services.AddSingleton<MaterializationCoordinator>();
+builder.Services.AddSingleton<KafkaJsonProducer>();
 
 var initialMaterializerOptions = builder.Configuration
     .GetSection(MaterializerOptions.SectionName)
@@ -67,6 +69,7 @@ if (initialMaterializerOptions.Enabled)
 }
 
 var app = builder.Build();
+app.UseServiceDefaults();
 if (!initialMaterializerOptions.Enabled)
 {
     app.Logger.LogInformation("CMDB model materializer Kafka consumer is not started because Materializer:Enabled is false.");
@@ -257,8 +260,9 @@ public sealed class CmdbModelMissingDimensionWorker(
     IOptions<KafkaTopicsOptions> topicOptions,
     IOptions<KafkaOptions> kafkaOptions,
     MaterializationCoordinator coordinator,
+    IServiceProvider services,
     ILogger<CmdbModelMissingDimensionWorker> logger)
-    : KafkaJsonConsumerWorker<CmdbModelMissingDimensionRequest>(kafkaOptions, logger)
+    : KafkaJsonConsumerWorker<CmdbModelMissingDimensionRequest>(kafkaOptions, services, logger)
 {
     protected override string Topic => topicOptions.Value.CmdbModelMissingDimensions;
 

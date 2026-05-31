@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
+using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -15,12 +16,20 @@ public sealed class KafkaJsonProducer : IDisposable
     };
 
     private readonly KafkaOptions options;
+    private readonly IOptionsMonitor<CorrelationOptions> correlationOptions;
+    private readonly AppMetrics metrics;
     private readonly ILogger<KafkaJsonProducer> logger;
     private readonly IProducer<string, string>? producer;
 
-    public KafkaJsonProducer(IOptions<KafkaOptions> options, ILogger<KafkaJsonProducer> logger)
+    public KafkaJsonProducer(
+        IOptions<KafkaOptions> options,
+        IOptionsMonitor<CorrelationOptions> correlationOptions,
+        AppMetrics metrics,
+        ILogger<KafkaJsonProducer> logger)
     {
         this.options = options.Value;
+        this.correlationOptions = correlationOptions;
+        this.metrics = metrics;
         this.logger = logger;
         if (!this.options.Enabled)
         {
@@ -42,6 +51,10 @@ public sealed class KafkaJsonProducer : IDisposable
         if (!options.Enabled)
         {
             logger.LogInformation("Kafka is disabled; message for topic {Topic} was not published.", topic);
+            metrics.Increment(
+                "kafka_messages_published_total",
+                ("topic", topic),
+                ("status", "disabled"));
             return;
         }
 
@@ -59,8 +72,34 @@ public sealed class KafkaJsonProducer : IDisposable
         await producer.ProduceAsync(topic, new Message<string, string>
         {
             Key = key,
-            Value = payload
+            Value = payload,
+            Headers = BuildHeaders()
         }, cancellationToken);
+        metrics.Increment(
+            "kafka_messages_published_total",
+            ("topic", topic),
+            ("status", "ok"));
+    }
+
+    private Headers? BuildHeaders()
+    {
+        var correlation = correlationOptions.CurrentValue;
+        if (!correlation.Enabled)
+        {
+            return null;
+        }
+
+        var correlationId = CorrelationContext.CurrentId;
+        if (string.IsNullOrWhiteSpace(correlationId))
+        {
+            return null;
+        }
+
+        var headers = new Headers();
+        headers.Add(
+            CorrelationContext.HeaderName(correlation.HeaderName),
+            System.Text.Encoding.UTF8.GetBytes(correlationId));
+        return headers;
     }
 
     public void Dispose()

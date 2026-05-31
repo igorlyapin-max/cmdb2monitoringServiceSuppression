@@ -64,6 +64,7 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbWebhookEvents), "CMDB raw event topic is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveAggregationCommands()), "Aggregation command topic is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.CmdbModelMissingDimensions), "CMDB model missing-dimensions topic is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.DeadLetterTopic), "KafkaTopics:DeadLetterTopic is required.")
     .ValidateOnStart();
 
 builder.Services.AddSingleton<ConversionRulesValidator>();
@@ -85,6 +86,7 @@ builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddHttpClient<ZabbixDirtyScopeClient>();
 
 var app = builder.Build();
+app.UseServiceDefaults();
 app.MapServiceHealth();
 
 app.MapPost("/rules/validate", (
@@ -5365,10 +5367,11 @@ public sealed class RuleEngineWorker(
     AggregationRuleEngine engine,
     SemanticCommandDeduplicator deduplicator,
     KafkaJsonProducer producer,
+    IServiceProvider services,
     CmdbuildClient cmdbuild,
     ZabbixDirtyScopeClient dirtyScopeClient,
     ILogger<RuleEngineWorker> logger)
-    : KafkaJsonConsumerWorker<CmdbRawEvent>(kafkaOptions, logger)
+    : KafkaJsonConsumerWorker<CmdbRawEvent>(kafkaOptions, services, logger)
 {
     private static readonly JsonSerializerOptions TemplateJsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -7621,6 +7624,8 @@ public sealed class KafkaTopicExplorer(
             new ManagedKafkaTopic(options.ZabbixApplyPlans, "zabbix_apply_plans", "Zabbix apply plans"),
             new ManagedKafkaTopic(options.ZabbixServiceApplyPlans, "zabbix_service_apply_plans", "Zabbix service apply plans"),
             new ManagedKafkaTopic(options.ZabbixSuppressionApplyPlans, "zabbix_suppression_apply_plans", "Zabbix suppression apply plans"),
+            new ManagedKafkaTopic(options.CmdbModelMissingDimensions, "cmdb_model_missing_dimensions", "CMDB model materialization requests"),
+            new ManagedKafkaTopic(options.DeadLetterTopic, "dead_letter", "Failed Kafka messages after bounded retries"),
             new ManagedKafkaTopic(options.DebugLogs, "debug_logs", "Service debug and operational logs")
         };
         var result = new List<ManagedKafkaTopic>();

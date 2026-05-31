@@ -1,0 +1,75 @@
+stages:
+  - validate
+  - build
+  - test
+  - security
+  - image
+
+variables:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  NUGET_PACKAGES: "$CI_PROJECT_DIR/.nuget/packages"
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .nuget/packages/
+
+node_config:
+  stage: validate
+  image: node:22
+  script:
+    - node --check src/monitoring-ui-api/server.mjs
+    - node --check src/monitoring-ui-api/public/app.js
+    - node src/monitoring-ui-api/scripts/validate-config.mjs
+    - node tests/ui-regressions.mjs
+    - node tests/autotest-plan-contracts.mjs
+
+dotnet_build:
+  stage: build
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  script:
+    - ./scripts/dotnet build cmdb2monitoringServiceSuppression.slnx -v minimal /p:NuGetAudit=false -m:1
+
+offline_contracts:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  needs: ["dotnet_build"]
+  script:
+    - ./scripts/dotnet build tests/sharedcontracts/sharedcontracts.csproj -v minimal /p:NuGetAudit=false -m:1
+    - ./scripts/dotnet run --no-build --project tests/sharedcontracts/sharedcontracts.csproj
+
+test_configs:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  needs: ["dotnet_build"]
+  before_script:
+    - apt-get update
+    - apt-get install -y ca-certificates curl gnupg
+    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - apt-get install -y nodejs
+  script:
+    - ./scripts/test-configs.sh
+
+secret_scan:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --redact --no-git
+
+docker_build_smoke:
+  stage: image
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - docker build -f src/cmdbwebhooks2kafka/Dockerfile -t cmdbwebhooks2kafka:ci .
+    - docker build -f src/cmdbaggregation2cmdbuild/Dockerfile -t cmdbaggregation2cmdbuild:ci .
+    - docker build -f src/cmdbconfigbuilder/Dockerfile -t cmdbconfigbuilder:ci .
+    - docker build -f src/zabbixconfig2api/Dockerfile -t zabbixconfig2api:ci .
+    - docker build -f src/cmdbmodelmaterializer/Dockerfile -t cmdbmodelmaterializer:ci .
+    - docker build -f src/monitoring-ui-api/Dockerfile -t monitoring-ui-api:ci .

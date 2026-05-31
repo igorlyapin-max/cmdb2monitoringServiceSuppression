@@ -26,6 +26,12 @@ public sealed class KafkaOptions
 
     public int MessageMaxBytes { get; init; } = 1048576;
 
+    public bool DeadLetterEnabled { get; init; } = true;
+
+    public int MaxProcessingAttempts { get; init; } = 3;
+
+    public int ProcessingRetryDelayMs { get; init; } = 2000;
+
     public bool HasValidBootstrapServers()
     {
         return !Enabled || !string.IsNullOrWhiteSpace(BootstrapServers);
@@ -43,5 +49,10 @@ public sealed class KafkaOptions
     {
         return AutoOffsetReset.Equals("Earliest", StringComparison.OrdinalIgnoreCase)
             || AutoOffsetReset.Equals("Latest", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool HasValidProcessingPolicy()
+    {
+        return MaxProcessingAttempts > 0 && ProcessingRetryDelayMs >= 0;
     }
 }

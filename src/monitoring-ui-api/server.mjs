@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -12,6 +13,9 @@ const baseConfig = JSON.parse(await readFile(path.join(root, 'config', 'appsetti
 const config = applyRuntimeServerOverrides(await resolveSecretReferences(baseConfig, 'monitoring-ui-api'));
 let conversionConfigStoreWriteChain = Promise.resolve();
 let conversionConfigPostgresPoolPromise = null;
+const requestContext = new AsyncLocalStorage();
+const metricCounters = new Map();
+const rateLimitCounters = new Map();
 
 const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -21,8 +25,24 @@ const mimeTypes = new Map([
 ]);
 
 const server = http.createServer(async (request, response) => {
-  try {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  const context = createRequestContext(request, response);
+  await requestContext.run(context, async () => {
+    const started = process.hrtime.bigint();
+    try {
+      applySecurityHeaders(response);
+
+      if (url.pathname === metricsConfig().route) {
+        return sendText(response, 200, renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
+      }
+
+      if (isRateLimited(request, url)) {
+        incrementMetric('http_rate_limited_requests_total', {
+          method: request.method ?? 'GET',
+          path: url.pathname
+        });
+        return sendJson(response, 429, { error: 'rate limit exceeded' });
+      }
 
     if (url.pathname === '/health') {
       return sendJson(response, 200, { service: 'monitoring-ui-api', status: 'ok' });
@@ -718,14 +738,17 @@ const server = http.createServer(async (request, response) => {
       'cache-control': 'no-store'
     });
     response.end(body);
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return sendJson(response, 404, { error: 'not_found' });
-    }
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return sendJson(response, 404, { error: 'not_found' });
+      }
 
-    console.error(error);
-    return sendJson(response, 500, { error: 'internal_error' });
-  }
+      console.error(error);
+      return sendJson(response, 500, { error: 'internal_error' });
+    } finally {
+      recordHttpMetric(request, url, response, started);
+    }
+  });
 });
 
 const longRunningRequestTimeoutMs = Number.parseInt(
@@ -750,8 +773,9 @@ function applyRuntimeServerOverrides(configValue) {
   const port = portRaw == null || portRaw === ''
     ? serverConfig.port
     : Number.parseInt(portRaw, 10);
+  const rewrittenConfig = rewriteKnownInternalUrls(configValue);
   const conversionConfig = {
-    ...(configValue.conversionConfig ?? {})
+    ...(rewrittenConfig.conversionConfig ?? {})
   };
   setIfPresent(conversionConfig, 'storeBackend', process.env.MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND);
   const postgres = {
@@ -764,7 +788,7 @@ function applyRuntimeServerOverrides(configValue) {
     conversionConfig.postgres = postgres;
   }
   return {
-    ...configValue,
+    ...rewrittenConfig,
     server: {
       ...serverConfig,
       host,
@@ -772,6 +796,37 @@ function applyRuntimeServerOverrides(configValue) {
     },
     conversionConfig
   };
+}
+
+function rewriteKnownInternalUrls(value) {
+  const replacements = new Map([
+    ['http://127.0.0.1:5180', process.env.MONITORING_UI_WEBHOOKS_BASE_URL],
+    ['http://127.0.0.1:5181', process.env.MONITORING_UI_CMDBAGGREGATION_BASE_URL],
+    ['http://127.0.0.1:5182', process.env.MONITORING_UI_CMDBCONFIGBUILDER_BASE_URL],
+    ['http://127.0.0.1:5183', process.env.MONITORING_UI_ZABBIXCONFIG_BASE_URL],
+    ['http://127.0.0.1:5184', process.env.MONITORING_UI_MATERIALIZER_BASE_URL]
+  ]);
+
+  return rewriteValue(value);
+
+  function rewriteValue(item) {
+    if (Array.isArray(item)) {
+      return item.map(rewriteValue);
+    }
+    if (item && typeof item === 'object') {
+      return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, rewriteValue(child)]));
+    }
+    if (typeof item !== 'string') {
+      return item;
+    }
+
+    for (const [from, to] of replacements.entries()) {
+      if (to && item.startsWith(from)) {
+        return `${to.replace(/\/+$/, '')}${item.slice(from.length)}`;
+      }
+    }
+    return item;
+  }
 }
 
 function setIfPresent(target, key, value) {
@@ -829,23 +884,200 @@ function normalizeZabbixTopologyReadMode(value) {
       : 'auto';
 }
 
+function createRequestContext(request, response) {
+  const headerName = correlationConfig().headerName;
+  const provided = stringValue(request.headers[headerName.toLowerCase()]);
+  const correlationId = provided || randomUUID().replaceAll('-', '');
+  response.setHeader(headerName, correlationId);
+  return { correlationId };
+}
+
+function correlationConfig() {
+  const configured = objectValue(config.correlation);
+  return {
+    enabled: configured.enabled !== false,
+    headerName: stringValue(configured.headerName) || 'X-Correlation-Id'
+  };
+}
+
+function metricsConfig() {
+  const configured = objectValue(config.metrics);
+  return {
+    enabled: configured.enabled !== false,
+    route: stringValue(configured.route) || '/metrics'
+  };
+}
+
+function rateLimitingConfig() {
+  const configured = objectValue(config.rateLimiting);
+  return {
+    enabled: configured.enabled === true,
+    permitLimit: positiveInteger(configured.permitLimit, 600),
+    windowSeconds: positiveInteger(configured.windowSeconds, 60),
+    excludedPathPrefixes: Array.isArray(configured.excludedPathPrefixes)
+      ? configured.excludedPathPrefixes.map(stringValue).filter(Boolean)
+      : ['/health', '/metrics']
+  };
+}
+
+function securityHeadersConfig() {
+  const configured = objectValue(config.securityHeaders);
+  return {
+    enabled: configured.enabled !== false,
+    hstsEnabled: configured.hstsEnabled === true,
+    hstsMaxAgeSeconds: positiveInteger(configured.hstsMaxAgeSeconds, 31536000),
+    contentSecurityPolicy: stringValue(configured.contentSecurityPolicy),
+    frameOptions: stringValue(configured.frameOptions) || 'DENY',
+    referrerPolicy: stringValue(configured.referrerPolicy) || 'no-referrer',
+    permissionsPolicy: stringValue(configured.permissionsPolicy) || 'geolocation=(), microphone=(), camera=()'
+  };
+}
+
+function applySecurityHeaders(response) {
+  const headers = securityHeadersConfig();
+  if (!headers.enabled) {
+    return;
+  }
+
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('X-Frame-Options', headers.frameOptions);
+  response.setHeader('Referrer-Policy', headers.referrerPolicy);
+  response.setHeader('Permissions-Policy', headers.permissionsPolicy);
+  if (headers.contentSecurityPolicy) {
+    response.setHeader('Content-Security-Policy', headers.contentSecurityPolicy);
+  }
+  if (headers.hstsEnabled) {
+    response.setHeader('Strict-Transport-Security', `max-age=${headers.hstsMaxAgeSeconds}; includeSubDomains`);
+  }
+}
+
+function isRateLimited(request, url) {
+  const settings = rateLimitingConfig();
+  if (!settings.enabled || settings.excludedPathPrefixes.some((prefix) => url.pathname.startsWith(prefix))) {
+    return false;
+  }
+
+  const remote = stringValue(request.headers['x-forwarded-for']).split(',')[0].trim()
+    || request.socket.remoteAddress
+    || 'unknown';
+  const key = `${remote}:${request.method ?? 'GET'}:${url.pathname}`;
+  const now = Date.now();
+  const current = rateLimitCounters.get(key);
+  if (!current || now - current.windowStartedAt >= settings.windowSeconds * 1000) {
+    rateLimitCounters.set(key, { windowStartedAt: now, count: 1 });
+    return false;
+  }
+
+  current.count += 1;
+  return current.count > settings.permitLimit;
+}
+
+function recordHttpMetric(request, url, response, started) {
+  if (!metricsConfig().enabled) {
+    return;
+  }
+
+  const elapsedSeconds = Number(process.hrtime.bigint() - started) / 1_000_000_000;
+  const labels = {
+    method: request.method ?? 'GET',
+    path: url.pathname,
+    status: String(response.statusCode || 0)
+  };
+  incrementMetric('http_requests_total', labels);
+  incrementMetric('http_request_duration_seconds_count', labels);
+  incrementMetric('http_request_duration_seconds_sum', labels, elapsedSeconds);
+}
+
+function incrementMetric(name, labels = {}, value = 1) {
+  if (!metricsConfig().enabled) {
+    return;
+  }
+
+  const key = metricKey(name, labels);
+  metricCounters.set(key, (metricCounters.get(key) ?? 0) + value);
+}
+
+function metricKey(name, labels) {
+  const renderedLabels = Object.entries(labels)
+    .filter(([key]) => key)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${sanitizeMetricName(key)}="${escapeMetricLabel(stringValue(value))}"`)
+    .join(',');
+  return `${sanitizeMetricName(name)}${renderedLabels ? `{${renderedLabels}}` : ''}`;
+}
+
+function renderMetrics() {
+  if (!metricsConfig().enabled) {
+    return '';
+  }
+
+  return [...metricCounters.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key} ${Number(value).toString()}`)
+    .join('\n') + '\n';
+}
+
+function sanitizeMetricName(value) {
+  return stringValue(value).replaceAll(/[^a-zA-Z0-9_:]/g, '_');
+}
+
+function escapeMetricLabel(value) {
+  return stringValue(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll('\n', '\\n')
+    .replaceAll('"', '\\"');
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function currentCorrelationId() {
+  return correlationConfig().enabled
+    ? stringValue(requestContext.getStore()?.correlationId)
+    : '';
+}
+
 function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
 }
 
+function sendText(response, statusCode, body, contentType) {
+  response.writeHead(statusCode, { 'content-type': contentType });
+  response.end(body);
+}
+
 async function proxyJson(response, targetUrl, init = undefined) {
-  const backendResponse = await fetch(targetUrl, init ?? {
+  const backendInit = withCorrelationHeader(init ?? {
     headers: {
       accept: 'application/json'
     }
   });
+  const backendResponse = await fetch(targetUrl, backendInit);
   const text = await backendResponse.text();
 
   response.writeHead(backendResponse.status, {
     'content-type': backendResponse.headers.get('content-type') ?? 'application/json; charset=utf-8'
   });
   response.end(text);
+}
+
+function withCorrelationHeader(init = {}) {
+  const correlationId = currentCorrelationId();
+  if (!correlationId) {
+    return init;
+  }
+
+  const headerName = correlationConfig().headerName;
+  return {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      [headerName]: correlationId
+    }
+  };
 }
 
 function runDetachedJsonRequest(targetUrl, init, operationId) {
@@ -863,11 +1095,12 @@ function runDetachedJsonRequest(targetUrl, init, operationId) {
 
 function httpRequestBuffer(targetUrl, init = {}, timeoutMs = effectiveLongRunningRequestTimeoutMs) {
   return new Promise((resolve, reject) => {
+    const effectiveInit = withCorrelationHeader(init);
     const parsedUrl = new URL(targetUrl);
     const transport = parsedUrl.protocol === 'https:' ? https : http;
     const request = transport.request(parsedUrl, {
-      method: init.method ?? 'GET',
-      headers: init.headers ?? {},
+      method: effectiveInit.method ?? 'GET',
+      headers: effectiveInit.headers ?? {},
       timeout: timeoutMs
     }, (backendResponse) => {
       const chunks = [];
@@ -887,8 +1120,8 @@ function httpRequestBuffer(targetUrl, init = {}, timeoutMs = effectiveLongRunnin
       request.destroy(new Error(`request timed out after ${timeoutMs} ms`));
     });
     request.on('error', reject);
-    if (init.body != null) {
-      request.write(init.body);
+    if (effectiveInit.body != null) {
+      request.write(effectiveInit.body);
     }
     request.end();
   });
@@ -3386,6 +3619,16 @@ async function fetchServiceJson(targetUrl, timeoutMs) {
 }
 
 async function reloadApplierConfiguration(applierId) {
+  if (config.appliers?.reloadEnabled === false) {
+    return {
+      statusCode: 503,
+      body: {
+        success: false,
+        error: 'applier_reload_disabled'
+      }
+    };
+  }
+
   const check = (Array.isArray(config.healthChecks) ? config.healthChecks : [])
     .find((item) => item.id === applierId && item.reloadUrl);
   if (!check) {

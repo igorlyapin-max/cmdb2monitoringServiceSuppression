@@ -91,10 +91,12 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveZabbixApplyPlans("service")), "Zabbix service apply topic is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveZabbixApplyPlans("suppression")), "Zabbix suppression apply topic is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.DeadLetterTopic), "KafkaTopics:DeadLetterTopic is required.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient<CmdbuildClient>();
+builder.Services.AddSingleton<KafkaJsonProducer>();
 builder.Services.AddTransient<ZabbixAggregationApplier>();
 builder.Services.AddTransient<ZabbixTriggerDependencyApplier>();
 builder.Services.AddTransient<ZabbixSlaPublisher>();
@@ -123,6 +125,7 @@ builder.Services.AddHostedService<ZabbixServiceAggregationCommandWorker>();
 builder.Services.AddHostedService<ZabbixSuppressionAggregationCommandWorker>();
 
 var app = builder.Build();
+app.UseServiceDefaults();
 app.MapServiceHealth();
 app.MapConfigurationReload(builder.Configuration);
 
@@ -1192,8 +1195,9 @@ public sealed class ZabbixServiceAggregationCommandWorker(
     ZabbixApplyStateStore state,
     ZabbixDirtyScopeStore dirtyScopes,
     ZabbixAggregationApplier applier,
+    IServiceProvider services,
     ILogger<ZabbixServiceAggregationCommandWorker> logger)
-    : ZabbixLayerAggregationCommandWorker("service", kafkaOptions, topicOptions, applyOptions, debugOptions, state, dirtyScopes, applier, logger);
+    : ZabbixLayerAggregationCommandWorker("service", kafkaOptions, topicOptions, applyOptions, debugOptions, state, dirtyScopes, applier, services, logger);
 
 public sealed class ZabbixSuppressionAggregationCommandWorker(
     IOptions<KafkaOptions> kafkaOptions,
@@ -1203,8 +1207,9 @@ public sealed class ZabbixSuppressionAggregationCommandWorker(
     ZabbixApplyStateStore state,
     ZabbixDirtyScopeStore dirtyScopes,
     ZabbixAggregationApplier applier,
+    IServiceProvider services,
     ILogger<ZabbixSuppressionAggregationCommandWorker> logger)
-    : ZabbixLayerAggregationCommandWorker("suppression", kafkaOptions, topicOptions, applyOptions, debugOptions, state, dirtyScopes, applier, logger);
+    : ZabbixLayerAggregationCommandWorker("suppression", kafkaOptions, topicOptions, applyOptions, debugOptions, state, dirtyScopes, applier, services, logger);
 
 public abstract class ZabbixLayerAggregationCommandWorker : KafkaJsonConsumerWorker<AggregationCommand>
 {
@@ -1227,8 +1232,9 @@ public abstract class ZabbixLayerAggregationCommandWorker : KafkaJsonConsumerWor
         ZabbixApplyStateStore state,
         ZabbixDirtyScopeStore dirtyScopes,
         ZabbixAggregationApplier applier,
+        IServiceProvider services,
         ILogger logger)
-        : base(kafkaOptions, logger)
+        : base(kafkaOptions, services, logger)
     {
         this.layer = layer;
         this.kafkaOptions = kafkaOptions;

@@ -74,6 +74,24 @@ must be byte-for-byte identical. A mismatch returns `401` from the service that
 receives reload; the caller must keep the old running configuration version
 displayed or record a materializer warning.
 
+Tracked defaults keep reload disabled and token fields empty. Set
+`ConfigurationReload:Enabled=true`, `appliers.reloadEnabled=true`, and
+`Materializer:ReloadAppliersOnSave=true` only in a runtime configuration that
+also supplies the shared token or shared secret reference.
+
+## Hardening and incident signals
+
+All .NET services expose `/metrics`, emit `X-Correlation-Id` in responses,
+propagate it to downstream HTTP/Kafka calls, and apply configured HTTP
+retry/circuit breaker behavior. Use `http_client_retries_total`,
+`http_client_circuit_breaks_total`, and `kafka_messages_dead_lettered_total`
+for first-pass incident triage.
+
+Kafka consumers no longer retry a bad message forever. After
+`Kafka:MaxProcessingAttempts`, they publish a dead-letter envelope to
+`KafkaTopics:DeadLetterTopic` and commit the original offset. Treat the DLQ as
+an operator review/replay queue, not as a normal processing topic.
+
 ## CMDBuild Credentials In The UI
 
 Schema, class, domain, and managed instance views are served through

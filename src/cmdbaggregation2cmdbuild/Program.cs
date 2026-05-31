@@ -24,8 +24,10 @@ builder.Services.AddOptions<ApplyOptions>()
 builder.Services.AddOptions<KafkaTopicsOptions>()
     .Bind(builder.Configuration.GetSection(KafkaTopicsOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.EffectiveAggregationCommands()), "Aggregation command topic is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.DeadLetterTopic), "KafkaTopics:DeadLetterTopic is required.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<CmdbuildClient>();
+builder.Services.AddSingleton<KafkaJsonProducer>();
 var initialApplyOptions = builder.Configuration
     .GetSection(ApplyOptions.SectionName)
     .Get<ApplyOptions>() ?? new ApplyOptions();
@@ -35,6 +37,7 @@ if (initialApplyOptions.EffectiveAutoApplyEnabled())
 }
 
 var app = builder.Build();
+app.UseServiceDefaults();
 if (!initialApplyOptions.EffectiveAutoApplyEnabled())
 {
     app.Logger.LogInformation(
@@ -362,8 +365,9 @@ public sealed class CmdbuildAggregationCommandWorker(
     IOptionsMonitor<ApplyOptions> applyOptions,
     IOptions<DebugOptions> debugOptions,
     CmdbuildClient client,
+    IServiceProvider services,
     ILogger<CmdbuildAggregationCommandWorker> logger)
-    : KafkaJsonConsumerWorker<AggregationCommand>(kafkaOptions, logger)
+    : KafkaJsonConsumerWorker<AggregationCommand>(kafkaOptions, services, logger)
 {
     protected override string Topic => topicOptions.Value.EffectiveAggregationCommands();
 

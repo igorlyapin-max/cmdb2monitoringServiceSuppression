@@ -10,7 +10,9 @@ public sealed class RateLimitingOptions
 
     public int WindowSeconds { get; init; } = 60;
 
-    public string[] ExcludedPathPrefixes { get; init; } = ["/health", "/metrics"];
+    public string[] ExcludedPathPrefixes { get; init; } = ["/health", "/ready", "/metrics"];
+
+    public bool TrustForwardedFor { get; init; } = true;
 
     public bool HasValidWindow()
     {
@@ -20,6 +22,36 @@ public sealed class RateLimitingOptions
     public bool HasValidPermitLimit()
     {
         return PermitLimit > 0;
+    }
+}
+
+public sealed class HostValidationOptions
+{
+    public const string SectionName = "HostValidation";
+
+    public bool Enabled { get; set; } = true;
+
+    public string[] AllowedHosts { get; set; } = ["localhost", "127.0.0.1", "::1"];
+
+    public bool HasValidAllowedHosts()
+    {
+        return !Enabled
+            || AllowedHosts.Any(host => !string.IsNullOrWhiteSpace(host));
+    }
+}
+
+public sealed class TrustedProxyOptions
+{
+    public const string SectionName = "TrustedProxies";
+
+    public bool Enabled { get; init; } = true;
+
+    public string[] Networks { get; init; } = ["127.0.0.1", "::1"];
+
+    public bool HasValidNetworks()
+    {
+        return !Enabled
+            || Networks.Any(network => !string.IsNullOrWhiteSpace(network));
     }
 }
 
@@ -55,9 +87,23 @@ public sealed class MetricsOptions
 
     public string Route { get; init; } = "/metrics";
 
+    public bool RequireBearerToken { get; init; }
+
+    public string BearerToken { get; init; } = "";
+
+    public string BearerTokenSecret { get; init; } = "";
+
+    public string[] AllowedNetworks { get; init; } = [];
+
     public bool HasValidRoute()
     {
         return Route.StartsWith("/", StringComparison.Ordinal);
+    }
+
+    public bool HasValidAccessPolicy()
+    {
+        return !RequireBearerToken
+            || !string.IsNullOrWhiteSpace(BearerToken);
     }
 }
 

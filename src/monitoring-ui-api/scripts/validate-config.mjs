@@ -11,6 +11,7 @@ const applierConfigs = await Promise.all([
 ]);
 const cmdbconfigbuilderConfig = await readJsonConfig('cmdbconfigbuilder', path.resolve(root, '..', 'cmdbconfigbuilder', 'appsettings.json'));
 const cmdbmodelmaterializerConfig = await readJsonConfig('cmdbmodelmaterializer', path.resolve(root, '..', 'cmdbmodelmaterializer', 'appsettings.json'));
+const cmdbwebhooksConfig = await readJsonConfig('cmdbwebhooks2kafka', path.resolve(root, '..', 'cmdbwebhooks2kafka', 'appsettings.json'));
 
 const roles = new Set(config.auth?.roles ?? []);
 
@@ -35,6 +36,17 @@ if (!['local', 'saml', 'oauth', 'ldap'].includes(config.auth?.mode)) {
 if (!config.readiness?.zabbixHostIdAttribute) {
   errors.push('readiness.zabbixHostIdAttribute is required');
 }
+if (!stringValue(config.readiness?.route).startsWith('/')) {
+  errors.push('readiness.route must start with /');
+}
+
+validateHardeningConfig('monitoring-ui-api', {
+  allowedHosts: config.allowedHosts,
+  hostValidation: config.hostValidation,
+  trustedProxies: config.trustedProxies,
+  rateLimiting: config.rateLimiting,
+  metrics: config.metrics
+});
 
 if (!config.managedMicroservices?.zabbixconfig2api?.configFile) {
   errors.push('managedMicroservices.zabbixconfig2api.configFile is required');
@@ -43,6 +55,21 @@ if (!config.managedMicroservices?.zabbixconfig2api?.configFile) {
 const zabbixconfig2api = applierConfigs.find((item) => item.name === 'zabbixconfig2api')?.config ?? {};
 const cmdbconfigbuilder = cmdbconfigbuilderConfig.config ?? {};
 const cmdbmodelmaterializer = cmdbmodelmaterializerConfig.config ?? {};
+for (const item of [
+  ...applierConfigs,
+  cmdbconfigbuilderConfig,
+  cmdbmodelmaterializerConfig,
+  cmdbwebhooksConfig
+]) {
+  validateHardeningConfig(item.name, {
+    allowedHosts: item.config.AllowedHosts,
+    hostValidation: item.config.HostValidation,
+    trustedProxies: item.config.TrustedProxies,
+    rateLimiting: item.config.RateLimiting,
+    metrics: item.config.Metrics,
+    readiness: item.config.Readiness
+  });
+}
 if (!zabbixconfig2api.Redis) {
   errors.push('zabbixconfig2api Redis section is required');
 }
@@ -485,6 +512,58 @@ function reloadTokenSource(section, tokenKey, secretKey) {
         mode: 'literal',
         value: token
       };
+}
+
+function validateHardeningConfig(name, sections) {
+  const rootAllowedHosts = Array.isArray(sections.allowedHosts)
+    ? sections.allowedHosts.map(stringValue).filter(Boolean)
+    : stringValue(sections.allowedHosts).split(/[;,]/).map(stringValue).filter(Boolean);
+  const hostValidation = sections.hostValidation ?? {};
+  const sectionAllowedHosts = Array.isArray(hostValidation.AllowedHosts ?? hostValidation.allowedHosts)
+    ? (hostValidation.AllowedHosts ?? hostValidation.allowedHosts).map(stringValue).filter(Boolean)
+    : [];
+  const allowedHosts = rootAllowedHosts.length > 0 ? rootAllowedHosts : sectionAllowedHosts;
+  if (hostValidation.Enabled !== false && hostValidation.enabled !== false && allowedHosts.length === 0) {
+    errors.push(`${name} AllowedHosts must contain at least one host when host validation is enabled`);
+  }
+
+  const trustedProxies = sections.trustedProxies ?? {};
+  const proxyNetworks = Array.isArray(trustedProxies.Networks ?? trustedProxies.networks)
+    ? (trustedProxies.Networks ?? trustedProxies.networks).map(stringValue).filter(Boolean)
+    : [];
+  if (trustedProxies.Enabled !== false && trustedProxies.enabled !== false && proxyNetworks.length === 0) {
+    errors.push(`${name} TrustedProxies networks must contain at least one entry when enabled`);
+  }
+
+  const rateLimiting = sections.rateLimiting ?? {};
+  const permitLimit = rateLimiting.PermitLimit ?? rateLimiting.permitLimit;
+  const windowSeconds = rateLimiting.WindowSeconds ?? rateLimiting.windowSeconds;
+  if (rateLimiting.Enabled !== false && rateLimiting.enabled !== false) {
+    if (!Number.isInteger(permitLimit) || permitLimit <= 0) {
+      errors.push(`${name} RateLimiting permit limit must be a positive integer`);
+    }
+    if (!Number.isInteger(windowSeconds) || windowSeconds <= 0) {
+      errors.push(`${name} RateLimiting window must be a positive integer`);
+    }
+  }
+
+  const metrics = sections.metrics ?? {};
+  const metricsRoute = stringValue(metrics.Route ?? metrics.route);
+  if (!metricsRoute.startsWith('/')) {
+    errors.push(`${name} Metrics route must start with /`);
+  }
+  if ((metrics.RequireBearerToken === true || metrics.requireBearerToken === true)
+    && !stringValue(metrics.BearerToken ?? metrics.bearerToken)
+    && !stringValue(metrics.BearerTokenSecret ?? metrics.bearerTokenSecret)) {
+    errors.push(`${name} Metrics bearer token or secret is required when RequireBearerToken=true`);
+  }
+
+  if (sections.readiness) {
+    const readinessRoute = stringValue(sections.readiness.Route ?? sections.readiness.route);
+    if (!readinessRoute.startsWith('/')) {
+      errors.push(`${name} Readiness route must start with /`);
+    }
+  }
 }
 
 function normalizeSecretReference(value) {

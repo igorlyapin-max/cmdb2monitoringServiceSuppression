@@ -13,9 +13,13 @@ const files = {
   redisRuntimeE2e: read('tests/redis-runtime-e2e.mjs'),
   redisKafkaE2e: read('tests/redis-kafka-dedup-e2e.mjs'),
   validateConfig: read('src/monitoring-ui-api/scripts/validate-config.mjs'),
+  gitlabCi: read('.gitlab-ci.yml'),
+  deployment: read('DEPLOYMENT.md'),
+  compose: read('docker-compose.yml'),
   index: read('src/monitoring-ui-api/public/index.html'),
   app: read('src/monitoring-ui-api/public/app.js'),
   server: read('src/monitoring-ui-api/server.mjs'),
+  serviceDefaults: read('src/shared/Configuration/ServiceDefaults.cs'),
   cmdbConfigBuilder: read('src/cmdbconfigbuilder/Program.cs'),
   zabbixProgram: read('src/zabbixconfig2api/Program.cs'),
   zabbixTriggerApplier: read('src/zabbixconfig2api/ZabbixTriggerDependencyApplier.cs')
@@ -48,11 +52,29 @@ const contracts = [
     name: 'configuration and schema contracts',
     assert() {
       includes(files.validateConfig, 'appsettings', 'config validator must parse appsettings');
+      includes(files.validateConfig, 'validateHardeningConfig', 'config validator must cover hardening settings');
       includes(files.sharedContracts, 'C2M_ServiceSlaCalendar', 'schema contracts must cover SLA calendar classes');
       includes(files.sharedContracts, 'C2M_ServiceSlaPolicy', 'schema contracts must cover SLA policy classes');
       includes(files.sharedContracts, 'C2M_SuppressionManagedObject', 'schema contracts must cover suppression superclass');
       includes(files.sharedContracts, 'service_depends_on', 'schema contracts must cover service object relations');
       includes(files.sharedContracts, 'must be able to suppress', 'schema contracts must cover universal suppression domains');
+    }
+  },
+  {
+    name: 'GitLab CI and HTTP hardening',
+    assert() {
+      includes(files.gitlabCi, 'tracked_state_guard', 'GitLab CI must block tracked runtime state');
+      includes(files.gitlabCi, 'node_lint', 'GitLab CI must run minimal Node static checks');
+      includes(files.gitlabCi, 'dotnet_analyzer', 'GitLab CI must run .NET analyzer/warnings gate');
+      includes(files.serviceDefaults, 'UseHostValidation', '.NET services must validate Host headers');
+      includes(files.serviceDefaults, 'TrustedProxies', '.NET services must configure trusted proxy networks');
+      includes(files.serviceDefaults, 'MapServiceReadiness', '.NET services must expose readiness');
+      includes(files.server, 'hostAllowed', 'UI BFF must validate Host headers');
+      includes(files.server, 'trustedProxiesConfig', 'UI BFF must configure trusted proxy networks');
+      includes(files.server, 'metricsAccessAllowed', 'UI BFF must protect metrics access');
+      includes(files.server, 'readinessPayload', 'UI BFF must expose readiness');
+      includes(files.compose, 'cmdb2m-state:/app/state', 'Compose must use a named state volume by default');
+      includes(files.deployment, 'TLS is administrator-owned', 'Deployment docs must keep TLS scheme selection administrator-owned');
     }
   },
   {

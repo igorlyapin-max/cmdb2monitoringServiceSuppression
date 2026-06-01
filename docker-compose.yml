@@ -11,6 +11,25 @@ x-dotnet-env: &dotnet-env
   ConfigurationReload__Enabled: ${CONFIGURATION_RELOAD_ENABLED:-false}
   ConfigurationReload__BearerToken: ${CONFIGURATION_RELOAD_BEARER_TOKEN:-}
   ConfigurationReload__BearerTokenSecret: ${CONFIGURATION_RELOAD_BEARER_TOKEN_SECRET:-}
+  HostValidation__Enabled: ${HOST_VALIDATION_ENABLED:-true}
+  HostValidation__AllowedHosts__0: ${SERVICE_ALLOWED_HOST_0:-localhost}
+  HostValidation__AllowedHosts__1: ${SERVICE_ALLOWED_HOST_1:-127.0.0.1}
+  HostValidation__AllowedHosts__2: ${SERVICE_ALLOWED_HOST_2:-::1}
+  HostValidation__AllowedHosts__3: ${SERVICE_ALLOWED_HOST_3:-host.docker.internal}
+  HostValidation__AllowedHosts__4: ${SERVICE_ALLOWED_HOST_4:-cmdbwebhooks2kafka}
+  HostValidation__AllowedHosts__5: ${SERVICE_ALLOWED_HOST_5:-cmdbaggregation2cmdbuild}
+  HostValidation__AllowedHosts__6: ${SERVICE_ALLOWED_HOST_6:-cmdbconfigbuilder}
+  HostValidation__AllowedHosts__7: ${SERVICE_ALLOWED_HOST_7:-zabbixconfig2api}
+  HostValidation__AllowedHosts__8: ${SERVICE_ALLOWED_HOST_8:-cmdbmodelmaterializer}
+  HostValidation__AllowedHosts__9: ${SERVICE_ALLOWED_HOST_9:-monitoring-ui-api}
+  TrustedProxies__Enabled: ${TRUSTED_PROXIES_ENABLED:-true}
+  TrustedProxies__Networks__0: ${TRUSTED_PROXY_0:-127.0.0.1}
+  TrustedProxies__Networks__1: ${TRUSTED_PROXY_1:-::1}
+  RateLimiting__TrustForwardedFor: ${TRUST_FORWARDED_FOR:-true}
+  Metrics__RequireBearerToken: ${METRICS_REQUIRE_BEARER_TOKEN:-false}
+  Metrics__BearerToken: ${METRICS_BEARER_TOKEN:-}
+  Metrics__BearerTokenSecret: ${METRICS_BEARER_TOKEN_SECRET:-}
+  Metrics__AllowedNetworks__0: ${METRICS_ALLOWED_NETWORK_0:-}
   SecurityHeaders__HstsEnabled: ${HSTS_ENABLED:-false}
 
 x-extra-hosts: &extra-hosts
@@ -48,7 +67,7 @@ services:
       - "5181:5181"
     extra_hosts: *extra-hosts
     volumes:
-      - ./state:/app/state
+      - cmdb2m-state:/app/state
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5181/health"]
       interval: 30s
@@ -78,7 +97,7 @@ services:
       zabbixconfig2api:
         condition: service_started
     volumes:
-      - ./state:/app/state
+      - cmdb2m-state:/app/state
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5182/health"]
       interval: 30s
@@ -104,7 +123,7 @@ services:
       - "5183:5183"
     extra_hosts: *extra-hosts
     volumes:
-      - ./state:/app/state
+      - cmdb2m-state:/app/state
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5183/health"]
       interval: 30s
@@ -133,7 +152,7 @@ services:
       monitoring-ui-api:
         condition: service_started
     volumes:
-      - ./state:/app/state
+      - cmdb2m-state:/app/state
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5184/health"]
       interval: 30s
@@ -155,11 +174,31 @@ services:
       MONITORING_UI_MATERIALIZER_BASE_URL: http://cmdbmodelmaterializer:5184
       MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND: ${MONITORING_UI_CONVERSION_CONFIG_STORE_BACKEND:-folder}
       MONITORING_UI_CONVERSION_CONFIG_POSTGRES_CONNECTION_STRING: ${MONITORING_UI_CONVERSION_CONFIG_POSTGRES_CONNECTION_STRING:-}
+      MONITORING_UI_HOST_VALIDATION_ENABLED: ${HOST_VALIDATION_ENABLED:-true}
+      MONITORING_UI_ALLOWED_HOST_0: ${SERVICE_ALLOWED_HOST_0:-localhost}
+      MONITORING_UI_ALLOWED_HOST_1: ${SERVICE_ALLOWED_HOST_1:-127.0.0.1}
+      MONITORING_UI_ALLOWED_HOST_2: ${SERVICE_ALLOWED_HOST_2:-::1}
+      MONITORING_UI_ALLOWED_HOST_3: ${SERVICE_ALLOWED_HOST_3:-host.docker.internal}
+      MONITORING_UI_ALLOWED_HOST_4: ${SERVICE_ALLOWED_HOST_4:-cmdbwebhooks2kafka}
+      MONITORING_UI_ALLOWED_HOST_5: ${SERVICE_ALLOWED_HOST_5:-cmdbaggregation2cmdbuild}
+      MONITORING_UI_ALLOWED_HOST_6: ${SERVICE_ALLOWED_HOST_6:-cmdbconfigbuilder}
+      MONITORING_UI_ALLOWED_HOST_7: ${SERVICE_ALLOWED_HOST_7:-zabbixconfig2api}
+      MONITORING_UI_ALLOWED_HOST_8: ${SERVICE_ALLOWED_HOST_8:-cmdbmodelmaterializer}
+      MONITORING_UI_ALLOWED_HOST_9: ${SERVICE_ALLOWED_HOST_9:-monitoring-ui-api}
+      MONITORING_UI_TRUSTED_PROXIES_ENABLED: ${TRUSTED_PROXIES_ENABLED:-true}
+      MONITORING_UI_TRUSTED_PROXY_0: ${TRUSTED_PROXY_0:-127.0.0.1}
+      MONITORING_UI_TRUSTED_PROXY_1: ${TRUSTED_PROXY_1:-::1}
+      MONITORING_UI_RATE_LIMIT_TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-true}
+      MONITORING_UI_METRICS_REQUIRE_BEARER_TOKEN: ${METRICS_REQUIRE_BEARER_TOKEN:-false}
+      MONITORING_UI_METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
+      MONITORING_UI_METRICS_BEARER_TOKEN_SECRET: ${METRICS_BEARER_TOKEN_SECRET:-}
+      MONITORING_UI_METRICS_ALLOWED_NETWORK_0: ${METRICS_ALLOWED_NETWORK_0:-}
+      MONITORING_UI_HSTS_ENABLED: ${HSTS_ENABLED:-false}
     ports:
       - "8091:8091"
     extra_hosts: *extra-hosts
     volumes:
-      - ./state:/app/state
+      - cmdb2m-state:/app/state
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/health"]
       interval: 30s
@@ -171,3 +210,6 @@ services:
     profiles: ["redis"]
     ports:
       - "6379:6379"
+
+volumes:
+  cmdb2m-state:

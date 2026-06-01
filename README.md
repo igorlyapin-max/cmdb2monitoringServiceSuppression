@@ -148,6 +148,12 @@ credentials are selected through config `AuthMode`: `Login`, `Token`, `None`,
 or `IndeedPam`. `IndeedPam` resolves `secret://...` / `aapm://...` references
 from the shared `Secrets` section before options are validated.
 
+CMDBuild and Zabbix transport security is selected by administrator-provided
+URLs: `Cmdbuild:BaseUrl` and `Zabbix:ApiEndpoint` can be `http://` or
+`https://`. The application does not force HTTPS and does not bypass certificate
+validation; private CA, mTLS, reverse proxy, and HSTS policies belong in the
+runtime trust store or ingress/proxy configuration.
+
 Debug logging is controlled by `Debug:Enabled` and `Debug:Level` (`Basic` or
 `Verbose`). Debug events are written through normal `ILogger` at `Information`,
 so they appear in Docker stdout/stderr, direct ELK logging when `ElkLogging` is

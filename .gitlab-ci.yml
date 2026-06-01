@@ -25,11 +25,30 @@ node_config:
     - node tests/ui-regressions.mjs
     - node tests/autotest-plan-contracts.mjs
 
+node_lint:
+  stage: validate
+  image: node:22
+  script:
+    - npm --prefix src/monitoring-ui-api install --no-package-lock
+    - npm --prefix src/monitoring-ui-api run lint
+
+tracked_state_guard:
+  stage: validate
+  image: node:22
+  script:
+    - node tests/tracked-state-guard.mjs
+
 dotnet_build:
   stage: build
   image: mcr.microsoft.com/dotnet/sdk:10.0
   script:
     - ./scripts/dotnet build cmdb2monitoringServiceSuppression.slnx -v minimal /p:NuGetAudit=false -m:1
+
+dotnet_analyzer:
+  stage: build
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  script:
+    - ./scripts/dotnet build cmdb2monitoringServiceSuppression.slnx -v minimal /p:NuGetAudit=false -warnaserror -m:1
 
 offline_contracts:
   stage: test

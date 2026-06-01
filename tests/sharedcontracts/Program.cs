@@ -31,6 +31,22 @@ Assert(resilience.HasValidCircuitBreaker(), "HTTP circuit breaker defaults must 
 
 var metricsOptions = new MetricsOptions();
 Assert(metricsOptions.HasValidRoute(), "metrics route default must be valid");
+Assert(metricsOptions.HasValidAccessPolicy(), "metrics access policy default must be valid");
+
+var readinessOptions = new ReadinessOptions();
+Assert(readinessOptions.HasValidRoute(), "readiness route default must be valid");
+
+var rateLimitingOptions = new RateLimitingOptions();
+Assert(rateLimitingOptions.ExcludedPathPrefixes.Contains("/ready", StringComparer.OrdinalIgnoreCase),
+    "readiness route must be excluded from default rate limiting");
+
+var hostValidationOptions = new HostValidationOptions();
+Assert(hostValidationOptions.Enabled, "host validation must be enabled by default");
+Assert(hostValidationOptions.HasValidAllowedHosts(), "host validation defaults must include allowed hosts");
+
+var trustedProxyOptions = new TrustedProxyOptions();
+Assert(trustedProxyOptions.Enabled, "trusted proxy validation must be enabled by default");
+Assert(trustedProxyOptions.HasValidNetworks(), "trusted proxy defaults must include at least one network");
 
 var schema = factory.Build(new CmdbuildSchemaOptions
 {

@@ -13,6 +13,9 @@ hardcoded runtime settings.
   startup.
 - Start with Kafka disabled only for local HTTP dry-run checks. Enable Kafka for
   the real event pipeline.
+- TLS is administrator-owned. `Cmdbuild:BaseUrl` and `Zabbix:ApiEndpoint`
+  keep the configured `http://` or `https://` scheme; the services do not force
+  HTTPS and do not provide certificate-validation bypass switches.
 
 ## Prerequisites
 
@@ -96,6 +99,7 @@ Common sections:
   "Level": "Basic"
 },
 "Readiness": {
+  "Route": "/ready",
   "ZabbixHostIdAttribute": "zabbix_main_hostid"
 }
 ```
@@ -110,6 +114,7 @@ KafkaTopics__AggregationCommands=service-suppression.monitoring.aggregation.comm
 KafkaTopics__ZabbixServiceApplyPlans=service-suppression.zabbix.service.apply-plans
 KafkaTopics__ZabbixSuppressionApplyPlans=service-suppression.zabbix.suppression.apply-plans
 KafkaTopics__CmdbModelMissingDimensions=service-suppression.cmdb.model.missing-dimensions
+Readiness__Route=/ready
 Readiness__ZabbixHostIdAttribute=zabbix_main_hostid
 Debug__Enabled=false
 Debug__Level=Basic
@@ -118,14 +123,44 @@ Debug__Level=Basic
 Common hardening sections are available in every .NET service:
 
 ```json
-"RateLimiting": { "Enabled": true, "PermitLimit": 600, "WindowSeconds": 60 },
+"AllowedHosts": ["monitoring.example.local"],
+"HostValidation": { "Enabled": true },
+"TrustedProxies": { "Enabled": true, "Networks": ["10.20.0.0/24"] },
+"RateLimiting": {
+  "Enabled": true,
+  "PermitLimit": 600,
+  "WindowSeconds": 60,
+  "TrustForwardedFor": true
+},
 "SecurityHeaders": { "Enabled": true, "HstsEnabled": false },
-"Metrics": { "Enabled": true, "Route": "/metrics" },
+"Metrics": {
+  "Enabled": true,
+  "Route": "/metrics",
+  "RequireBearerToken": true,
+  "BearerTokenSecret": "secret://AAA.LOCAL/PROD/cmdb2monitoring-metrics-token",
+  "AllowedNetworks": ["10.30.0.0/24"]
+},
+"Readiness": { "Route": "/ready" },
 "Correlation": { "Enabled": true, "HeaderName": "X-Correlation-Id" },
 "Resilience": { "Enabled": true, "MaxAttempts": 3, "CircuitBreakerFailures": 5 }
 ```
 
+Host validation must include every DNS name that clients and other services use
+in the HTTP `Host` header. Trusted proxy networks are the only sources whose
+`X-Forwarded-For` value is accepted for rate limiting. Protect `/metrics` with
+a Bearer token, an allowlisted scrape network, or both. `/ready` is intended for
+orchestrator readiness checks; `/health` remains the lightweight liveness route.
+
 Enable `SecurityHeaders:HstsEnabled=true` only behind HTTPS termination.
+
+For CMDBuild and Zabbix outbound connections, choose the protocol by the URL:
+`Cmdbuild:BaseUrl=http://...` or `https://...`, and
+`Zabbix:ApiEndpoint=http://...` or `https://...`. If HTTPS uses a private CA,
+install that CA into the host/container trust store or terminate TLS at an
+administrator-managed reverse proxy. If mTLS is required, terminate or inject it
+at the platform layer. Do not add `IgnoreCertificateErrors`,
+`DangerousAcceptAnyServerCertificateValidator`, or equivalent application-level
+bypass behavior.
 
 `zabbix_main_hostid` is the CMDBuild card attribute that marks a source object as
 ready for the Zabbix side of the pipeline. `CREATE` and `UPDATE` events without
@@ -303,9 +338,15 @@ docker compose up --build
 ```
 
 The Compose file builds all service images, maps ports `5180`-`5184` and `8091`,
-and mounts `./state` into containers so conversion-config files and SQLite state
-survive restarts. Kafka, CMDBuild, and Zabbix are external by default and are
+and mounts the named volume `cmdb2m-state` into containers so conversion-config
+files and SQLite state survive restarts without writing runtime state into the
+repository checkout. Kafka, CMDBuild, and Zabbix are external by default and are
 addressed through `.env`.
+
+For developer-only inspection you can temporarily replace the named volume with
+`./state:/app/state`, but do not commit runtime state files. The GitLab
+`tracked_state_guard` job fails if database files, Zabbix apply state, or
+`src/zabbixconfig2api/state/` files are tracked.
 
 `zabbixconfig2api` must run as one active writer for a shared state directory.
 Do not scale it above one replica until durable/apply state is moved to a shared

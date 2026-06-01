@@ -13,6 +13,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Cmdb2MonitoringServiceSuppression.Shared.Secrets;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -49,6 +50,24 @@ public static class ServiceDefaults
             .Validate(options => options.HasValidLevel(), "Debug level must be Basic or Verbose.")
             .ValidateOnStart();
 
+        builder.Services.AddOptions<HostValidationOptions>()
+            .Configure(options =>
+            {
+                builder.Configuration.GetSection(HostValidationOptions.SectionName).Bind(options);
+                var rootAllowedHosts = ParseHostList(builder.Configuration.GetSection("AllowedHosts").Get<string[]>(), builder.Configuration["AllowedHosts"]);
+                if (rootAllowedHosts.Length > 0)
+                {
+                    options.AllowedHosts = rootAllowedHosts;
+                }
+            })
+            .Validate(options => options.HasValidAllowedHosts(), "AllowedHosts must contain at least one host when host validation is enabled.")
+            .ValidateOnStart();
+
+        builder.Services.AddOptions<TrustedProxyOptions>()
+            .Bind(builder.Configuration.GetSection(TrustedProxyOptions.SectionName))
+            .Validate(options => options.HasValidNetworks(), "TrustedProxies:Networks must contain at least one entry when trusted proxy validation is enabled.")
+            .ValidateOnStart();
+
         builder.Services.AddOptions<RateLimitingOptions>()
             .Bind(builder.Configuration.GetSection(RateLimitingOptions.SectionName))
             .Validate(options => options.HasValidWindow(), "RateLimiting:WindowSeconds must be greater than zero.")
@@ -63,6 +82,12 @@ public static class ServiceDefaults
         builder.Services.AddOptions<MetricsOptions>()
             .Bind(builder.Configuration.GetSection(MetricsOptions.SectionName))
             .Validate(options => options.HasValidRoute(), "Metrics:Route must start with '/'.")
+            .Validate(options => options.HasValidAccessPolicy(), "Metrics:BearerToken or Metrics:BearerTokenSecret is required when Metrics:RequireBearerToken is enabled.")
+            .ValidateOnStart();
+
+        builder.Services.AddOptions<ReadinessOptions>()
+            .Bind(builder.Configuration.GetSection(ReadinessOptions.SectionName))
+            .Validate(options => options.HasValidRoute(), "Readiness:Route must start with '/'.")
             .ValidateOnStart();
 
         builder.Services.AddOptions<CorrelationOptions>()
@@ -106,11 +131,13 @@ public static class ServiceDefaults
 
     public static void UseServiceDefaults(this WebApplication app)
     {
+        app.UseHostValidation();
         app.UseCorrelation();
         app.UseSecurityHeaders();
         app.UseFixedWindowRateLimiting();
         app.UseRequestMetrics();
         app.MapServiceMetrics();
+        app.MapServiceReadiness();
     }
 
     public static void MapServiceHealth(this WebApplication app)
@@ -130,17 +157,38 @@ public static class ServiceDefaults
 
     private static void MapServiceMetrics(this WebApplication app)
     {
-        var metricsOptions = app.Services.GetRequiredService<IOptionsMonitor<MetricsOptions>>().CurrentValue;
         var metrics = app.Services.GetRequiredService<AppMetrics>();
-        app.MapGet(metricsOptions.Route, () =>
+        var metricsOptions = app.Services.GetRequiredService<IOptionsMonitor<MetricsOptions>>();
+        app.MapGet(metricsOptions.CurrentValue.Route, (HttpRequest request) =>
         {
             if (!metrics.Enabled)
             {
                 return Results.NotFound();
             }
 
+            if (!HasEndpointAccess(request, metricsOptions.CurrentValue))
+            {
+                return Results.Unauthorized();
+            }
+
             return Results.Text(metrics.RenderPrometheus(), "text/plain; version=0.0.4; charset=utf-8");
         });
+    }
+
+    private static void MapServiceReadiness(this WebApplication app)
+    {
+        var serviceOptions = app.Services.GetRequiredService<IOptions<ServiceOptions>>().Value;
+        var readinessOptions = app.Services.GetRequiredService<IOptionsMonitor<ReadinessOptions>>();
+
+        app.MapGet(readinessOptions.CurrentValue.Route, () => Results.Ok(new
+        {
+            service = serviceOptions.Name,
+            status = "ready",
+            version = ServiceVersion(),
+            configurationVersion = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().Version,
+            configurationStartedAt = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().StartedAtUtc,
+            configurationReloadedAt = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().LastReloadedAtUtc
+        }));
     }
 
     public static void MapConfigurationReload(this WebApplication app, ConfigurationManager configuration)
@@ -207,9 +255,12 @@ public static class ServiceDefaults
         Reset<ServiceOptions>(services);
         Reset<ConfigurationReloadOptions>(services);
         Reset<DebugOptions>(services);
+        Reset<HostValidationOptions>(services);
+        Reset<TrustedProxyOptions>(services);
         Reset<RateLimitingOptions>(services);
         Reset<SecurityHeadersOptions>(services);
         Reset<MetricsOptions>(services);
+        Reset<ReadinessOptions>(services);
         Reset<CorrelationOptions>(services);
         Reset<ResilienceOptions>(services);
         Reset<KafkaOptions>(services);
@@ -293,6 +344,25 @@ public static class ServiceDefaults
         });
     }
 
+    private static void UseHostValidation(this WebApplication app)
+    {
+        app.Use(async (context, next) =>
+        {
+            var options = context.RequestServices.GetRequiredService<IOptionsMonitor<HostValidationOptions>>().CurrentValue;
+            if (!options.Enabled || HostAllowed(context.Request.Host.Host, options.AllowedHosts))
+            {
+                await next(context);
+                return;
+            }
+
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.WriteAsync(
+                "{\"error\":\"host_not_allowed\"}",
+                context.RequestAborted);
+        });
+    }
+
     private static void UseSecurityHeaders(this WebApplication app)
     {
         app.Use(async (context, next) =>
@@ -332,7 +402,8 @@ public static class ServiceDefaults
             }
 
             var now = DateTimeOffset.UtcNow;
-            var key = RateLimitKey(context);
+            var trustedProxies = context.RequestServices.GetRequiredService<IOptionsMonitor<TrustedProxyOptions>>().CurrentValue;
+            var key = RateLimitKey(context, options, trustedProxies);
             var counter = counters.AddOrUpdate(
                 key,
                 _ => new RateLimitCounter(now, 1),
@@ -408,14 +479,136 @@ public static class ServiceDefaults
             && path.StartsWithSegments(prefix.Trim(), StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string RateLimitKey(HttpContext context)
+    private static string RateLimitKey(
+        HttpContext context,
+        RateLimitingOptions options,
+        TrustedProxyOptions trustedProxies)
     {
-        var forwardedFor = context.Request.Headers["X-Forwarded-For"].ToString();
-        var remote = string.IsNullOrWhiteSpace(forwardedFor)
-            ? context.Connection.RemoteIpAddress?.ToString() ?? "unknown"
-            : forwardedFor.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? "unknown";
+        var remoteAddress = context.Connection.RemoteIpAddress;
+        var remote = remoteAddress?.ToString() ?? "unknown";
+        if (options.TrustForwardedFor
+            && remoteAddress is not null
+            && IsTrustedProxy(remoteAddress, trustedProxies))
+        {
+            var forwardedFor = context.Request.Headers["X-Forwarded-For"].ToString();
+            remote = forwardedFor.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault()
+                ?? remote;
+        }
 
         return $"{remote}:{context.Request.Method}:{context.Request.Path.Value ?? "/"}";
+    }
+
+    private static bool HasEndpointAccess(HttpRequest request, MetricsOptions options)
+    {
+        var tokenConfigured = !string.IsNullOrWhiteSpace(options.BearerToken);
+        var networksConfigured = options.AllowedNetworks.Any(item => !string.IsNullOrWhiteSpace(item));
+        if (!options.RequireBearerToken && !tokenConfigured && !networksConfigured)
+        {
+            return true;
+        }
+
+        if (tokenConfigured && HasValidBearerToken(request, options.BearerToken))
+        {
+            return true;
+        }
+
+        var remoteIp = request.HttpContext.Connection.RemoteIpAddress;
+        return remoteIp is not null && IsInConfiguredNetworks(remoteIp, options.AllowedNetworks);
+    }
+
+    private static bool HostAllowed(string? host, IReadOnlyCollection<string> allowedHosts)
+    {
+        if (allowedHosts.Any(item => string.Equals(item.Trim(), "*", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var normalized = NormalizeHost(host);
+        return !string.IsNullOrWhiteSpace(normalized)
+            && allowedHosts.Any(item => string.Equals(NormalizeHost(item), normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string NormalizeHost(string? host)
+    {
+        return (host ?? string.Empty).Trim().Trim('[', ']').TrimEnd('.');
+    }
+
+    private static bool IsTrustedProxy(IPAddress remoteAddress, TrustedProxyOptions options)
+    {
+        return !options.Enabled || IsInConfiguredNetworks(remoteAddress, options.Networks);
+    }
+
+    private static bool IsInConfiguredNetworks(IPAddress address, IReadOnlyCollection<string> networks)
+    {
+        return networks.Any(network => NetworkContains(network, address));
+    }
+
+    private static bool NetworkContains(string configuredNetwork, IPAddress address)
+    {
+        var network = configuredNetwork.Trim();
+        if (string.IsNullOrWhiteSpace(network))
+        {
+            return false;
+        }
+
+        if (string.Equals(network, "*", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var slash = network.IndexOf('/', StringComparison.Ordinal);
+        if (slash < 0)
+        {
+            return IPAddress.TryParse(network, out var exact)
+                && exact.MapToIPv6().Equals(address.MapToIPv6());
+        }
+
+        if (!IPAddress.TryParse(network[..slash], out var baseAddress)
+            || !int.TryParse(network[(slash + 1)..], out var prefixLength))
+        {
+            return false;
+        }
+
+        var candidateBytes = address.MapToIPv6().GetAddressBytes();
+        var networkBytes = baseAddress.MapToIPv6().GetAddressBytes();
+        var maxBits = networkBytes.Length * 8;
+        var normalizedPrefixLength = baseAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? prefixLength + 96
+            : prefixLength;
+        if (normalizedPrefixLength < 0 || normalizedPrefixLength > maxBits)
+        {
+            return false;
+        }
+
+        var fullBytes = normalizedPrefixLength / 8;
+        var remainingBits = normalizedPrefixLength % 8;
+        for (var index = 0; index < fullBytes; index++)
+        {
+            if (candidateBytes[index] != networkBytes[index])
+            {
+                return false;
+            }
+        }
+
+        if (remainingBits == 0)
+        {
+            return true;
+        }
+
+        var mask = (byte)(0xFF << (8 - remainingBits));
+        return (candidateBytes[fullBytes] & mask) == (networkBytes[fullBytes] & mask);
+    }
+
+    private static string[] ParseHostList(string[]? arrayValue, string? textValue)
+    {
+        if (arrayValue is { Length: > 0 })
+        {
+            return arrayValue;
+        }
+
+        return (textValue ?? string.Empty)
+            .Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private sealed record RateLimitCounter(DateTimeOffset WindowStartedAt, int Count)

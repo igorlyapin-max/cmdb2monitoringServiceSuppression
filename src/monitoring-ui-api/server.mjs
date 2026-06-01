@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +10,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(root, '..', '..');
 const publicRoot = path.join(root, 'public');
 const baseConfig = JSON.parse(await readFile(path.join(root, 'config', 'appsettings.json'), 'utf8'));
-const config = applyRuntimeServerOverrides(await resolveSecretReferences(baseConfig, 'monitoring-ui-api'));
+const config = await resolveSecretReferences(applyRuntimeServerOverrides(baseConfig), 'monitoring-ui-api');
 let conversionConfigStoreWriteChain = Promise.resolve();
 let conversionConfigPostgresPoolPromise = null;
 const requestContext = new AsyncLocalStorage();
@@ -32,7 +32,19 @@ const server = http.createServer(async (request, response) => {
     try {
       applySecurityHeaders(response);
 
+      if (!hostAllowed(request.headers.host)) {
+        return sendJson(response, 400, { error: 'host_not_allowed' });
+      }
+
+      if (url.pathname === readinessConfig().route) {
+        return sendJson(response, 200, readinessPayload());
+      }
+
       if (url.pathname === metricsConfig().route) {
+        if (!metricsAccessAllowed(request)) {
+          return sendJson(response, 401, { error: 'metrics_unauthorized' });
+        }
+
         return sendText(response, 200, renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
       }
 
@@ -787,6 +799,34 @@ function applyRuntimeServerOverrides(configValue) {
   if (Object.keys(postgres).length > 0) {
     conversionConfig.postgres = postgres;
   }
+  const hostValidation = {
+    ...(configValue.hostValidation ?? {})
+  };
+  setBooleanIfPresent(hostValidation, 'enabled', process.env.MONITORING_UI_HOST_VALIDATION_ENABLED);
+  const allowedHosts = envIndexedValues('MONITORING_UI_ALLOWED_HOST_');
+  const trustedProxies = {
+    ...(configValue.trustedProxies ?? {})
+  };
+  setBooleanIfPresent(trustedProxies, 'enabled', process.env.MONITORING_UI_TRUSTED_PROXIES_ENABLED);
+  const trustedProxyNetworks = envIndexedValues('MONITORING_UI_TRUSTED_PROXY_');
+  const rateLimiting = {
+    ...(configValue.rateLimiting ?? {})
+  };
+  setBooleanIfPresent(rateLimiting, 'trustForwardedFor', process.env.MONITORING_UI_RATE_LIMIT_TRUST_FORWARDED_FOR);
+  const metrics = {
+    ...(configValue.metrics ?? {})
+  };
+  setIfPresent(metrics, 'bearerToken', process.env.MONITORING_UI_METRICS_BEARER_TOKEN);
+  setIfPresent(metrics, 'bearerTokenSecret', process.env.MONITORING_UI_METRICS_BEARER_TOKEN_SECRET);
+  setBooleanIfPresent(metrics, 'requireBearerToken', process.env.MONITORING_UI_METRICS_REQUIRE_BEARER_TOKEN);
+  const metricsAllowedNetworks = envIndexedValues('MONITORING_UI_METRICS_ALLOWED_NETWORK_');
+  if (metricsAllowedNetworks.length > 0) {
+    metrics.allowedNetworks = metricsAllowedNetworks;
+  }
+  const securityHeaders = {
+    ...(configValue.securityHeaders ?? {})
+  };
+  setBooleanIfPresent(securityHeaders, 'hstsEnabled', process.env.MONITORING_UI_HSTS_ENABLED);
   return {
     ...rewrittenConfig,
     server: {
@@ -794,6 +834,15 @@ function applyRuntimeServerOverrides(configValue) {
       host,
       port: Number.isInteger(port) && port > 0 ? port : serverConfig.port
     },
+    allowedHosts: allowedHosts.length > 0 ? allowedHosts : configValue.allowedHosts,
+    hostValidation,
+    trustedProxies: {
+      ...trustedProxies,
+      networks: trustedProxyNetworks.length > 0 ? trustedProxyNetworks : trustedProxies.networks
+    },
+    rateLimiting,
+    metrics,
+    securityHeaders,
     conversionConfig
   };
 }
@@ -833,6 +882,24 @@ function setIfPresent(target, key, value) {
   if (value !== undefined && value !== null && value !== '') {
     target[key] = value;
   }
+}
+
+function setBooleanIfPresent(target, key, value) {
+  if (value !== undefined && value !== null && value !== '') {
+    target[key] = ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+  }
+}
+
+function envIndexedValues(prefix) {
+  return Object.entries(process.env)
+    .filter(([key, value]) => key.startsWith(prefix) && stringValue(value))
+    .sort(([left], [right]) => envIndex(left, prefix) - envIndex(right, prefix) || left.localeCompare(right))
+    .map(([, value]) => stringValue(value));
+}
+
+function envIndex(key, prefix) {
+  const parsed = Number.parseInt(key.slice(prefix.length), 10);
+  return Number.isInteger(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
 function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
@@ -904,7 +971,44 @@ function metricsConfig() {
   const configured = objectValue(config.metrics);
   return {
     enabled: configured.enabled !== false,
-    route: stringValue(configured.route) || '/metrics'
+    route: stringValue(configured.route) || '/metrics',
+    requireBearerToken: configured.requireBearerToken === true,
+    bearerToken: stringValue(configured.bearerToken),
+    allowedNetworks: Array.isArray(configured.allowedNetworks)
+      ? configured.allowedNetworks.map(stringValue).filter(Boolean)
+      : []
+  };
+}
+
+function readinessConfig() {
+  const configured = objectValue(config.readiness);
+  return {
+    route: stringValue(configured.route) || '/ready'
+  };
+}
+
+function hostValidationConfig() {
+  const configured = objectValue(config.hostValidation);
+  const rootAllowedHosts = Array.isArray(config.allowedHosts)
+    ? config.allowedHosts.map(stringValue).filter(Boolean)
+    : stringValue(config.allowedHosts).split(/[;,]/).map(stringValue).filter(Boolean);
+  return {
+    enabled: configured.enabled !== false,
+    allowedHosts: rootAllowedHosts.length > 0
+      ? rootAllowedHosts
+      : (Array.isArray(configured.allowedHosts)
+          ? configured.allowedHosts.map(stringValue).filter(Boolean)
+          : ['localhost', '127.0.0.1', '::1'])
+  };
+}
+
+function trustedProxiesConfig() {
+  const configured = objectValue(config.trustedProxies);
+  return {
+    enabled: configured.enabled !== false,
+    networks: Array.isArray(configured.networks)
+      ? configured.networks.map(stringValue).filter(Boolean)
+      : ['127.0.0.1', '::1']
   };
 }
 
@@ -914,9 +1018,10 @@ function rateLimitingConfig() {
     enabled: configured.enabled === true,
     permitLimit: positiveInteger(configured.permitLimit, 600),
     windowSeconds: positiveInteger(configured.windowSeconds, 60),
+    trustForwardedFor: configured.trustForwardedFor !== false,
     excludedPathPrefixes: Array.isArray(configured.excludedPathPrefixes)
       ? configured.excludedPathPrefixes.map(stringValue).filter(Boolean)
-      : ['/health', '/metrics']
+      : ['/health', '/ready', '/metrics']
   };
 }
 
@@ -957,9 +1062,7 @@ function isRateLimited(request, url) {
     return false;
   }
 
-  const remote = stringValue(request.headers['x-forwarded-for']).split(',')[0].trim()
-    || request.socket.remoteAddress
-    || 'unknown';
+  const remote = clientAddress(request, settings.trustForwardedFor);
   const key = `${remote}:${request.method ?? 'GET'}:${url.pathname}`;
   const now = Date.now();
   const current = rateLimitCounters.get(key);
@@ -970,6 +1073,134 @@ function isRateLimited(request, url) {
 
   current.count += 1;
   return current.count > settings.permitLimit;
+}
+
+function metricsAccessAllowed(request) {
+  const metrics = metricsConfig();
+  const tokenConfigured = Boolean(metrics.bearerToken);
+  const networksConfigured = metrics.allowedNetworks.length > 0;
+  if (!metrics.requireBearerToken && !tokenConfigured && !networksConfigured) {
+    return true;
+  }
+
+  if (tokenConfigured && bearerTokenValid(request, metrics.bearerToken)) {
+    return true;
+  }
+
+  return networksConfigured && addressInNetworks(remoteAddress(request), metrics.allowedNetworks);
+}
+
+function bearerTokenValid(request, expectedToken) {
+  const authorization = stringValue(request.headers.authorization);
+  const prefix = 'Bearer ';
+  if (!authorization.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return false;
+  }
+
+  const provided = Buffer.from(authorization.slice(prefix.length).trim(), 'utf8');
+  const expected = Buffer.from(expectedToken, 'utf8');
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
+
+function readinessPayload() {
+  return {
+    service: 'monitoring-ui-api',
+    status: 'ready',
+    backendHealthChecks: Array.isArray(config.healthChecks) ? config.healthChecks.length : 0,
+    conversionConfig: publicConversionConfig()
+  };
+}
+
+function hostAllowed(hostHeader) {
+  const settings = hostValidationConfig();
+  if (!settings.enabled || settings.allowedHosts.includes('*')) {
+    return true;
+  }
+
+  const host = normalizeHost(hostNameFromHeader(hostHeader));
+  return Boolean(host)
+    && settings.allowedHosts.some((allowed) => normalizeHost(allowed) === host);
+}
+
+function hostNameFromHeader(hostHeader) {
+  const value = stringValue(hostHeader);
+  if (value.startsWith('[')) {
+    const closing = value.indexOf(']');
+    return closing > 0 ? value.slice(1, closing) : value;
+  }
+
+  return value.split(':')[0];
+}
+
+function normalizeHost(host) {
+  return stringValue(host).replace(/^\[/, '').replace(/\]$/, '').replace(/\.$/, '').toLowerCase();
+}
+
+function clientAddress(request, trustForwardedFor) {
+  const remote = remoteAddress(request);
+  const trustedProxies = trustedProxiesConfig();
+  if (trustForwardedFor && (!trustedProxies.enabled || addressInNetworks(remote, trustedProxies.networks))) {
+    const forwarded = stringValue(request.headers['x-forwarded-for']).split(',')[0].trim();
+    return forwarded || remote || 'unknown';
+  }
+
+  return remote || 'unknown';
+}
+
+function remoteAddress(request) {
+  return normalizeIpAddress(request.socket.remoteAddress || '');
+}
+
+function normalizeIpAddress(address) {
+  const value = stringValue(address);
+  return value.startsWith('::ffff:') ? value.slice('::ffff:'.length) : value;
+}
+
+function addressInNetworks(address, networks) {
+  const normalized = normalizeIpAddress(address);
+  return networks.some((network) => networkContains(network, normalized));
+}
+
+function networkContains(network, address) {
+  const configured = stringValue(network);
+  if (!configured || !address) {
+    return false;
+  }
+  if (configured === '*') {
+    return true;
+  }
+
+  const [base, prefixText] = configured.split('/');
+  if (prefixText === undefined) {
+    return normalizeIpAddress(base) === normalizeIpAddress(address);
+  }
+
+  const prefix = Number.parseInt(prefixText, 10);
+  const addressValue = ipv4ToInt(address);
+  const baseValue = ipv4ToInt(base);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32 || addressValue == null || baseValue == null) {
+    return false;
+  }
+
+  const mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+  return (addressValue & mask) === (baseValue & mask);
+}
+
+function ipv4ToInt(address) {
+  const parts = normalizeIpAddress(address).split('.');
+  if (parts.length !== 4) {
+    return null;
+  }
+
+  let value = 0;
+  for (const part of parts) {
+    const octet = Number.parseInt(part, 10);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
+      return null;
+    }
+    value = ((value << 8) | octet) >>> 0;
+  }
+  return value >>> 0;
 }
 
 function recordHttpMetric(request, url, response, started) {

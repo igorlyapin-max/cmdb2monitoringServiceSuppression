@@ -5,8 +5,12 @@
 - Webhook accept latency: `http_request_duration_seconds` on `cmdbwebhooks2kafka`.
 - Rule processing failures: `kafka_message_processing_failures_total` on `cmdbconfigbuilder`.
 - Apply failures: `kafka_message_processing_failures_total` on `zabbixconfig2api` and `cmdbaggregation2cmdbuild`.
+- Service readiness: `/ready` on every service.
 - Dependency health: `/zabbix/check`, `/cmdbuild/check`, `/redis/check`, and `/kafka/topics`.
 - Dead letters: `kafka_messages_dead_lettered_total`.
+
+Scrape `/metrics` through the configured Bearer token, scrape-network allowlist,
+or both.
 
 ## Initial SLO Targets
 

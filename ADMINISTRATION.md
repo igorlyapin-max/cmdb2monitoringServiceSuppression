@@ -30,6 +30,11 @@ curl -f http://service-host:5182/health
 The route returns the service name and `status=ok`. Integration-specific checks
 remain separate, for example `/zabbix/check` and `/cmdbuild/check`.
 
+Every service also exposes readiness on `Readiness:Route`, default `/ready`.
+Use `/health` for liveness and `/ready` for orchestrator readiness. Readiness
+returns service identity, version, and current configuration reload version; it
+does not replace dependency-specific checks such as `/zabbix/check`.
+
 The Monitoring UI `Панель` calls `monitoring-ui-api` `/api/health/services`.
 That BFF endpoint checks only services listed in UI `healthChecks`, so the
 dashboard inventory remains explicit and can be adjusted per environment.
@@ -86,6 +91,20 @@ propagate it to downstream HTTP/Kafka calls, and apply configured HTTP
 retry/circuit breaker behavior. Use `http_client_retries_total`,
 `http_client_circuit_breaks_total`, and `kafka_messages_dead_lettered_total`
 for first-pass incident triage.
+
+HTTP hardening is controlled per service. Keep `AllowedHosts` aligned with the
+real ingress hostnames and internal service DNS names. Set
+`TrustedProxies:Networks` to only the reverse proxies whose `X-Forwarded-For`
+headers should affect rate limiting. Protect `/metrics` with
+`Metrics:RequireBearerToken=true` plus a token/secret, `Metrics:AllowedNetworks`,
+or both.
+
+TLS for CMDBuild and Zabbix is administrator-owned. `Cmdbuild:BaseUrl` and
+`Zabbix:ApiEndpoint` may be either `http://` or `https://`; the services keep
+that configured scheme and do not disable certificate validation. For private
+CA, mTLS, HSTS, or corporate reverse-proxy policies, configure the runtime trust
+store or ingress/proxy layer rather than adding application-level certificate
+bypass.
 
 Kafka consumers no longer retry a bad message forever. After
 `Kafka:MaxProcessingAttempts`, they publish a dead-letter envelope to

@@ -6,10 +6,14 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "NODE_ENV=Development node server.mjs",
+    "lint": "eslint server.mjs public/app.js scripts/*.mjs",
     "test": "node scripts/validate-config.mjs && node --check server.mjs && node --check public/app.js"
   },
   "dependencies": {
     "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.28.0"
   },
   "engines": {
     "node": ">=22"

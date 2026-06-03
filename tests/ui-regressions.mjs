@@ -61,6 +61,7 @@ const api = await loadAppApi();
 
 assertStaticUiContracts();
 assertReadinessConfigContracts();
+assertMonitoringUiRuntimeContracts();
 assertWebhookManagementContracts();
 assertPopulationDimensionUiContracts();
 assertTemplateTargetClassContracts();
@@ -898,6 +899,29 @@ function assertStaticUiContracts() {
   assertIncludes(stylesText, 'position: sticky', 'side menu must be sticky and not scroll with page content.');
   assertIncludes(appText, 'templateTargetClassOptions(layerKey)', 'template target class options must be a separate class-only path.');
   assertIncludes(appText, 'targetClassOptions(layerKey, \'\', { includeInstances: false })', 'templates must exclude target instances.');
+}
+
+function assertMonitoringUiRuntimeContracts() {
+  assert(uiConfig.debug?.enabled === false, 'monitoring UI debug must be disabled by default.');
+  assert(uiConfig.debug?.level === 'Basic', 'monitoring UI debug default level must be Basic.');
+  assert(uiConfig.kafkaLogging?.topic === 'service-suppression.logs',
+    'monitoring UI Kafka log topic must default to service-suppression.logs.');
+  assertIncludes(serverText, 'function createStructuredLogger(configValue)',
+    'monitoring UI server must use structured logging.');
+  assertIncludes(serverText, 'function sanitizeLogValue(value',
+    'monitoring UI server must mask sensitive log fields.');
+  assertIncludes(serverText, 'sensitiveLogKeyPattern',
+    'monitoring UI server must define sensitive log key matching.');
+  assertIncludes(serverText, 'function loggingSinkReadinessCheck()',
+    'monitoring UI readiness must report logging sink configuration.');
+  assertIncludes(serverText, 'MONITORING_UI_DEBUG_ENABLED',
+    'monitoring UI debug mode must be controlled by environment variables.');
+  assertIncludes(serverText, 'MONITORING_UI_KAFKA_LOGGING_ENABLED',
+    'monitoring UI Kafka logging must be controlled by environment variables.');
+  assertIncludes(serverText, 'MONITORING_UI_ELK_LOGGING_ENABLED',
+    'monitoring UI ELK logging must be controlled by environment variables.');
+  assertNotIncludes(serverText, 'console.log', 'monitoring UI runtime must not log through console.log.');
+  assertNotIncludes(serverText, 'console.error', 'monitoring UI runtime must not log through console.error.');
 }
 
 function assertReadinessConfigContracts() {

@@ -100,7 +100,9 @@ Common sections:
 },
 "Readiness": {
   "Route": "/ready",
-  "ZabbixHostIdAttribute": "zabbix_main_hostid"
+  "ZabbixHostIdAttribute": "zabbix_main_hostid",
+  "CheckExternalDependencies": false,
+  "CheckTimeoutMs": 2000
 }
 ```
 
@@ -116,6 +118,8 @@ KafkaTopics__ZabbixSuppressionApplyPlans=service-suppression.zabbix.suppression.
 KafkaTopics__CmdbModelMissingDimensions=service-suppression.cmdb.model.missing-dimensions
 Readiness__Route=/ready
 Readiness__ZabbixHostIdAttribute=zabbix_main_hostid
+Readiness__CheckExternalDependencies=false
+Readiness__CheckTimeoutMs=2000
 Debug__Enabled=false
 Debug__Level=Basic
 ```
@@ -150,6 +154,10 @@ in the HTTP `Host` header. Trusted proxy networks are the only sources whose
 `X-Forwarded-For` value is accepted for rate limiting. Protect `/metrics` with
 a Bearer token, an allowlisted scrape network, or both. `/ready` is intended for
 orchestrator readiness checks; `/health` remains the lightweight liveness route.
+By default `/ready` is shallow and does not call CMDBuild, Zabbix, Redis, Kafka,
+or other services. Set `Readiness:CheckExternalDependencies=true` only where the
+orchestrator should remove the instance when configured dependencies are not
+reachable or when required runtime configuration is incomplete.
 
 Enable `SecurityHeaders:HstsEnabled=true` only behind HTTPS termination.
 
@@ -673,6 +681,28 @@ Optional:
 }
 ```
 
+### `monitoring-ui-api` structured logs
+
+The Node.js BFF always writes structured JSON logs to stdout/stderr. Enable
+debug diagnostics and external sinks through environment variables:
+
+```bash
+MONITORING_UI_DEBUG_ENABLED=true
+MONITORING_UI_DEBUG_LEVEL=Basic
+MONITORING_UI_LOGGING_REQUIRE_EXTERNAL_SINK=true
+MONITORING_UI_KAFKA_LOGGING_ENABLED=true
+MONITORING_UI_KAFKA_LOGGING_BOOTSTRAP_SERVERS=kafka:29092
+MONITORING_UI_KAFKA_LOGGING_TOPIC=service-suppression.logs
+MONITORING_UI_ELK_LOGGING_ENABLED=false
+MONITORING_UI_ELK_LOGGING_ENDPOINT=https://elastic.example.local:9200
+MONITORING_UI_ELK_LOGGING_API_KEY_SECRET=secret://AAA.LOCAL/PROD/elk-api-key
+MONITORING_UI_READINESS_CHECK_EXTERNAL_DEPENDENCIES=false
+```
+
+Use `MONITORING_UI_DEBUG_LEVEL=Verbose` only temporarily. Runtime logging masks
+fields whose names contain password, token, secret, API key, Authorization,
+cookie, or connection string.
+
 ### Docker syslog
 
 No service code change is required:
@@ -740,7 +770,17 @@ curl -f http://zabbixconfig2api:5183/zabbix/check
    `http://cmdbconfigbuilder:5182/kafka/topics/{topic}/events?limit=5` for a
    managed topic.
 8. Verify logs in stdout and in `KafkaLogging:Topic` if enabled.
-9. Disable debug after validation unless the rollout plan requires it.
+9. Run runtime startup smoke for CI or release candidates:
+
+```bash
+./scripts/test-runtime-smoke.sh
+```
+
+The smoke starts every service in normal, debug Basic, and debug Verbose modes,
+then checks `/health`, `/ready`, and `/metrics` on loopback ports. It disables
+Kafka consumers for the smoke run with `Kafka__Enabled=false`.
+
+10. Disable debug after validation unless the rollout plan requires it.
 
 Run repository diagnostic autotests separately from deployment smoke checks:
 

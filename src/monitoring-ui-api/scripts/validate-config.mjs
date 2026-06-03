@@ -39,6 +39,11 @@ if (!config.readiness?.zabbixHostIdAttribute) {
 if (!stringValue(config.readiness?.route).startsWith('/')) {
   errors.push('readiness.route must start with /');
 }
+if (!Number.isInteger(config.readiness?.checkTimeoutMs) || config.readiness.checkTimeoutMs <= 0) {
+  errors.push('readiness.checkTimeoutMs must be a positive integer');
+}
+
+validateMonitoringUiRuntimeConfig();
 
 validateHardeningConfig('monitoring-ui-api', {
   allowedHosts: config.allowedHosts,
@@ -563,6 +568,56 @@ function validateHardeningConfig(name, sections) {
     if (!readinessRoute.startsWith('/')) {
       errors.push(`${name} Readiness route must start with /`);
     }
+    const readinessTimeout = sections.readiness.CheckTimeoutMs ?? sections.readiness.checkTimeoutMs;
+    if (readinessTimeout !== undefined && (!Number.isInteger(readinessTimeout) || readinessTimeout <= 0)) {
+      errors.push(`${name} Readiness check timeout must be a positive integer`);
+    }
+  }
+}
+
+function validateMonitoringUiRuntimeConfig() {
+  if (!['basic', 'verbose'].includes(stringValue(config.debug?.level || 'Basic').toLowerCase())) {
+    errors.push('debug.level must be Basic or Verbose');
+  }
+
+  validateLogLevel('logging.minimumLevel', config.logging?.minimumLevel || 'Information');
+  validateLogLevel('kafkaLogging.minimumLevel', config.kafkaLogging?.minimumLevel || 'Information');
+  validateLogLevel('elkLogging.minimumLevel', config.elkLogging?.minimumLevel || 'Information');
+
+  const kafkaLoggingEnabled = config.kafkaLogging?.enabled === true;
+  const elkLoggingEnabled = config.elkLogging?.enabled === true;
+  if (kafkaLoggingEnabled) {
+    if (!stringValue(config.kafkaLogging?.topic)) {
+      errors.push('kafkaLogging.topic is required when kafkaLogging.enabled=true');
+    }
+    const brokers = Array.isArray(config.kafkaLogging?.brokers)
+      ? config.kafkaLogging.brokers.map(stringValue).filter(Boolean)
+      : stringValue(config.kafkaLogging?.bootstrapServers).split(',').map(stringValue).filter(Boolean);
+    if (brokers.length === 0) {
+      errors.push('kafkaLogging.bootstrapServers or kafkaLogging.brokers is required when kafkaLogging.enabled=true');
+    }
+  }
+
+  if (elkLoggingEnabled) {
+    try {
+      new URL(config.elkLogging?.endpoint ?? '');
+    } catch {
+      errors.push('elkLogging.endpoint must be an absolute URL when elkLogging.enabled=true');
+    }
+    if (!Number.isInteger(config.elkLogging?.timeoutMs) || config.elkLogging.timeoutMs <= 0) {
+      errors.push('elkLogging.timeoutMs must be a positive integer');
+    }
+  }
+
+  if (config.logging?.requireExternalSink === true && !kafkaLoggingEnabled && !elkLoggingEnabled) {
+    errors.push('logging.requireExternalSink=true requires kafkaLogging.enabled=true or elkLogging.enabled=true');
+  }
+}
+
+function validateLogLevel(name, value) {
+  const normalized = stringValue(value).toLowerCase();
+  if (!['trace', 'debug', 'information', 'info', 'warning', 'warn', 'error', 'critical', 'fatal'].includes(normalized)) {
+    errors.push(`${name} has invalid value`);
   }
 }
 

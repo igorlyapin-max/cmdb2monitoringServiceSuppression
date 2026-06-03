@@ -13,6 +13,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.ConversionRules;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 using Cmdb2MonitoringServiceSuppression.Shared.Logging;
 using Cmdb2MonitoringServiceSuppression.Shared.Messaging;
+using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Cmdb2MonitoringServiceSuppression.Shared.Secrets;
 using Confluent.Kafka;
 using Microsoft.Extensions.Options;
@@ -84,6 +85,7 @@ builder.Services.AddHostedService(provider => provider.GetRequiredService<RuleEn
 builder.Services.AddHttpClient<CmdbuildClient>();
 builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddHttpClient<ZabbixDirtyScopeClient>();
+builder.Services.AddTransient<IServiceReadinessCheck, CmdbConfigBuilderDependencyReadinessCheck>();
 
 var app = builder.Build();
 app.UseServiceDefaults();
@@ -7050,6 +7052,49 @@ public sealed class RuntimeRedisOptions
     {
         return string.Equals(FailureMode, "fallback", StringComparison.OrdinalIgnoreCase)
             || string.Equals(FailureMode, "fail", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+public sealed class CmdbConfigBuilderDependencyReadinessCheck(
+    CmdbuildClient cmdbuildClient,
+    ZabbixClient zabbixClient,
+    IOptionsMonitor<RuntimeRedisOptions> redisOptions)
+    : IServiceReadinessCheck
+{
+    public string Name => "cmdbconfigbuilder-dependencies";
+
+    public async Task<ServiceReadinessCheckResult> CheckAsync(CancellationToken cancellationToken)
+    {
+        var failures = new List<string>();
+        var cmdbuild = await cmdbuildClient.CheckConnectionAsync(cancellationToken);
+        if (!cmdbuild.Success)
+        {
+            failures.Add($"CMDBuild: {cmdbuild.Error ?? "check failed"}");
+        }
+
+        var zabbix = await zabbixClient.CheckConnectionAsync(cancellationToken);
+        if (!zabbix.Success)
+        {
+            failures.Add($"Zabbix: {zabbix.Error ?? "check failed"}");
+        }
+
+        var redis = redisOptions.CurrentValue;
+        if (redis.Enabled)
+        {
+            try
+            {
+                using var client = RedisRespClient.Connect(redis);
+                client.Ping();
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException or TimeoutException)
+            {
+                failures.Add($"Redis: {ex.Message}");
+            }
+        }
+
+        return failures.Count == 0
+            ? ServiceReadinessCheckResult.Ok(Name, "CMDBuild, Zabbix, and Redis dependency checks are ready")
+            : ServiceReadinessCheckResult.NotReady(Name, string.Join("; ", failures));
     }
 }
 

@@ -88,6 +88,7 @@ public static class ServiceDefaults
         builder.Services.AddOptions<ReadinessOptions>()
             .Bind(builder.Configuration.GetSection(ReadinessOptions.SectionName))
             .Validate(options => options.HasValidRoute(), "Readiness:Route must start with '/'.")
+            .Validate(options => options.HasValidCheckTimeout(), "Readiness:CheckTimeoutMs must be greater than zero.")
             .ValidateOnStart();
 
         builder.Services.AddOptions<CorrelationOptions>()
@@ -125,6 +126,7 @@ public static class ServiceDefaults
         builder.Services.AddTransient<CorrelationHttpMessageHandler>();
         builder.Services.AddTransient<ResilienceHttpMessageHandler>();
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IHttpMessageHandlerBuilderFilter, ServiceHttpMessageHandlerBuilderFilter>());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IServiceReadinessCheck, RuntimeConfigurationReadinessCheck>());
         builder.Logging.Services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider, KafkaLoggerProvider>());
         builder.Logging.Services.TryAddEnumerable(ServiceDescriptor.Singleton<ILoggerProvider, ElkLoggerProvider>());
     }
@@ -180,15 +182,62 @@ public static class ServiceDefaults
         var serviceOptions = app.Services.GetRequiredService<IOptions<ServiceOptions>>().Value;
         var readinessOptions = app.Services.GetRequiredService<IOptionsMonitor<ReadinessOptions>>();
 
-        app.MapGet(readinessOptions.CurrentValue.Route, () => Results.Ok(new
+        app.MapGet(readinessOptions.CurrentValue.Route, async (
+            HttpContext context,
+            IEnumerable<IServiceReadinessCheck> checks,
+            IOptionsMonitor<ReadinessOptions> options) =>
         {
-            service = serviceOptions.Name,
-            status = "ready",
-            version = ServiceVersion(),
-            configurationVersion = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().Version,
-            configurationStartedAt = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().StartedAtUtc,
-            configurationReloadedAt = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().LastReloadedAtUtc
-        }));
+            var current = options.CurrentValue;
+            var dependencyChecks = current.CheckExternalDependencies
+                ? await RunReadinessChecksAsync(checks, current, context.RequestAborted)
+                : [];
+            var ready = dependencyChecks.All(check => check.Ready || !check.Required);
+
+            return Results.Json(new
+            {
+                service = serviceOptions.Name,
+                status = ready ? "ready" : "not_ready",
+                version = ServiceVersion(),
+                configurationVersion = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().Version,
+                configurationStartedAt = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().StartedAtUtc,
+                configurationReloadedAt = app.Services.GetRequiredService<ConfigurationReloadState>().Snapshot().LastReloadedAtUtc,
+                checkExternalDependencies = current.CheckExternalDependencies,
+                dependencyChecks
+            }, statusCode: ready ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
+        });
+    }
+
+    private static async Task<ServiceReadinessCheckResult[]> RunReadinessChecksAsync(
+        IEnumerable<IServiceReadinessCheck> checks,
+        ReadinessOptions options,
+        CancellationToken cancellationToken)
+    {
+        var configuredChecks = checks.ToArray();
+        if (configuredChecks.Length == 0)
+        {
+            return [];
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, options.CheckTimeoutMs)));
+        var results = new List<ServiceReadinessCheckResult>(configuredChecks.Length);
+        foreach (var check in configuredChecks)
+        {
+            try
+            {
+                results.Add(await check.CheckAsync(timeout.Token));
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                results.Add(ServiceReadinessCheckResult.NotReady(check.Name, "readiness check timed out"));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException or TaskCanceledException or TimeoutException)
+            {
+                results.Add(ServiceReadinessCheckResult.NotReady(check.Name, ex.Message));
+            }
+        }
+
+        return results.ToArray();
     }
 
     public static void MapConfigurationReload(this WebApplication app, ConfigurationManager configuration)

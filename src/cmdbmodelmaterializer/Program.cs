@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using Cmdb2MonitoringServiceSuppression.Shared.Aggregation;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.Messaging;
+using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Cmdb2MonitoringServiceSuppression.Shared.Secrets;
 using Microsoft.Extensions.Options;
 
@@ -59,6 +60,7 @@ builder.Services.AddHttpClient<ConversionConfigStoreClient>((provider, client) =
 });
 builder.Services.AddSingleton<MaterializationCoordinator>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
+builder.Services.AddTransient<IServiceReadinessCheck, ConversionConfigStoreReadinessCheck>();
 
 var initialMaterializerOptions = builder.Configuration
     .GetSection(MaterializerOptions.SectionName)
@@ -318,6 +320,19 @@ public sealed class ConversionConfigStoreClient(
             JsonText.LongValue(node["version"]),
             JsonText.StringValue(node["etag"]),
             node);
+    }
+}
+
+public sealed class ConversionConfigStoreReadinessCheck(ConversionConfigStoreClient client) : IServiceReadinessCheck
+{
+    public string Name => "conversion-config-store";
+
+    public async Task<ServiceReadinessCheckResult> CheckAsync(CancellationToken cancellationToken)
+    {
+        var snapshot = await client.ReadCurrentAsync(cancellationToken);
+        return ServiceReadinessCheckResult.Ok(
+            Name,
+            $"conversion-config-store is readable; version={snapshot.Version}");
     }
 }
 

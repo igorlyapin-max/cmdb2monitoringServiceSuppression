@@ -10,6 +10,7 @@
     "test": "node scripts/validate-config.mjs && node --check server.mjs && node --check public/app.js"
   },
   "dependencies": {
+    "kafkajs": "^2.2.4",
     "pg": "^8.16.0"
   },
   "devDependencies": {

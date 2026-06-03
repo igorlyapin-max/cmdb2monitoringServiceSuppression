@@ -13,6 +13,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 using Cmdb2MonitoringServiceSuppression.Shared.Logging;
 using Cmdb2MonitoringServiceSuppression.Shared.Messaging;
+using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Cmdb2MonitoringServiceSuppression.Shared.Secrets;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -96,6 +97,7 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
 builder.Services.AddHttpClient<ZabbixClient>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient<CmdbuildClient>();
+builder.Services.AddTransient<IServiceReadinessCheck, ZabbixConfigDependencyReadinessCheck>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
 builder.Services.AddTransient<ZabbixAggregationApplier>();
 builder.Services.AddTransient<ZabbixTriggerDependencyApplier>();
@@ -5609,6 +5611,46 @@ public sealed class RuntimeRedisOptions
     {
         return string.Equals(FailureMode, "fallback", StringComparison.OrdinalIgnoreCase)
             || string.Equals(FailureMode, "fail", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+public sealed class ZabbixConfigDependencyReadinessCheck(
+    ZabbixClient zabbixClient,
+    CmdbuildClient cmdbuildClient,
+    IRuntimeCoordinationStore runtimeCoordination,
+    IOptionsMonitor<RuntimeRedisOptions> redisOptions)
+    : IServiceReadinessCheck
+{
+    public string Name => "zabbixconfig2api-dependencies";
+
+    public async Task<ServiceReadinessCheckResult> CheckAsync(CancellationToken cancellationToken)
+    {
+        var failures = new List<string>();
+        var zabbix = await zabbixClient.CheckConnectionAsync(cancellationToken);
+        if (!zabbix.Success)
+        {
+            failures.Add($"Zabbix: {zabbix.Error ?? "check failed"}");
+        }
+
+        var cmdbuild = await cmdbuildClient.CheckConnectionAsync(cancellationToken);
+        if (!cmdbuild.Success)
+        {
+            failures.Add($"CMDBuild: {cmdbuild.Error ?? "check failed"}");
+        }
+
+        var redis = redisOptions.CurrentValue;
+        if (redis.Enabled)
+        {
+            var status = runtimeCoordination.Status();
+            if (!status.RedisAvailable)
+            {
+                failures.Add($"Redis: {status.Message}");
+            }
+        }
+
+        return failures.Count == 0
+            ? ServiceReadinessCheckResult.Ok(Name, "Zabbix, CMDBuild, and Redis dependency checks are ready")
+            : ServiceReadinessCheckResult.NotReady(Name, string.Join("; ", failures));
     }
 }
 

@@ -33,7 +33,14 @@ remain separate, for example `/zabbix/check` and `/cmdbuild/check`.
 Every service also exposes readiness on `Readiness:Route`, default `/ready`.
 Use `/health` for liveness and `/ready` for orchestrator readiness. Readiness
 returns service identity, version, and current configuration reload version; it
-does not replace dependency-specific checks such as `/zabbix/check`.
+does not replace dependency-specific checks such as `/zabbix/check` unless
+`Readiness:CheckExternalDependencies=true` is enabled. With that opt-in,
+readiness also evaluates registered dependency checks such as CMDBuild/Zabbix
+clients, Redis, conversion-config-store, and runtime logging sink configuration.
+The Monitoring UI uses the same shallow default and adds
+`MONITORING_UI_READINESS_CHECK_EXTERNAL_DEPENDENCIES=true` for backend health
+URL and conversion-config-store checks when the orchestrator should gate on
+dependencies.
 
 The Monitoring UI `Панель` calls `monitoring-ui-api` `/api/health/services`.
 That BFF endpoint checks only services listed in UI `healthChecks`, so the
@@ -1319,10 +1326,30 @@ Debug events are written through the normal `ILogger` pipeline at
 `Information`. They are not written with `LogDebug`, so operators do not need to
 raise global .NET log level to see debug diagnostics.
 
+For `monitoring-ui-api`, use the matching Node environment variables:
+
+```bash
+MONITORING_UI_DEBUG_ENABLED=true
+MONITORING_UI_DEBUG_LEVEL=Basic
+```
+
+or temporarily:
+
+```bash
+MONITORING_UI_DEBUG_ENABLED=true
+MONITORING_UI_DEBUG_LEVEL=Verbose
+```
+
+The Node BFF writes debug events through its structured JSON logger and masks
+password, token, secret, API key, Authorization, cookie, and connection-string
+fields before writing to stdout/stderr or external sinks.
+
 ## Log Routing
 
 The application writes normal .NET logs to stdout/stderr. Additional sinks are
 optional and configured externally.
+`monitoring-ui-api` follows the same operational contract with structured JSON
+logs to stdout/stderr and optional Kafka/ELK sinks.
 
 ### Docker stdout/stderr
 
@@ -1355,6 +1382,9 @@ Requirements:
 - Kafka topics are created and managed externally.
 - The service account has `WRITE`/`DESCRIBE` permissions on the log topic.
 - `Kafka:Enabled=true` is required for `KafkaLogging`.
+- `monitoring-ui-api` uses `MONITORING_UI_KAFKA_LOGGING_ENABLED=true`,
+  `MONITORING_UI_KAFKA_LOGGING_BOOTSTRAP_SERVERS`, and
+  `MONITORING_UI_KAFKA_LOGGING_TOPIC`.
 
 ### Direct ELK logging
 
@@ -1375,6 +1405,9 @@ Kafka, keep this disabled and use `KafkaLogging` instead.
 
 Logging failures in Kafka or ELK sinks are intentionally non-fatal and must not
 break the main pipeline.
+For the Node BFF, set `MONITORING_UI_LOGGING_REQUIRE_EXTERNAL_SINK=true` in
+production readiness environments if missing Kafka/ELK sink configuration should
+make `/ready` return `503`.
 
 ### Syslog
 

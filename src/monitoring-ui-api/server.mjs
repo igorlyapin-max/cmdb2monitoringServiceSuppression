@@ -9,8 +9,18 @@ import { fileURLToPath } from 'node:url';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(root, '..', '..');
 const publicRoot = path.join(root, 'public');
+const logLevelWeights = new Map([
+  ['Trace', 0],
+  ['Debug', 1],
+  ['Information', 2],
+  ['Warning', 3],
+  ['Error', 4],
+  ['Critical', 5]
+]);
+const sensitiveLogKeyPattern = /(authorization|cookie|password|passwd|secret|token|api[-_]?key|connection[-_]?string)/i;
 const baseConfig = JSON.parse(await readFile(path.join(root, 'config', 'appsettings.json'), 'utf8'));
 const config = await resolveSecretReferences(applyRuntimeServerOverrides(baseConfig), 'monitoring-ui-api');
+const logger = createStructuredLogger(config);
 let conversionConfigStoreWriteChain = Promise.resolve();
 let conversionConfigPostgresPoolPromise = null;
 const requestContext = new AsyncLocalStorage();
@@ -29,6 +39,10 @@ const server = http.createServer(async (request, response) => {
   const context = createRequestContext(request, response);
   await requestContext.run(context, async () => {
     const started = process.hrtime.bigint();
+    logger.debugBasic('http.request', 'Accepted HTTP request.', {
+      method: request.method ?? 'GET',
+      path: url.pathname
+    });
     try {
       applySecurityHeaders(response);
 
@@ -37,7 +51,8 @@ const server = http.createServer(async (request, response) => {
       }
 
       if (url.pathname === readinessConfig().route) {
-        return sendJson(response, 200, readinessPayload());
+        const payload = await readinessPayload();
+        return sendJson(response, payload.status === 'ready' ? 200 : 503, payload);
       }
 
       if (url.pathname === metricsConfig().route) {
@@ -755,10 +770,20 @@ const server = http.createServer(async (request, response) => {
         return sendJson(response, 404, { error: 'not_found' });
       }
 
-      console.error(error);
+      logger.error('http.request_failed', 'Unhandled monitoring UI request failure.', {
+        method: request.method ?? 'GET',
+        path: url.pathname,
+        error
+      });
       return sendJson(response, 500, { error: 'internal_error' });
     } finally {
       recordHttpMetric(request, url, response, started);
+      logger.debugVerbose('http.response', 'Completed HTTP request.', {
+        method: request.method ?? 'GET',
+        path: url.pathname,
+        statusCode: response.statusCode || 0,
+        elapsedMs: Number(process.hrtime.bigint() - started) / 1_000_000
+      });
     }
   });
 });
@@ -775,7 +800,11 @@ server.headersTimeout = Math.min(60 * 1000, effectiveLongRunningRequestTimeoutMs
 server.keepAliveTimeout = 75 * 1000;
 
 server.listen(config.server.port, config.server.host, () => {
-  console.log(`monitoring-ui-api listening on http://${config.server.host}:${config.server.port}`);
+  logger.info('service.started', 'monitoring-ui-api started.', {
+    url: `http://${config.server.host}:${config.server.port}`,
+    debugEnabled: debugConfig(config).enabled,
+    debugLevel: debugConfig(config).level
+  });
 });
 
 function applyRuntimeServerOverrides(configValue) {
@@ -827,6 +856,49 @@ function applyRuntimeServerOverrides(configValue) {
     ...(configValue.securityHeaders ?? {})
   };
   setBooleanIfPresent(securityHeaders, 'hstsEnabled', process.env.MONITORING_UI_HSTS_ENABLED);
+  const debug = {
+    ...(configValue.debug ?? {})
+  };
+  setBooleanIfPresent(debug, 'enabled', process.env.MONITORING_UI_DEBUG_ENABLED);
+  setIfPresent(debug, 'level', process.env.MONITORING_UI_DEBUG_LEVEL);
+  const logging = {
+    ...(configValue.logging ?? {})
+  };
+  setIfPresent(logging, 'minimumLevel', process.env.MONITORING_UI_LOGGING_MINIMUM_LEVEL);
+  setIfPresent(logging, 'serviceName', process.env.MONITORING_UI_LOGGING_SERVICE_NAME);
+  setIfPresent(logging, 'environment', process.env.MONITORING_UI_LOGGING_ENVIRONMENT ?? process.env.NODE_ENV);
+  setBooleanIfPresent(logging, 'requireExternalSink', process.env.MONITORING_UI_LOGGING_REQUIRE_EXTERNAL_SINK);
+  const kafkaLogging = {
+    ...(configValue.kafkaLogging ?? {})
+  };
+  setBooleanIfPresent(kafkaLogging, 'enabled', process.env.MONITORING_UI_KAFKA_LOGGING_ENABLED);
+  setIfPresent(kafkaLogging, 'topic', process.env.MONITORING_UI_KAFKA_LOGGING_TOPIC);
+  setIfPresent(kafkaLogging, 'clientId', process.env.MONITORING_UI_KAFKA_LOGGING_CLIENT_ID);
+  setIfPresent(kafkaLogging, 'minimumLevel', process.env.MONITORING_UI_KAFKA_LOGGING_MINIMUM_LEVEL);
+  setIfPresent(kafkaLogging, 'username', process.env.MONITORING_UI_KAFKA_LOGGING_USERNAME ?? process.env.KAFKA_USERNAME);
+  setIfPresent(kafkaLogging, 'password', process.env.MONITORING_UI_KAFKA_LOGGING_PASSWORD ?? process.env.KAFKA_PASSWORD);
+  setIfPresent(kafkaLogging, 'passwordSecret', process.env.MONITORING_UI_KAFKA_LOGGING_PASSWORD_SECRET);
+  setIfPresent(kafkaLogging, 'saslMechanism', process.env.MONITORING_UI_KAFKA_LOGGING_SASL_MECHANISM ?? process.env.KAFKA_SASL_MECHANISM);
+  setBooleanIfPresent(kafkaLogging, 'ssl', process.env.MONITORING_UI_KAFKA_LOGGING_SSL);
+  const kafkaLoggingBootstrap = process.env.MONITORING_UI_KAFKA_LOGGING_BOOTSTRAP_SERVERS ?? process.env.KAFKA_BOOTSTRAP_SERVERS;
+  if (kafkaLoggingBootstrap) {
+    kafkaLogging.bootstrapServers = kafkaLoggingBootstrap;
+  }
+  const elkLogging = {
+    ...(configValue.elkLogging ?? {})
+  };
+  setBooleanIfPresent(elkLogging, 'enabled', process.env.MONITORING_UI_ELK_LOGGING_ENABLED);
+  setIfPresent(elkLogging, 'endpoint', process.env.MONITORING_UI_ELK_LOGGING_ENDPOINT);
+  setIfPresent(elkLogging, 'index', process.env.MONITORING_UI_ELK_LOGGING_INDEX);
+  setIfPresent(elkLogging, 'apiKey', process.env.MONITORING_UI_ELK_LOGGING_API_KEY);
+  setIfPresent(elkLogging, 'apiKeySecret', process.env.MONITORING_UI_ELK_LOGGING_API_KEY_SECRET);
+  setIfPresent(elkLogging, 'minimumLevel', process.env.MONITORING_UI_ELK_LOGGING_MINIMUM_LEVEL);
+  setIntegerIfPresent(elkLogging, 'timeoutMs', process.env.MONITORING_UI_ELK_LOGGING_TIMEOUT_MS);
+  const readiness = {
+    ...(configValue.readiness ?? {})
+  };
+  setBooleanIfPresent(readiness, 'checkExternalDependencies', process.env.MONITORING_UI_READINESS_CHECK_EXTERNAL_DEPENDENCIES);
+  setIntegerIfPresent(readiness, 'checkTimeoutMs', process.env.MONITORING_UI_READINESS_CHECK_TIMEOUT_MS);
   return {
     ...rewrittenConfig,
     server: {
@@ -843,6 +915,11 @@ function applyRuntimeServerOverrides(configValue) {
     rateLimiting,
     metrics,
     securityHeaders,
+    debug,
+    logging,
+    kafkaLogging,
+    elkLogging,
+    readiness,
     conversionConfig
   };
 }
@@ -890,6 +967,15 @@ function setBooleanIfPresent(target, key, value) {
   }
 }
 
+function setIntegerIfPresent(target, key, value) {
+  if (value !== undefined && value !== null && value !== '') {
+    const parsed = Number.parseInt(String(value), 10);
+    if (Number.isInteger(parsed)) {
+      target[key] = parsed;
+    }
+  }
+}
+
 function envIndexedValues(prefix) {
   return Object.entries(process.env)
     .filter(([key, value]) => key.startsWith(prefix) && stringValue(value))
@@ -900,6 +986,292 @@ function envIndexedValues(prefix) {
 function envIndex(key, prefix) {
   const parsed = Number.parseInt(key.slice(prefix.length), 10);
   return Number.isInteger(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+}
+
+function createStructuredLogger(configValue) {
+  const logging = loggingConfig(configValue);
+  const debug = debugConfig(configValue);
+  const kafkaLogging = kafkaLoggingConfig(configValue);
+  const elkLogging = elkLoggingConfig(configValue);
+  let kafkaProducerPromise = null;
+  const reportedSinkErrors = new Set();
+
+  function log(level, event, message, details = {}) {
+    const normalizedLevel = normalizeLogLevel(level);
+    if (!logLevelEnabled(normalizedLevel, logging.minimumLevel)) {
+      return;
+    }
+
+    const entry = sanitizeLogValue({
+      timestamp: new Date().toISOString(),
+      service: logging.serviceName,
+      environment: logging.environment,
+      level: normalizedLevel,
+      event: stringValue(event) || 'event',
+      message: redactText(stringValue(message)),
+      correlationId: currentCorrelationId(),
+      details
+    });
+
+    writeLocalLog(entry);
+    writeElkLog(entry, elkLogging, reportedSinkErrors);
+    writeKafkaLog(entry, kafkaLogging, () => {
+      if (!kafkaProducerPromise) {
+        kafkaProducerPromise = createKafkaLogProducer(kafkaLogging);
+      }
+      return kafkaProducerPromise;
+    }, reportedSinkErrors);
+  }
+
+  return {
+    info(event, message, details = {}) {
+      log('Information', event, message, details);
+    },
+    error(event, message, details = {}) {
+      log('Error', event, message, details);
+    },
+    debugBasic(event, message, details = {}) {
+      if (debug.enabled) {
+        log('Information', event, message, { debugLevel: debug.level, ...details });
+      }
+    },
+    debugVerbose(event, message, details = {}) {
+      if (debug.enabled && debug.level === 'Verbose') {
+        log('Information', event, message, { debugLevel: 'Verbose', ...details });
+      }
+    }
+  };
+}
+
+function loggingConfig(configValue) {
+  const configured = objectValue(configValue.logging);
+  return {
+    serviceName: stringValue(configured.serviceName) || 'monitoring-ui-api',
+    environment: stringValue(configured.environment) || stringValue(process.env.NODE_ENV) || 'Production',
+    minimumLevel: normalizeLogLevel(configured.minimumLevel || 'Information'),
+    requireExternalSink: configured.requireExternalSink === true
+  };
+}
+
+function debugConfig(configValue) {
+  const configured = objectValue(configValue.debug);
+  const normalizedLevel = stringValue(configured.level).toLowerCase() === 'verbose' ? 'Verbose' : 'Basic';
+  return {
+    enabled: configured.enabled === true,
+    level: normalizedLevel
+  };
+}
+
+function kafkaLoggingConfig(configValue) {
+  const configured = objectValue(configValue.kafkaLogging);
+  return {
+    enabled: configured.enabled === true,
+    topic: stringValue(configured.topic),
+    clientId: stringValue(configured.clientId) || 'monitoring-ui-api',
+    brokers: kafkaBrokerList(configured),
+    username: stringValue(configured.username),
+    password: stringValue(configured.password),
+    saslMechanism: stringValue(configured.saslMechanism || 'plain').toLowerCase(),
+    ssl: configured.ssl === true,
+    minimumLevel: normalizeLogLevel(configured.minimumLevel || 'Information')
+  };
+}
+
+function kafkaBrokerList(configured) {
+  if (Array.isArray(configured.brokers)) {
+    return configured.brokers.map(stringValue).filter(Boolean);
+  }
+
+  return stringValue(configured.bootstrapServers)
+    .split(',')
+    .map(stringValue)
+    .filter(Boolean);
+}
+
+function elkLoggingConfig(configValue) {
+  const configured = objectValue(configValue.elkLogging);
+  return {
+    enabled: configured.enabled === true,
+    endpoint: stringValue(configured.endpoint),
+    index: stringValue(configured.index),
+    apiKey: stringValue(configured.apiKey),
+    minimumLevel: normalizeLogLevel(configured.minimumLevel || 'Information'),
+    timeoutMs: positiveInteger(configured.timeoutMs, 5000)
+  };
+}
+
+function writeLocalLog(entry) {
+  const rendered = `${JSON.stringify(entry)}\n`;
+  if (entry.level === 'Error' || entry.level === 'Critical') {
+    process.stderr.write(rendered);
+    return;
+  }
+
+  process.stdout.write(rendered);
+}
+
+function writeElkLog(entry, settings, reportedSinkErrors) {
+  if (!settings.enabled || !settings.endpoint || !logLevelEnabled(entry.level, settings.minimumLevel)) {
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json'
+  };
+  if (settings.apiKey) {
+    headers.authorization = `ApiKey ${settings.apiKey}`;
+  }
+
+  void fetch(buildElkLogEndpoint(settings), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(entry),
+    signal: controller.signal
+  })
+    .catch((error) => reportLogSinkErrorOnce(reportedSinkErrors, 'elk', error))
+    .finally(() => clearTimeout(timeout));
+}
+
+function buildElkLogEndpoint(settings) {
+  if (!settings.index) {
+    return settings.endpoint;
+  }
+
+  const endpoint = settings.endpoint.replace(/\/+$/, '');
+  return endpoint.endsWith('/_doc') || endpoint.endsWith('/_bulk')
+    ? settings.endpoint
+    : `${endpoint}/${encodeURIComponent(settings.index)}/_doc`;
+}
+
+function writeKafkaLog(entry, settings, producerFactory, reportedSinkErrors) {
+  if (!settings.enabled || !settings.topic || settings.brokers.length === 0 || !logLevelEnabled(entry.level, settings.minimumLevel)) {
+    return;
+  }
+
+  void producerFactory()
+    .then((producer) => producer.send({
+      topic: settings.topic,
+      messages: [{
+        key: entry.service,
+        value: JSON.stringify(entry)
+      }]
+    }))
+    .catch((error) => reportLogSinkErrorOnce(reportedSinkErrors, 'kafka', error));
+}
+
+async function createKafkaLogProducer(settings) {
+  const kafkaModule = await import('kafkajs');
+  const Kafka = kafkaModule.Kafka ?? kafkaModule.default?.Kafka;
+  const logLevel = kafkaModule.logLevel ?? kafkaModule.default?.logLevel;
+  if (!Kafka) {
+    throw new Error("Kafka logging could not load 'kafkajs.Kafka'.");
+  }
+
+  const kafka = new Kafka({
+    clientId: settings.clientId,
+    brokers: settings.brokers,
+    ssl: settings.ssl,
+    sasl: settings.username
+      ? {
+          mechanism: settings.saslMechanism,
+          username: settings.username,
+          password: settings.password
+        }
+      : undefined,
+    logLevel: logLevel?.NOTHING
+  });
+  const producer = kafka.producer();
+  await producer.connect();
+  return producer;
+}
+
+function reportLogSinkErrorOnce(reportedSinkErrors, sink, error) {
+  if (reportedSinkErrors.has(sink)) {
+    return;
+  }
+
+  reportedSinkErrors.add(sink);
+  writeLocalLog(sanitizeLogValue({
+    timestamp: new Date().toISOString(),
+    service: 'monitoring-ui-api',
+    environment: stringValue(process.env.NODE_ENV) || 'Production',
+    level: 'Error',
+    event: `logging.${sink}_sink_failed`,
+    message: `${sink} logging sink failed.`,
+    correlationId: currentCorrelationId(),
+    details: { error }
+  }));
+}
+
+function normalizeLogLevel(level) {
+  const normalized = stringValue(level).toLowerCase();
+  if (normalized === 'trace') {
+    return 'Trace';
+  }
+  if (normalized === 'debug') {
+    return 'Debug';
+  }
+  if (normalized === 'warn' || normalized === 'warning') {
+    return 'Warning';
+  }
+  if (normalized === 'error') {
+    return 'Error';
+  }
+  if (normalized === 'critical' || normalized === 'fatal') {
+    return 'Critical';
+  }
+  return 'Information';
+}
+
+function logLevelEnabled(level, minimumLevel) {
+  return (logLevelWeights.get(normalizeLogLevel(level)) ?? 2) >= (logLevelWeights.get(normalizeLogLevel(minimumLevel)) ?? 2);
+}
+
+function sanitizeLogValue(value, seen = new WeakSet(), key = '') {
+  if (value == null) {
+    return value;
+  }
+
+  if (sensitiveLogKeyPattern.test(key)) {
+    return '[redacted]';
+  }
+
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: redactText(value.message)
+    };
+  }
+
+  if (typeof value === 'string') {
+    return redactText(value);
+  }
+
+  if (typeof value !== 'object') {
+    return value;
+  }
+
+  if (seen.has(value)) {
+    return '[circular]';
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeLogValue(item, seen));
+  }
+
+  return Object.fromEntries(Object.entries(value)
+    .map(([childKey, childValue]) => [childKey, sanitizeLogValue(childValue, seen, childKey)]));
+}
+
+function redactText(value) {
+  return stringValue(value)
+    .replaceAll(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replaceAll(/(password|passwd|secret|token|api[-_]?key|connection[-_]?string)=([^&\s]+)/gi, '$1=[redacted]')
+    .replaceAll(/(password|passwd|secret|token|api[-_]?key|connection[-_]?string)["']?\s*:\s*["'][^"']+["']/gi, '$1: "[redacted]"');
 }
 
 function zabbixApplyCurrentBackendBody(body, layer, overrides = {}) {
@@ -983,7 +1355,9 @@ function metricsConfig() {
 function readinessConfig() {
   const configured = objectValue(config.readiness);
   return {
-    route: stringValue(configured.route) || '/ready'
+    route: stringValue(configured.route) || '/ready',
+    checkExternalDependencies: configured.checkExternalDependencies === true,
+    checkTimeoutMs: positiveInteger(configured.checkTimeoutMs, 2000)
   };
 }
 
@@ -1102,13 +1476,152 @@ function bearerTokenValid(request, expectedToken) {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
-function readinessPayload() {
+async function readinessPayload() {
+  const readiness = readinessConfig();
+  const dependencyChecks = readiness.checkExternalDependencies
+    ? await runReadinessDependencyChecks(readiness)
+    : [];
+  const ready = dependencyChecks.every((item) => item.ready || item.required === false);
   return {
     service: 'monitoring-ui-api',
-    status: 'ready',
+    status: ready ? 'ready' : 'not_ready',
+    checkExternalDependencies: readiness.checkExternalDependencies,
     backendHealthChecks: Array.isArray(config.healthChecks) ? config.healthChecks.length : 0,
-    conversionConfig: publicConversionConfig()
+    conversionConfig: publicConversionConfig(),
+    dependencyChecks
   };
+}
+
+async function runReadinessDependencyChecks(readiness) {
+  const checks = [
+    loggingSinkReadinessCheck(),
+    conversionConfigStoreReadinessCheck(readiness),
+    ...configuredBackendReadinessChecks(readiness)
+  ];
+  return Promise.all(checks);
+}
+
+async function loggingSinkReadinessCheck() {
+  const logging = loggingConfig(config);
+  const kafkaLogging = kafkaLoggingConfig(config);
+  const elkLogging = elkLoggingConfig(config);
+  const failures = [];
+
+  if (kafkaLogging.enabled) {
+    if (!kafkaLogging.topic) {
+      failures.push('kafkaLogging.topic is required when Kafka logging is enabled');
+    }
+    if (kafkaLogging.brokers.length === 0) {
+      failures.push('kafkaLogging.bootstrapServers is required when Kafka logging is enabled');
+    }
+  }
+
+  if (elkLogging.enabled && !elkLogging.endpoint) {
+    failures.push('elkLogging.endpoint is required when ELK logging is enabled');
+  }
+
+  if (logging.requireExternalSink && !kafkaLogging.enabled && !elkLogging.enabled) {
+    failures.push('external logging sink is required but neither Kafka nor ELK logging is enabled');
+  }
+
+  return failures.length === 0
+    ? {
+        name: 'logging-sink',
+        ready: true,
+        required: true,
+        message: kafkaLogging.enabled || elkLogging.enabled
+          ? 'external logging sink configuration is valid'
+          : 'stdout/stderr logging is active; external sink is not required'
+      }
+    : {
+        name: 'logging-sink',
+        ready: false,
+        required: true,
+        message: failures.join('; ')
+      };
+}
+
+async function conversionConfigStoreReadinessCheck(readiness) {
+  try {
+    const current = await withReadinessTimeout(
+      () => readConversionConfigStoreCurrent(),
+      readiness.checkTimeoutMs);
+    return {
+      name: 'conversion-config-store',
+      ready: true,
+      required: true,
+      message: `conversion-config-store is readable; version=${current.version ?? 0}`
+    };
+  } catch (error) {
+    return {
+      name: 'conversion-config-store',
+      ready: false,
+      required: true,
+      message: redactText(error.message)
+    };
+  }
+}
+
+function configuredBackendReadinessChecks(readiness) {
+  return (config.healthChecks ?? []).map(async (item) => {
+    const name = stringValue(item?.id || item?.name || item?.url) || 'backend';
+    const url = stringValue(item?.url);
+    if (!url) {
+      return {
+        name,
+        ready: false,
+        required: true,
+        message: 'health check URL is not configured'
+      };
+    }
+
+    try {
+      const response = await fetchWithTimeout(url, readiness.checkTimeoutMs);
+      return {
+        name,
+        ready: response.ok,
+        required: true,
+        statusCode: response.status,
+        message: response.ok ? 'backend health endpoint is reachable' : `backend health endpoint returned HTTP ${response.status}`
+      };
+    } catch (error) {
+      return {
+        name,
+        ready: false,
+        required: true,
+        message: redactText(error.message)
+      };
+    }
+  });
+}
+
+async function withReadinessTimeout(factory, timeoutMs) {
+  let timeout = null;
+  try {
+    return await Promise.race([
+      factory(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('readiness check timed out')), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function fetchWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      headers: { accept: 'application/json' },
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function hostAllowed(hostHeader) {
@@ -1316,10 +1829,18 @@ function runDetachedJsonRequest(targetUrl, init, operationId) {
     try {
       const backendResponse = await httpRequestBuffer(targetUrl, init, effectiveLongRunningRequestTimeoutMs);
       if (backendResponse.statusCode < 200 || backendResponse.statusCode >= 300) {
-        console.error(`detached request ${operationId} failed: HTTP ${backendResponse.statusCode}`);
+        logger.error('detached_request.failed', 'Detached backend request failed.', {
+          operationId,
+          statusCode: backendResponse.statusCode,
+          targetUrl
+        });
       }
     } catch (error) {
-      console.error(`detached request ${operationId} failed:`, error);
+      logger.error('detached_request.failed', 'Detached backend request failed.', {
+        operationId,
+        targetUrl,
+        error
+      });
     }
   })();
 }

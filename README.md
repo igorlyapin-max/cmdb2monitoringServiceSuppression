@@ -155,10 +155,14 @@ validation; private CA, mTLS, reverse proxy, and HSTS policies belong in the
 runtime trust store or ingress/proxy configuration.
 
 Debug logging is controlled by `Debug:Enabled` and `Debug:Level` (`Basic` or
-`Verbose`). Debug events are written through normal `ILogger` at `Information`,
-so they appear in Docker stdout/stderr, direct ELK logging when `ElkLogging` is
-enabled, Kafka log topics when `KafkaLogging` is enabled, and Docker syslog when
-the container is started with a syslog logging driver.
+`Verbose`) for .NET services and by `MONITORING_UI_DEBUG_ENABLED` /
+`MONITORING_UI_DEBUG_LEVEL` for `monitoring-ui-api`. Debug events go through the
+normal structured logging pipeline, so they appear in Docker stdout/stderr,
+direct ELK logging when `ElkLogging` / `MONITORING_UI_ELK_LOGGING_*` is enabled,
+Kafka log topics when `KafkaLogging` / `MONITORING_UI_KAFKA_LOGGING_*` is
+enabled, and Docker syslog when the container is started with a syslog logging
+driver. Verbose diagnostics are intended for temporary use and mask configured
+secret/token/password fields.
 
 The first implemented block is CMDBuild schema preview with separated service and
 suppression layers, localized captions/help text, and domains configured to drop

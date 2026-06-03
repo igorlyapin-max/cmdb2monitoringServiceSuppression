@@ -8,6 +8,10 @@ public sealed class ReadinessOptions
 
     public string ZabbixHostIdAttribute { get; init; } = "zabbix_main_hostid";
 
+    public bool CheckExternalDependencies { get; init; }
+
+    public int CheckTimeoutMs { get; init; } = 2000;
+
     public bool HasValidRoute()
     {
         return !string.IsNullOrWhiteSpace(Route) && Route.StartsWith('/');
@@ -16,5 +20,10 @@ public sealed class ReadinessOptions
     public bool HasValidZabbixHostIdAttribute()
     {
         return !string.IsNullOrWhiteSpace(ZabbixHostIdAttribute);
+    }
+
+    public bool HasValidCheckTimeout()
+    {
+        return CheckTimeoutMs > 0;
     }
 }

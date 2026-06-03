@@ -4,6 +4,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
 using Cmdb2MonitoringServiceSuppression.Shared.Logging;
 using Cmdb2MonitoringServiceSuppression.Shared.Messaging;
+using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Cmdb2MonitoringServiceSuppression.Shared.Secrets;
 using Microsoft.Extensions.Options;
 
@@ -27,6 +28,7 @@ builder.Services.AddOptions<KafkaTopicsOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.DeadLetterTopic), "KafkaTopics:DeadLetterTopic is required.")
     .ValidateOnStart();
 builder.Services.AddHttpClient<CmdbuildClient>();
+builder.Services.AddTransient<IServiceReadinessCheck, CmdbuildDependencyReadinessCheck>();
 builder.Services.AddSingleton<KafkaJsonProducer>();
 var initialApplyOptions = builder.Configuration
     .GetSection(ApplyOptions.SectionName)
@@ -411,5 +413,18 @@ public sealed class CmdbuildAggregationCommandWorker(
             result.RelationDomain,
             result.RelationId,
             result.RelationAction);
+    }
+}
+
+public sealed class CmdbuildDependencyReadinessCheck(CmdbuildClient client) : IServiceReadinessCheck
+{
+    public string Name => "cmdbuild";
+
+    public async Task<ServiceReadinessCheckResult> CheckAsync(CancellationToken cancellationToken)
+    {
+        var result = await client.CheckConnectionAsync(cancellationToken);
+        return result.Success
+            ? ServiceReadinessCheckResult.Ok(Name, result.Summary ?? "CMDBuild is reachable")
+            : ServiceReadinessCheckResult.NotReady(Name, result.Error ?? "CMDBuild check failed");
     }
 }

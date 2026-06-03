@@ -6,6 +6,7 @@ const repoRoot = path.resolve(import.meta.dirname, '..');
 const files = {
   diagnostics: read('scripts/test-diagnostics.sh'),
   integration: read('scripts/test-integration.sh'),
+  runtimeSmoke: read('scripts/test-runtime-smoke.sh'),
   testConfigs: read('scripts/test-configs.sh'),
   uiRegressions: read('tests/ui-regressions.mjs'),
   sharedContracts: read('tests/sharedcontracts/Program.cs'),
@@ -13,6 +14,7 @@ const files = {
   redisRuntimeE2e: read('tests/redis-runtime-e2e.mjs'),
   redisKafkaE2e: read('tests/redis-kafka-dedup-e2e.mjs'),
   validateConfig: read('src/monitoring-ui-api/scripts/validate-config.mjs'),
+  uiPackage: read('src/monitoring-ui-api/package.json'),
   gitlabCi: read('.gitlab-ci.yml'),
   deployment: read('DEPLOYMENT.md'),
   compose: read('docker-compose.yml'),
@@ -35,6 +37,9 @@ const contracts = [
       includes(files.diagnostics, 'tests/autotest-plan-contracts.mjs', 'diagnostics must run autotest coverage contracts');
       includes(files.diagnostics, 'tests/sharedcontracts/sharedcontracts.csproj', 'diagnostics must build and run shared .NET contracts');
       includes(files.testConfigs, 'INTEGRATION_PROFILE=offline', 'test-configs must be an offline compatibility gate');
+      includes(files.runtimeSmoke, 'debug-verbose', 'runtime smoke must cover Verbose debug startup');
+      includes(files.runtimeSmoke, '/ready', 'runtime smoke must check readiness');
+      includes(files.runtimeSmoke, '/metrics', 'runtime smoke must check metrics');
     }
   },
   {
@@ -53,6 +58,13 @@ const contracts = [
     assert() {
       includes(files.validateConfig, 'appsettings', 'config validator must parse appsettings');
       includes(files.validateConfig, 'validateHardeningConfig', 'config validator must cover hardening settings');
+      includes(files.validateConfig, 'validateMonitoringUiRuntimeConfig', 'config validator must cover monitoring UI runtime logging/debug settings');
+      includes(files.server, 'createStructuredLogger', 'monitoring UI BFF must use structured runtime logging');
+      includes(files.server, 'debugBasic', 'monitoring UI BFF must support Basic debug events');
+      includes(files.server, 'debugVerbose', 'monitoring UI BFF must support Verbose debug events');
+      includes(files.server, 'kafkaLoggingConfig', 'monitoring UI BFF must expose Kafka log sink configuration');
+      includes(files.server, 'elkLoggingConfig', 'monitoring UI BFF must expose ELK log sink configuration');
+      includes(files.uiPackage, 'kafkajs', 'monitoring UI Kafka log sink must declare its Kafka client dependency');
       includes(files.sharedContracts, 'C2M_ServiceSlaCalendar', 'schema contracts must cover SLA calendar classes');
       includes(files.sharedContracts, 'C2M_ServiceSlaPolicy', 'schema contracts must cover SLA policy classes');
       includes(files.sharedContracts, 'C2M_SuppressionManagedObject', 'schema contracts must cover suppression superclass');
@@ -66,13 +78,18 @@ const contracts = [
       includes(files.gitlabCi, 'tracked_state_guard', 'GitLab CI must block tracked runtime state');
       includes(files.gitlabCi, 'node_lint', 'GitLab CI must run minimal Node static checks');
       includes(files.gitlabCi, 'dotnet_analyzer', 'GitLab CI must run .NET analyzer/warnings gate');
+      includes(files.gitlabCi, 'runtime_smoke', 'GitLab CI must run runtime startup smoke checks');
       includes(files.serviceDefaults, 'UseHostValidation', '.NET services must validate Host headers');
       includes(files.serviceDefaults, 'TrustedProxies', '.NET services must configure trusted proxy networks');
       includes(files.serviceDefaults, 'MapServiceReadiness', '.NET services must expose readiness');
+      includes(files.serviceDefaults, 'IServiceReadinessCheck', '.NET readiness must support dependency checks');
       includes(files.server, 'hostAllowed', 'UI BFF must validate Host headers');
       includes(files.server, 'trustedProxiesConfig', 'UI BFF must configure trusted proxy networks');
       includes(files.server, 'metricsAccessAllowed', 'UI BFF must protect metrics access');
       includes(files.server, 'readinessPayload', 'UI BFF must expose readiness');
+      includes(files.server, 'checkExternalDependencies', 'UI BFF readiness must support opt-in dependency checks');
+      notIncludes(files.server, 'console.log', 'UI BFF runtime logging must not use console.log directly');
+      notIncludes(files.server, 'console.error', 'UI BFF runtime logging must not use console.error directly');
       includes(files.compose, 'cmdb2m-state:/app/state', 'Compose must use a named state volume by default');
       includes(files.deployment, 'TLS is administrator-owned', 'Deployment docs must keep TLS scheme selection administrator-owned');
     }
@@ -173,5 +190,11 @@ function read(relativePath) {
 function includes(text, needle, message) {
   if (!text.includes(needle)) {
     throw new Error(`${message}. Missing: ${needle}`);
+  }
+}
+
+function notIncludes(text, needle, message) {
+  if (text.includes(needle)) {
+    throw new Error(`${message}. Unexpected: ${needle}`);
   }
 }

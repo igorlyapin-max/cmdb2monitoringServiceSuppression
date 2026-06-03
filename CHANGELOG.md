@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added monitoring UI structured debug/logging parity, opt-in dependency readiness checks, and a runtime smoke gate for normal/Basic/Verbose startup.
 - Removed tracked placeholder reload tokens and default integration passwords from service configuration.
 - Added shared hardening defaults for rate limiting, security headers, Prometheus-style `/metrics`, correlation ids, and HTTP retry/circuit breaker behavior.
 - Added Host header validation, trusted proxy handling, protected metrics options, `/ready`, named Compose state volume defaults, and GitLab CI guardrails for static checks and tracked runtime state.

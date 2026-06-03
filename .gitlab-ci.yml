@@ -70,6 +70,18 @@ test_configs:
   script:
     - ./scripts/test-configs.sh
 
+runtime_smoke:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  needs: ["dotnet_build"]
+  before_script:
+    - apt-get update
+    - apt-get install -y ca-certificates curl gnupg
+    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - apt-get install -y nodejs
+  script:
+    - ./scripts/test-runtime-smoke.sh
+
 secret_scan:
   stage: security
   image:

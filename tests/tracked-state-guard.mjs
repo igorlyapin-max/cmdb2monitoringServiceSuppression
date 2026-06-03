@@ -27,7 +27,15 @@ if (blocked.length > 0) {
 function isRuntimeState(file) {
   const normalized = file.replaceAll('\\', '/');
   const name = path.posix.basename(normalized);
-  return normalized.startsWith('src/zabbixconfig2api/state/')
+  if (normalized.startsWith('state/conversion-config/')) {
+    return false;
+  }
+
+  return normalized.startsWith('state/')
+    || /^src\/[^/]+\/state\//.test(normalized)
+    || normalized.startsWith('src/zabbixconfig2api/state/')
     || name === 'apply-membership.json'
+    || name === 'audit.jsonl'
+    || /\.jsonl$/i.test(name)
     || /\.db(?:-.+)?$/i.test(name);
 }

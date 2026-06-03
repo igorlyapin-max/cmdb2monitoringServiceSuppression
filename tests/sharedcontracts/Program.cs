@@ -6,6 +6,7 @@ using Cmdb2MonitoringServiceSuppression.Shared.CmdbuildSchema;
 using Cmdb2MonitoringServiceSuppression.Shared.Configuration;
 using Cmdb2MonitoringServiceSuppression.Shared.ConversionRules;
 using Cmdb2MonitoringServiceSuppression.Shared.Integrations;
+using Cmdb2MonitoringServiceSuppression.Shared.Observability;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -35,6 +36,11 @@ Assert(metricsOptions.HasValidAccessPolicy(), "metrics access policy default mus
 
 var readinessOptions = new ReadinessOptions();
 Assert(readinessOptions.HasValidRoute(), "readiness route default must be valid");
+Assert(!readinessOptions.CheckExternalDependencies, "external dependency readiness checks must be opt-in by default");
+Assert(readinessOptions.HasValidCheckTimeout(), "readiness dependency check timeout default must be valid");
+var readinessCheckResult = ServiceReadinessCheckResult.NotReady("dependency", "failed");
+Assert(readinessCheckResult.Required && !readinessCheckResult.Ready,
+    "readiness dependency check results must preserve required not-ready state");
 
 var rateLimitingOptions = new RateLimitingOptions();
 Assert(rateLimitingOptions.ExcludedPathPrefixes.Contains("/ready", StringComparer.OrdinalIgnoreCase),
